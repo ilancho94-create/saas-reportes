@@ -261,7 +261,7 @@ export default function CeoDashboard() {
                     <YAxis yAxisId="right" orientation="right" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
                     <Tooltip
                       contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any, name: string) => {
+                      formatter={(v: any, name: any) => {
                         if (name === 'ventas') return ['$' + Number(v).toLocaleString(), 'Ventas']
                         if (name === 'laborPct') return [v + '%', '% Labor']
                         if (name === 'foodCostPct') return [v + '%', '% Food Cost']
