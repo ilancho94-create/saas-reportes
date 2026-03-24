@@ -125,7 +125,18 @@ export default function HistoryPage() {
                         <p className="text-gray-500 text-xs">Waste</p>
                         <p className="text-white font-semibold">{fmt(waste?.total_cost)}</p>
                       </div>
-                      <span className="text-gray-600">→</span>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={e => {
+                            e.stopPropagation()
+                            window.location.href = `/upload/edit/${report.id}`
+                          }}
+                          className="text-xs text-gray-500 hover:text-blue-400 border border-gray-700 hover:border-blue-600 px-2 py-1 rounded transition"
+                        >
+                          Editar
+                        </button>
+                        <span className="text-gray-600">→</span>
+                      </div>
                     </div>
                   </div>
                 </div>
