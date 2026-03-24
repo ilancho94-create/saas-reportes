@@ -45,6 +45,38 @@ const STEPS = [
     where: 'R365 → Reports → Actual vs Theoretical Analysis',
     extracts: 'Faltantes y sobrantes de inventario',
   },
+  {
+  id: 'product_mix',
+  label: 'Product Mix Toast',
+  icon: '🍽️',
+  system: 'Toast',
+  required: false,
+  where: 'Toast → Reports → Product Mix',
+  instructions: [
+    'Abre Toast POS',
+    'Ve a Reports',
+    'Click en Product Mix',
+    'Selecciona el rango de fechas de tu semana',
+    'Exporta como .xlsx',
+  ],
+  extracts: 'Ventas por item y categoría de menú',
+},
+{
+  id: 'menu_analysis',
+  label: 'Menu Item Analysis',
+  icon: '📋',
+  system: 'R365',
+  required: false,
+  where: 'R365 → Reports → Menu Item Analysis',
+  instructions: [
+    'Abre Restaurant365',
+    'Ve a Reports',
+    'Busca Menu Item Analysis',
+    'Selecciona el rango de fechas de tu semana',
+    'Exporta como .xlsx',
+  ],
+  extracts: 'Costo teórico por item para calcular % P.Mix',
+},
 ]
 
 const TABLE_MAP: Record<string, string> = {

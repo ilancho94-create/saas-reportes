@@ -2,42 +2,70 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY!,
+})
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-const TABLE_MAP: Record<string, string> = {
-  sales: 'sales_data',
-  labor: 'labor_data',
-  cogs: 'cogs_data',
-  voids: 'voids_data',
-  discounts: 'discounts_data',
-  waste: 'waste_data',
-  inventory: 'inventory_data',
-  avt: 'avt_data',
-}
-
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
     const week = formData.get('week') as string
-    const reportId = formData.get('report_id') as string
 
-    if (!week || !reportId) {
-      return NextResponse.json({ success: false, error: 'Faltan parámetros' })
+    if (!week) {
+      return NextResponse.json({ success: false, error: 'Semana requerida' })
+    }
+
+    const authHeader = request.headers.get('authorization')
+    const { data: { user } } = await supabase.auth.getUser(
+      authHeader?.replace('Bearer ', '') || ''
+    )
+
+    let restaurant_id = '00000000-0000-0000-0000-000000000001'
+    if (user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('restaurant_id')
+        .eq('id', user.id)
+        .single()
+      if (profile?.restaurant_id) {
+        restaurant_id = profile.restaurant_id
+      }
+    }
+
+    const { data: report, error: reportError } = await supabase
+      .from('reports')
+      .insert({
+        restaurant_id,
+        week,
+        week_start: getWeekStart(week),
+        week_end: getWeekEnd(week),
+      })
+      .select()
+      .single()
+
+    if (reportError) {
+      return NextResponse.json({ success: false, error: reportError.message })
     }
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
-    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'avt']
+
+    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'product_mix', 'menu_analysis', 'avt']
+
+    // Extraer product_mix y menu_analysis por separado para cruzarlos
+    let productMixData: any = null
+    let menuAnalysisData: any = null
 
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
       if (!file) continue
 
-      console.log(`Re-processing ${fileType}...`)
+      console.log(`Processing ${fileType}...`)
 
       try {
         const extracted = await extractWithClaude(file, fileType, week)
@@ -47,22 +75,28 @@ export async function POST(request: NextRequest) {
           warnings[fileType] = extracted.date_warning
         }
 
-        // Borrar dato existente y reemplazar
-        const table = TABLE_MAP[fileType]
-        if (table) {
-          await supabase.from(table).delete().eq('report_id', reportId)
-          await saveToDatabase(reportId, fileType, extracted)
+        if (fileType === 'product_mix') {
+          productMixData = extracted
+        } else if (fileType === 'menu_analysis') {
+          menuAnalysisData = extracted
+        } else {
+          await saveToDatabase(report.id, fileType, extracted)
         }
 
       } catch (err) {
-        console.error(`Error re-processing ${fileType}:`, err)
+        console.error(`Error processing ${fileType}:`, err)
         results[fileType] = { error: 'No se pudo procesar' }
       }
     }
 
+    // Cruzar product_mix + menu_analysis y guardar juntos
+    if (productMixData || menuAnalysisData) {
+      await saveProductMixCombined(report.id, productMixData, menuAnalysisData)
+    }
+
     return NextResponse.json({
       success: true,
-      report_id: reportId,
+      report_id: report.id,
       week,
       processed: Object.keys(results),
       warnings,
@@ -81,16 +115,29 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
   const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
 
   let fileContent = ''
+
   if (isCSV) {
     fileContent = buffer.toString('utf-8')
   } else if (isExcel) {
     const XLSX = require('xlsx')
     const workbook = XLSX.read(buffer, { type: 'buffer' })
     const sheets: string[] = []
-    workbook.SheetNames.forEach((name: string) => {
-      const sheet = workbook.Sheets[name]
-      sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
-    })
+
+    if (fileType === 'product_mix') {
+      // Solo leer la pestaña "All levels" y "Menus"
+      const targetSheets = ['All levels', 'Menus']
+      workbook.SheetNames.forEach((name: string) => {
+        if (targetSheets.includes(name)) {
+          const sheet = workbook.Sheets[name]
+          sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
+        }
+      })
+    } else {
+      workbook.SheetNames.forEach((name: string) => {
+        const sheet = workbook.Sheets[name]
+        sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
+      })
+    }
     fileContent = sheets.join('\n\n')
   }
 
@@ -107,43 +154,130 @@ Si coinciden o no hay fechas visibles, pon "date_warning": null.
     sales: `Analiza este reporte de ventas de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{"net_sales":número,"gross_sales":número,"discounts":número,"refunds":número,"orders":número,"guests":número,"avg_per_guest":número,"avg_per_order":número,"gratuity":número,"tax":número,"tips":número,"categories":[{"name":string,"items":número,"gross":número,"discount":número,"net":número,"pct":número}],"revenue_centers":[{"name":string,"net":número,"pct":número}],"lunch":{"orders":número,"net":número,"discounts":número},"dinner":{"orders":número,"net":número,"discounts":número},"date_warning":string|null}`,
+{
+  "net_sales": número,
+  "gross_sales": número,
+  "discounts": número,
+  "refunds": número,
+  "orders": número,
+  "guests": número,
+  "avg_per_guest": número,
+  "avg_per_order": número,
+  "gratuity": número,
+  "tax": número,
+  "tips": número,
+  "categories": [{"name": string, "items": número, "gross": número, "discount": número, "net": número, "pct": número}],
+  "revenue_centers": [{"name": string, "net": número, "pct": número}],
+  "lunch": {"orders": número, "net": número, "discounts": número},
+  "dinner": {"orders": número, "net": número, "discounts": número},
+  "date_warning": string | null
+}`,
 
     labor: `Analiza este reporte de labor/payroll de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-Solo incluye empleados con Hourly Rate > 0.
+REGLA: Solo incluye empleados con Hourly Rate > 0.
 ${dateInstruction}
-{"total_regular_hours":número,"total_ot_hours":número,"total_pay":número,"by_position":[{"position":string,"regular_hours":número,"ot_hours":número,"total_pay":número}],"by_employee":[{"name":string,"position":string,"hourly_rate":número,"regular_hours":número,"ot_hours":número,"total_pay":número}],"date_warning":string|null}`,
+{
+  "total_regular_hours": número,
+  "total_ot_hours": número,
+  "total_pay": número,
+  "by_position": [{"position": string, "regular_hours": número, "ot_hours": número, "total_pay": número}],
+  "by_employee": [{"name": string, "position": string, "hourly_rate": número, "regular_hours": número, "ot_hours": número, "total_pay": número}],
+  "date_warning": string | null
+}`,
 
     cogs: `Analiza este reporte COGS Analysis by Vendor de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{"total":número,"by_category":{"food":número,"na_beverage":número,"liquor":número,"beer":número,"general":número},"by_vendor":[{"name":string,"food":número,"na_beverage":número,"liquor":número,"beer":número,"general":número,"total":número}],"date_warning":string|null}`,
+{
+  "total": número,
+  "by_category": {"food": número, "na_beverage": número, "liquor": número, "beer": número, "wine": número, "general": número},
+  "by_vendor": [{"name": string, "food": número, "na_beverage": número, "liquor": número, "beer": número, "general": número, "total": número}],
+  "date_warning": string | null
+}`,
 
     voids: `Analiza este reporte de voids de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{"total":número,"total_items":número,"by_reason":[{"reason":string,"count":número,"total":número}],"items":[{"item_name":string,"server":string,"reason":string,"quantity":número,"price":número}],"date_warning":string|null}`,
+{
+  "total": número,
+  "total_items": número,
+  "by_reason": [{"reason": string, "count": número, "total": número}],
+  "items": [{"item_name": string, "server": string, "reason": string, "quantity": número, "price": número}],
+  "date_warning": string | null
+}`,
 
     discounts: `Analiza este reporte de descuentos de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{"total":número,"total_applications":número,"total_orders":número,"items":[{"name":string,"applications":número,"orders":número,"amount":número,"pct":número}],"date_warning":string|null}`,
+{
+  "total": número,
+  "total_applications": número,
+  "total_orders": número,
+  "items": [{"name": string, "applications": número, "orders": número, "amount": número, "pct": número}],
+  "date_warning": string | null
+}`,
 
     waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{"total_cost":número,"total_qty":número,"items":[{"name":string,"uom":string,"qty":número,"unit_cost":número,"total":número,"category":string,"comment":string}],"date_warning":string|null}`,
+{
+  "total_cost": número,
+  "total_qty": número,
+  "items": [{"name": string, "uom": string, "qty": número, "unit_cost": número, "total": número, "category": string, "comment": string}],
+  "date_warning": string | null
+}`,
 
     inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
+El reporte tiene sección "Total by Inventory Account" con Current Value y Previous Value.
 ${dateInstruction}
-{"count_date":"YYYY-MM-DD","by_account":[{"account":string,"current_value":número,"previous_value":número,"adjustment":número}],"grand_total_current":número,"grand_total_previous":número,"date_warning":string|null}`,
+{
+  "count_date": "YYYY-MM-DD",
+  "by_account": [{"account": string, "current_value": número, "previous_value": número, "adjustment": número}],
+  "grand_total_current": número,
+  "grand_total_previous": número,
+  "date_warning": string | null
+}`,
+
+    product_mix: `Analiza este reporte Product Mix de Toast POS.
+Usa la pestaña "All levels" para extraer ventas por item con su menú padre.
+Usa la pestaña "Menus" para el resumen por menú.
+Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
+${dateInstruction}
+{
+  "by_menu": [{"menu": string, "qty": número, "net_sales": número, "gross_sales": número}],
+  "by_item": [{"item": string, "menu": string, "menu_group": string, "qty": número, "net_sales": número, "gross_sales": número}],
+  "total_net_sales": número,
+  "total_qty": número,
+  "date_warning": string | null
+}`,
+
+    menu_analysis: `Analiza este reporte Menu Item Analysis de Restaurant365.
+Extrae el costo teórico (Theo Cost) por item y agrúpalo por categoría de menú de Toast.
+Las categorías de menú de Toast son: FOOD MENU, NON/ALC BEVERAGES, BEER, LIQUOR, AYCE TACOS, WINE.
+Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
+${dateInstruction}
+{
+  "by_item": [{"item": string, "price": número, "cost": número, "cost_pct": número, "qty": número, "sales": número, "theo_cost": número, "category": string}],
+  "theo_cost_by_category": {"food": número, "na_beverage": número, "liquor": número, "beer": número, "wine": número},
+  "total_theo_cost": número,
+  "total_sales": número,
+  "date_warning": string | null
+}`,
 
     avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365 y extrae datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
+FALTANTE = varianza POSITIVA. SOBRANTE = varianza NEGATIVA.
 ${dateInstruction}
-{"total_shortages":número,"total_overages":número,"net_variance":número,"shortages":[{"name":string,"uom":string,"unit_cost":número,"variance_qty":número,"variance_dollar":número}],"overages":[{"name":string,"uom":string,"unit_cost":número,"variance_qty":número,"variance_dollar":número}],"date_warning":string|null}`,
+{
+  "total_shortages": número,
+  "total_overages": número,
+  "net_variance": número,
+  "shortages": [{"name": string, "uom": string, "unit_cost": número, "variance_qty": número, "variance_dollar": número}],
+  "overages": [{"name": string, "uom": string, "unit_cost": número, "variance_qty": número, "variance_dollar": número}],
+  "date_warning": string | null
+}`,
   }
 
   const response = await anthropic.messages.create({
@@ -161,12 +295,65 @@ ${dateInstruction}
   try {
     return JSON.parse(clean)
   } catch {
+    console.error('JSON parse error for', fileType, ':', clean.substring(0, 200))
     throw new Error(`No se pudo parsear la respuesta de Claude para ${fileType}`)
   }
 }
 
+async function saveProductMixCombined(reportId: string, productMix: any, menuAnalysis: any) {
+  const insertData: Record<string, any> = {
+    report_id: reportId,
+    raw_data: { product_mix: productMix, menu_analysis: menuAnalysis },
+  }
+
+  if (productMix) {
+    insertData.by_menu = productMix.by_menu
+    insertData.by_category = buildCategoryFromMenus(productMix.by_menu)
+  }
+
+  if (menuAnalysis) {
+    insertData.theo_cost_by_category = menuAnalysis.theo_cost_by_category
+    insertData.total_theo_cost = menuAnalysis.total_theo_cost
+  }
+
+  const { error } = await supabase.from('product_mix_data').insert(insertData)
+  if (error) console.error('Error saving product_mix_data:', error)
+}
+
+function buildCategoryFromMenus(byMenu: any[]) {
+  if (!byMenu) return {}
+  const map: Record<string, number> = {}
+  const menuToCat: Record<string, string> = {
+    'FOOD MENU': 'food',
+    'FOOD MENU TOGO': 'food',
+    "KID'S MENU": 'food',
+    'AYCE TACOS': 'food',
+    'AYCE TACOS W': 'food',
+    'NON/ALC BEVERAGES': 'na_beverage',
+    'BEER': 'beer',
+    'LIQUOR': 'liquor',
+    'WINE': 'wine',
+  }
+  byMenu.forEach((m: any) => {
+    const cat = menuToCat[m.menu?.toUpperCase()] || 'general'
+    map[cat] = (map[cat] || 0) + (m.net_sales || 0)
+  })
+  return map
+}
+
 async function saveToDatabase(reportId: string, fileType: string, data: any) {
-  const table = TABLE_MAP[fileType]
+  const tableMap: Record<string, string> = {
+    sales: 'sales_data',
+    labor: 'labor_data',
+    cogs: 'cogs_data',
+    voids: 'voids_data',
+    discounts: 'discounts_data',
+    waste: 'waste_data',
+    inventory: 'inventory_data',
+    avt: 'avt_data',
+  }
+
+  const table = tableMap[fileType]
   if (!table) return
 
   const insertData: Record<string, any> = { report_id: reportId, raw_data: data }
