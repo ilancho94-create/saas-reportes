@@ -103,7 +103,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     ? 'bg-blue-600 text-white'
                     : 'text-gray-400 hover:text-white hover:bg-gray-800'
                   return (
-                    
+                    <a
                       key={item.href}
                       href={item.href}
                       title={item.label}
