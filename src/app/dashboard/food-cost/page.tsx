@@ -116,7 +116,7 @@ export default function FoodCostPage() {
     const naBevSales = getMappedSales(categories, 'na_beverage') || netSales
     const wineSales = getMappedSales(categories, 'wine') || netSales
     const totalABSales = foodSales + beerSales + liquorSales + naBevSales + wineSales || netSales
-    const totalAB = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
+    const totalABRaw = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
     return {
       week: w.report.week.replace('2026-', ''),
       food: pct(cat.food, foodSales) || 0,
@@ -125,7 +125,7 @@ export default function FoodCostPage() {
       beer: pct(cat.beer, beerSales) || 0,
       wine: pct(cat.wine, wineSales) || 0,
       general: pct(cat.general, netSales) || 0,
-      totalAB: pct(totalAB, totalABSales) || 0,
+      totalAB: pct(totalABRaw, totalABSales) || 0,
       food$: cat.food || 0,
       na_beverage$: cat.na_beverage || 0,
       liquor$: cat.liquor || 0,
@@ -134,7 +134,7 @@ export default function FoodCostPage() {
       general$: cat.general || 0,
       total$: w.cogs?.total || 0,
       foodSales, beerSales, liquorSales, naBevSales, wineSales,
-      totalABSales, totalAB,
+      totalABSales, totalABRaw, netSales,
       cat,
     }
   }
@@ -263,10 +263,10 @@ export default function FoodCostPage() {
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 md:col-span-2">
                   <p className="text-gray-500 text-xs mb-1">Total A&B — Costo de Compra</p>
                   <p className="text-3xl font-bold text-white">
-                    {latestData.totalAB ? pct(latestData.totalAB, latestData.totalABSales) + '%' : '—'}
+                    {latestData.totalABRaw ? pct(latestData.totalABRaw, latestData.totalABSales) + '%' : '—'}
                   </p>
                   <p className="text-gray-600 text-xs mt-1">
-                    {fmt(latestData.totalAB)} comprado · Ventas A&B: {fmt(latestData.totalABSales)}
+                    {fmt(latestData.totalABRaw)} comprado · Ventas A&B: {fmt(latestData.totalABSales)}
                   </p>
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -484,8 +484,8 @@ export default function FoodCostPage() {
                     })}
                     <div className="pt-3 border-t border-gray-800 flex justify-between">
                       <span className="text-gray-400 text-sm font-medium">Total A&B</span>
-                      <span className={`font-bold ${data.totalAB > 0 && pct(data.totalAB, data.totalABSales)! > 35 ? 'text-red-400' : 'text-green-400'}`}>
-                        {pct(data.totalAB, data.totalABSales) ? pct(data.totalAB, data.totalABSales) + '%' : '—'}
+                      <span className={`font-bold ${data.totalABRaw > 0 && pct(data.totalABRaw, data.totalABSales)! > 35 ? 'text-red-400' : 'text-green-400'}`}>
+                        {pct(data.totalABRaw, data.totalABSales) ? pct(data.totalABRaw, data.totalABSales) + '%' : '—'}
                       </span>
                     </div>
                     <div className="flex justify-between">
