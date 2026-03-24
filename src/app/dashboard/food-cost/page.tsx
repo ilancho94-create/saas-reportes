@@ -27,6 +27,7 @@ export default function FoodCostPage() {
   const [weeks, setWeeks] = useState<any[]>([])
   const [range, setRange] = useState(4)
   const [restaurant, setRestaurant] = useState<any>(null)
+  const [mappings, setMappings] = useState<any[]>([])
   const [activeCategory, setActiveCategory] = useState('food')
 
   useEffect(() => {
@@ -48,6 +49,12 @@ export default function FoodCostPage() {
       .from('restaurants').select('*, organizations(name)').eq('id', profile.restaurant_id).single()
     setRestaurant(rest)
 
+    const { data: maps } = await supabase
+      .from('category_mappings')
+      .select('*')
+      .eq('restaurant_id', profile.restaurant_id)
+    setMappings(maps || [])
+
     const { data: reports } = await supabase
       .from('reports').select('*')
       .eq('restaurant_id', profile.restaurant_id)
@@ -58,7 +65,7 @@ export default function FoodCostPage() {
 
     const weeksData = await Promise.all(reports.map(async (r) => {
       const [s, c] = await Promise.all([
-        supabase.from('sales_data').select('net_sales').eq('report_id', r.id).single(),
+        supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
         supabase.from('cogs_data').select('*').eq('report_id', r.id).single(),
       ])
       return { report: r, sales: s.data, cogs: c.data }
@@ -78,22 +85,69 @@ export default function FoodCostPage() {
     return parseFloat((Number(part) / Number(total) * 100).toFixed(1))
   }
 
+  function getMappedSales(categories: any[], targetType: string) {
+    if (!categories || !mappings.length) return 0
+    return categories
+      .filter((cat: any) => {
+        const mapping = mappings.find(m =>
+          m.source_category.toLowerCase() === cat.name.toLowerCase()
+        )
+        return mapping?.mapped_to === targetType
+      })
+      .reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
+  }
+
   const filtered = weeks.slice(-range)
   const latest = filtered[filtered.length - 1]
+
+  const latestCat = latest?.cogs?.by_category || {}
+  const latestSales = latest?.sales?.net_sales || 0
+  const latestCategories = latest?.sales?.categories || []
+
+  const foodSales = getMappedSales(latestCategories, 'food')
+  const beerSales = getMappedSales(latestCategories, 'beer')
+  const liquorSales = getMappedSales(latestCategories, 'liquor')
+  const naBevSales = getMappedSales(latestCategories, 'na_beverage')
+  const wineSales = getMappedSales(latestCategories, 'wine')
+
+  const totalAB = (latestCat.food || 0) + (latestCat.na_beverage || 0) + (latestCat.liquor || 0) + (latestCat.beer || 0) + (latestCat.wine || 0)
+  const totalABSales = foodSales + beerSales + liquorSales + naBevSales + wineSales || latestSales
+  const totalABPct = pct(totalAB, totalABSales)
+
+  function getCatSales(catKey: string) {
+    const map: Record<string, number> = {
+      food: foodSales,
+      beer: beerSales,
+      liquor: liquorSales,
+      na_beverage: naBevSales,
+      wine: wineSales,
+      general: latestSales,
+    }
+    return map[catKey] || latestSales
+  }
 
   const chartData = filtered.map(w => {
     const sales = w.sales?.net_sales || 0
     const cat = w.cogs?.by_category || {}
-    const totalAB = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
+    const categories = w.sales?.categories || []
+
+    const wFoodSales = getMappedSales(categories, 'food') || sales
+    const wBeerSales = getMappedSales(categories, 'beer') || sales
+    const wLiquorSales = getMappedSales(categories, 'liquor') || sales
+    const wNaBevSales = getMappedSales(categories, 'na_beverage') || sales
+    const wWineSales = getMappedSales(categories, 'wine') || sales
+    const wTotalABSales = wFoodSales + wBeerSales + wLiquorSales + wNaBevSales + wWineSales || sales
+    const wTotalAB = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
+
     return {
       week: w.report.week.replace('2026-', ''),
-      food: pct(cat.food, sales) || 0,
-      na_beverage: pct(cat.na_beverage, sales) || 0,
-      liquor: pct(cat.liquor, sales) || 0,
-      beer: pct(cat.beer, sales) || 0,
-      wine: pct(cat.wine, sales) || 0,
+      food: pct(cat.food, wFoodSales) || 0,
+      na_beverage: pct(cat.na_beverage, wNaBevSales) || 0,
+      liquor: pct(cat.liquor, wLiquorSales) || 0,
+      beer: pct(cat.beer, wBeerSales) || 0,
+      wine: pct(cat.wine, wWineSales) || 0,
       general: pct(cat.general, sales) || 0,
-      totalAB: pct(totalAB, sales) || 0,
+      totalAB: pct(wTotalAB, wTotalABSales) || 0,
       food$: cat.food || 0,
       na_beverage$: cat.na_beverage || 0,
       liquor$: cat.liquor || 0,
@@ -104,10 +158,6 @@ export default function FoodCostPage() {
     }
   })
 
-  const latestCat = latest?.cogs?.by_category || {}
-  const latestSales = latest?.sales?.net_sales || 0
-  const totalAB = (latestCat.food || 0) + (latestCat.na_beverage || 0) + (latestCat.liquor || 0) + (latestCat.beer || 0) + (latestCat.wine || 0)
-  const totalABPct = pct(totalAB, latestSales)
   const activeCat = CATEGORIES.find(c => c.key === activeCategory)
 
   if (loading) return (
@@ -118,7 +168,6 @@ export default function FoodCostPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-white font-bold text-lg">🛒 Food Cost</h1>
@@ -141,17 +190,15 @@ export default function FoodCostPage() {
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
 
-        {/* KPIs por categoría */}
         <div>
           <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
             Semana más reciente — {latest?.report?.week} ({latest?.report?.week_start} al {latest?.report?.week_end})
           </p>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-            {/* Total A&B */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 md:col-span-2">
               <p className="text-gray-500 text-xs mb-1">Total A&B (Food + Beverages)</p>
               <p className="text-3xl font-bold text-white">{totalABPct ? totalABPct + '%' : '—'}</p>
-              <p className="text-gray-600 text-xs mt-1">{fmt(totalAB)} en compras · Ventas: {fmt(latestSales)}</p>
+              <p className="text-gray-600 text-xs mt-1">{fmt(totalAB)} en compras · Ventas A&B: {fmt(totalABSales)}</p>
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <p className="text-gray-500 text-xs mb-1">Total COGS</p>
@@ -163,14 +210,13 @@ export default function FoodCostPage() {
               <p className="text-2xl font-bold text-orange-400">
                 {pct(latest?.cogs?.total, latestSales) ? pct(latest?.cogs?.total, latestSales) + '%' : '—'}
               </p>
-              <p className="text-gray-600 text-xs mt-1">vs ventas netas</p>
+              <p className="text-gray-600 text-xs mt-1">vs ventas netas totales</p>
             </div>
           </div>
 
-          {/* Cards por categoría */}
           <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
             {CATEGORIES.map(cat => {
-              const val = pct(latestCat[cat.key], latestSales)
+              const val = pct(latestCat[cat.key], getCatSales(cat.key))
               const overMeta = cat.meta && val && val > cat.meta
               return (
                 <button
@@ -199,11 +245,8 @@ export default function FoodCostPage() {
           </div>
         </div>
 
-        {/* Gráfica de la categoría seleccionada */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <h2 className="text-white font-semibold mb-1">
-            % {activeCat?.label} por semana
-          </h2>
+          <h2 className="text-white font-semibold mb-1">% {activeCat?.label} por semana</h2>
           <p className="text-gray-500 text-xs mb-4">
             {activeCat?.meta ? `Meta recomendada: ${activeCat.meta}%` : 'Tendencia histórica'}
           </p>
@@ -212,36 +255,18 @@ export default function FoodCostPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
               <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-              {activeCat?.meta && (
-                <Line
-                  type="monotone"
-                  dataKey={() => activeCat.meta}
-                  stroke="#ef4444"
-                  strokeDasharray="4 4"
-                  strokeWidth={1}
-                  dot={false}
-                  name="Meta"
-                />
-              )}
               <Tooltip
                 contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
                 formatter={(v: any) => [v + '%', activeCat?.label]}
               />
-              <Line
-                type="monotone"
-                dataKey={activeCategory}
-                stroke={activeCat?.color}
-                strokeWidth={2}
-                dot={{ fill: activeCat?.color, r: 4 }}
-              />
+              <Line type="monotone" dataKey={activeCategory} stroke={activeCat?.color} strokeWidth={2} dot={{ fill: activeCat?.color, r: 4 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Gráfica Total A&B */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h2 className="text-white font-semibold mb-1">Total A&B % por semana</h2>
-          <p className="text-gray-500 text-xs mb-4">Food + NA Beverage + Liquor + Beer + Wine</p>
+          <p className="text-gray-500 text-xs mb-4">Food + NA Beverage + Liquor + Beer + Wine vs ventas mapeadas</p>
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -257,7 +282,6 @@ export default function FoodCostPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Gráfica en $ */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h2 className="text-white font-semibold mb-1">COGS en $ por categoría</h2>
           <p className="text-gray-500 text-xs mb-4">Desglose de compras por semana</p>
@@ -278,7 +302,6 @@ export default function FoodCostPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Tabla comparativa */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h2 className="text-white font-semibold mb-4">Comparativo por semana</h2>
           <div className="overflow-x-auto">
@@ -298,17 +321,24 @@ export default function FoodCostPage() {
                 {[...filtered].reverse().map((w) => {
                   const s = w.sales?.net_sales
                   const cat = w.cogs?.by_category || {}
-                  const tab = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
+                  const cats = w.sales?.categories || []
+                  const wFood = getMappedSales(cats, 'food') || s
+                  const wBeer = getMappedSales(cats, 'beer') || s
+                  const wLiquor = getMappedSales(cats, 'liquor') || s
+                  const wNaBev = getMappedSales(cats, 'na_beverage') || s
+                  const wWine = getMappedSales(cats, 'wine') || s
+                  const wTotalABSales = wFood + wBeer + wLiquor + wNaBev + wWine || s
+                  const wTotalAB = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
                   return (
                     <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
                       <td className="py-3 text-gray-300">{w.report.week}</td>
-                      <td className="py-3 text-right text-orange-400">{pct(cat.food, s) ? pct(cat.food, s) + '%' : '—'}</td>
-                      <td className="py-3 text-right text-purple-400">{pct(cat.liquor, s) ? pct(cat.liquor, s) + '%' : '—'}</td>
-                      <td className="py-3 text-right text-yellow-400">{pct(cat.beer, s) ? pct(cat.beer, s) + '%' : '—'}</td>
-                      <td className="py-3 text-right text-cyan-400">{pct(cat.na_beverage, s) ? pct(cat.na_beverage, s) + '%' : '—'}</td>
+                      <td className="py-3 text-right text-orange-400">{pct(cat.food, wFood) ? pct(cat.food, wFood) + '%' : '—'}</td>
+                      <td className="py-3 text-right text-purple-400">{pct(cat.liquor, wLiquor) ? pct(cat.liquor, wLiquor) + '%' : '—'}</td>
+                      <td className="py-3 text-right text-yellow-400">{pct(cat.beer, wBeer) ? pct(cat.beer, wBeer) + '%' : '—'}</td>
+                      <td className="py-3 text-right text-cyan-400">{pct(cat.na_beverage, wNaBev) ? pct(cat.na_beverage, wNaBev) + '%' : '—'}</td>
                       <td className="py-3 text-right">
-                        <span className={`font-medium ${pct(tab, s) && pct(tab, s)! > 35 ? 'text-red-400' : 'text-green-400'}`}>
-                          {pct(tab, s) ? pct(tab, s) + '%' : '—'}
+                        <span className={`font-medium ${pct(wTotalAB, wTotalABSales) && pct(wTotalAB, wTotalABSales)! > 35 ? 'text-red-400' : 'text-green-400'}`}>
+                          {pct(wTotalAB, wTotalABSales) ? pct(wTotalAB, wTotalABSales) + '%' : '—'}
                         </span>
                       </td>
                       <td className="py-3 text-right text-white font-medium">{fmt(w.cogs?.total)}</td>
