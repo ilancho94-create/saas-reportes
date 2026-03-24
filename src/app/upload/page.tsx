@@ -1,246 +1,386 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 
-export default function Dashboard() {
-  const [user, setUser] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
-  const [restaurant, setRestaurant] = useState<any>(null)
-  const [reports, setReports] = useState<any[]>([])
-  const [latestSales, setLatestSales] = useState<any>(null)
-  const [latestLabor, setLatestLabor] = useState<any>(null)
-  const [latestWaste, setLatestWaste] = useState<any>(null)
-  const [trendData, setTrendData] = useState<any[]>([])
+const STEPS = [
+  {
+    id: 'sales',
+    label: 'Ventas',
+    icon: '💰',
+    system: 'Toast',
+    required: true,
+    where: 'Toast → Reports → Sales Summary',
+    instructions: [
+      'Abre Toast POS',
+      'Ve a Reports en el menú izquierdo',
+      'Click en "Sales Summary"',
+      'Selecciona el rango de fechas de tu semana',
+      'Click en Export y descarga el .xlsx',
+    ],
+    extracts: 'Ventas netas, brutas, órdenes, guests, categorías, áreas',
+  },
+  {
+    id: 'labor',
+    label: 'Labor',
+    icon: '👥',
+    system: 'Toast',
+    required: true,
+    where: 'Toast → Reports → Labor → Payroll Export',
+    instructions: [
+      'Abre Toast POS',
+      'Ve a Reports → Labor',
+      'Click en Payroll Export',
+      'Selecciona el rango de fechas de tu semana',
+      'Click en Export y descarga el .csv',
+    ],
+    extracts: 'Horas regulares, overtime, costo por empleado y puesto',
+  },
+  {
+    id: 'cogs',
+    label: 'Compras',
+    icon: '🛒',
+    system: 'R365',
+    required: false,
+    where: 'R365 → Reports → COGS Analysis by Vendor',
+    instructions: [
+      'Abre Restaurant365',
+      'Ve a Reports en el menú',
+      'Busca COGS Analysis by Vendor',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .xlsx',
+    ],
+    extracts: 'Compras por proveedor y categoría (Food, Liquor, Beer, etc)',
+  },
+  {
+    id: 'voids',
+    label: 'Voids',
+    icon: '❌',
+    system: 'Toast',
+    required: false,
+    where: 'Toast → Reports → Void Details',
+    instructions: [
+      'Abre Toast POS',
+      'Ve a Reports',
+      'Click en Void Details',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .csv',
+    ],
+    extracts: 'Items voideados, razón, servidor y valor',
+  },
+  {
+    id: 'discounts',
+    label: 'Descuentos',
+    icon: '🏷️',
+    system: 'Toast',
+    required: false,
+    where: 'Toast → Reports → Discount Details',
+    instructions: [
+      'Abre Toast POS',
+      'Ve a Reports',
+      'Click en Discount Details',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .csv',
+    ],
+    extracts: 'Descuentos por nombre, aplicaciones y monto total',
+  },
+  {
+    id: 'waste',
+    label: 'Waste',
+    icon: '🗑️',
+    system: 'R365',
+    required: false,
+    where: 'R365 → Inventory → Waste History',
+    instructions: [
+      'Abre Restaurant365',
+      'Ve a Inventory → Waste',
+      'Click en Waste History',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .xlsx',
+    ],
+    extracts: 'Items de merma, cantidad, costo unitario y total',
+  },
+  {
+    id: 'avt',
+    label: 'Actual vs Teórico',
+    icon: '📊',
+    system: 'R365',
+    required: false,
+    where: 'R365 → Reports → Actual vs Theoretical Analysis',
+    instructions: [
+      'Abre Restaurant365',
+      'Ve a Reports',
+      'Busca Actual vs Theoretical Analysis',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .xlsx',
+    ],
+    extracts: 'Faltantes y sobrantes de inventario con impacto en dólares',
+  },
+]
 
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else {
-        setUser(data.user)
-        loadData()
-      }
+export default function UploadPage() {
+  const router = useRouter()
+  const [currentStep, setCurrentStep] = useState(0)
+  const [week, setWeek] = useState('')
+  const [files, setFiles] = useState<Record<string, File>>({})
+  const [uploading, setUploading] = useState(false)
+  const [status, setStatus] = useState('')
+
+  const isLastStep = currentStep === STEPS.length
+  const step = STEPS[currentStep]
+  const completedRequired = files['sales'] || files['labor']
+
+  function handleFile(file: File) {
+    setFiles(prev => ({ ...prev, [step.id]: file }))
+  }
+
+  function goNext() {
+    setCurrentStep(prev => prev + 1)
+  }
+
+  function goBack() {
+    setCurrentStep(prev => prev - 1)
+  }
+
+  async function handleProcess() {
+    if (!week) return setStatus('Por favor selecciona la semana')
+    if (!completedRequired) return setStatus('Necesitas subir al menos Ventas o Labor')
+
+    setUploading(true)
+    setStatus('Procesando con IA...')
+
+    const formData = new FormData()
+    formData.append('week', week)
+    Object.entries(files).forEach(([type, file]) => {
+      formData.append(type, file)
     })
-  }, [])
 
-  async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('restaurant_id')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile?.restaurant_id) { setLoading(false); return }
-
-    // Cargar info del restaurante
-    const { data: rest } = await supabase
-      .from('restaurants')
-      .select('*, organizations(name)')
-      .eq('id', profile.restaurant_id)
-      .single()
-    setRestaurant(rest)
-
-    // Cargar últimos 8 reportes para tendencia
-    const { data: reps } = await supabase
-      .from('reports')
-      .select('*')
-      .eq('restaurant_id', profile.restaurant_id)
-      .order('created_at', { ascending: false })
-      .limit(8)
-
-    if (!reps || reps.length === 0) { setLoading(false); return }
-    setReports(reps)
-
-    // Cargar datos del reporte más reciente
-    const latest = reps[0]
-    const [s, l, w] = await Promise.all([
-      supabase.from('sales_data').select('*').eq('report_id', latest.id).single(),
-      supabase.from('labor_data').select('*').eq('report_id', latest.id).single(),
-      supabase.from('waste_data').select('*').eq('report_id', latest.id).single(),
-    ])
-    if (s.data) setLatestSales(s.data)
-    if (l.data) setLatestLabor(l.data)
-    if (w.data) setLatestWaste(w.data)
-
-    // Cargar ventas de todas las semanas para tendencia
-    const trendPromises = reps.map(r =>
-      supabase.from('sales_data').select('net_sales').eq('report_id', r.id).single()
-    )
-    const trendResults = await Promise.all(trendPromises)
-    const trend = reps.map((r, i) => ({
-      week: r.week.replace('2026-', ''),
-      ventas: trendResults[i].data?.net_sales || 0,
-    })).reverse()
-    setTrendData(trend)
-
-    setLoading(false)
+    try {
+      const res = await fetch('/api/process', { method: 'POST', body: formData })
+      const data = await res.json()
+      if (data.success) {
+        const warningKeys = Object.keys(data.warnings || {})
+        if (warningKeys.length > 0) {
+          const warningMsgs = warningKeys.map((k: string) => `• ${k.toUpperCase()}: ${data.warnings[k]}`).join('\n')
+          setStatus(`⚠️ Reporte procesado con advertencias de fecha:\n${warningMsgs}`)
+          setTimeout(() => router.push('/dashboard'), 6000)
+        } else {
+          setStatus('✅ Reporte procesado correctamente')
+          setTimeout(() => router.push('/dashboard'), 2000)
+        }
+      } else {
+        setStatus('❌ Error: ' + (data.error || 'Intenta de nuevo'))
+        setUploading(false)
+      }
+    } catch {
+      setStatus('❌ Error al conectar. Intenta de nuevo.')
+      setUploading(false)
+    }
   }
-
-  async function handleLogout() {
-    await supabase.auth.signOut()
-    window.location.href = '/'
-  }
-
-  function fmt(n: any) {
-    if (!n) return '—'
-    return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })
-  }
-
-  function pct(part: any, total: any) {
-    if (!part || !total) return '—'
-    return (Number(part) / Number(total) * 100).toFixed(1) + '%'
-  }
-
-  const prevReport = reports[1]
-
-  if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <p className="text-gray-400">Cargando...</p>
-    </div>
-  )
-
-  const hasData = latestSales || latestLabor
-  const latestReport = reports[0]
-
-  const menuItems = [
-    { label: 'Dashboard CEO', icon: '👑', desc: 'Vista ejecutiva completa', href: '/dashboard/ceo', color: 'from-yellow-900 to-yellow-950 border-yellow-800' },
-    { label: 'Ventas', icon: '💰', desc: 'Categorías, revenue centers, tendencias', href: '/dashboard/ventas', color: 'from-blue-900 to-blue-950 border-blue-800' },
-    { label: 'Labor', icon: '👥', desc: 'Horas, costo, overtime por puesto', href: '/dashboard/labor', color: 'from-purple-900 to-purple-950 border-purple-800' },
-    { label: 'Food Cost', icon: '🛒', desc: 'COGS por proveedor y categoría', href: '/dashboard/food-cost', color: 'from-orange-900 to-orange-950 border-orange-800' },
-    { label: 'Waste & AvT', icon: '📊', desc: 'Merma y varianza actual vs teórico', href: '/dashboard/waste', color: 'from-green-900 to-green-950 border-green-800' },
-    { label: 'Historial', icon: '📅', desc: 'Todos los reportes semanales', href: '/dashboard/history', color: 'from-gray-800 to-gray-900 border-gray-700' },
-  ]
 
   return (
     <div className="min-h-screen bg-gray-950">
-      <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-xl font-bold text-white">SaaS Reportes 🚀</span>
-          {restaurant && (
-            <>
-              <span className="text-gray-600">·</span>
-              <span className="text-gray-300 text-sm">{restaurant.name}</span>
-              <span className="text-gray-600 text-xs">({restaurant.organizations?.name})</span>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-gray-400 text-sm">{user?.email}</span>
-          <button
-            onClick={handleLogout}
-            className="text-sm text-gray-400 border border-gray-700 px-3 py-1.5 rounded-lg hover:border-gray-500 transition"
-          >
-            Salir
-          </button>
-        </div>
+      <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center gap-4">
+        <a href="/dashboard" className="text-gray-400 hover:text-white text-sm">← Volver al dashboard</a>
+        <span className="text-white font-semibold">Subir reporte semanal</span>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-10">
+      <main className="max-w-2xl mx-auto px-6 py-10">
 
-        {/* Header con semana actual */}
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-white">
-              {restaurant?.name || 'Mi Restaurante'}
-            </h1>
-            {hasData && (
-              <p className="text-gray-400 mt-1">
-                Última semana: <span className="text-white font-medium">{latestReport?.week}</span>
-                <span className="text-gray-600"> · {latestReport?.week_start} al {latestReport?.week_end}</span>
-              </p>
-            )}
-          </div>
-          <button
-            onClick={() => window.location.href = '/upload'}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
-          >
-            + Nuevo reporte
-          </button>
-        </div>
-
-        {hasData ? (
-          <>
-            {/* KPIs rápidos */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-sm mb-1">Ventas Netas</p>
-                <p className="text-2xl font-bold text-blue-400">{fmt(latestSales?.net_sales)}</p>
-                <p className="text-gray-600 text-xs mt-1">{latestSales?.orders} órdenes · {latestSales?.guests} guests</p>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-sm mb-1">% Labor</p>
-                <p className="text-2xl font-bold text-purple-400">
-                  {pct(latestLabor?.total_pay, latestSales?.net_sales)}
-                </p>
-                <p className="text-gray-600 text-xs mt-1">{fmt(latestLabor?.total_pay)} total</p>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-sm mb-1">Avg / Guest</p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {latestSales?.avg_per_guest ? '$' + Number(latestSales.avg_per_guest).toFixed(2) : '—'}
-                </p>
-                <p className="text-gray-600 text-xs mt-1">Avg orden: ${Number(latestSales?.avg_per_order || 0).toFixed(2)}</p>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-sm mb-1">Waste</p>
-                <p className="text-2xl font-bold text-green-400">{fmt(latestWaste?.total_cost)}</p>
-                <p className="text-gray-600 text-xs mt-1">{latestWaste?.items?.length || 0} items</p>
-              </div>
-            </div>
-
-            {/* Gráfica de tendencia */}
-            {trendData.length > 1 && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
-                <h2 className="text-white font-semibold mb-4">Tendencia de ventas</h2>
-                <ResponsiveContainer width="100%" height={180}>
-                  <LineChart data={trendData}>
-                    <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 12 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fill: '#6b7280', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + (v/1000).toFixed(0) + 'k'} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      labelStyle={{ color: '#9ca3af' }}
-                      formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Ventas']}
-                    />
-                    <Line type="monotone" dataKey="ventas" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 4 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center mb-8">
-            <div className="text-5xl mb-4">📂</div>
-            <h2 className="text-white font-semibold text-lg mb-2">No hay reportes aún</h2>
-            <p className="text-gray-500 mb-6">Sube tus archivos de Toast y R365 para empezar</p>
-            <button
-              onClick={() => window.location.href = '/upload'}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg"
-            >
-              Subir primer reporte
-            </button>
+        {currentStep === 0 && (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
+            <label className="text-white font-semibold block mb-1">
+              ¿Qué semana es este reporte?
+            </label>
+            <p className="text-gray-500 text-sm mb-3">
+              Selecciona el lunes de inicio de tu semana
+            </p>
+            <input
+              type="week"
+              value={week}
+              onChange={e => setWeek(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-blue-500"
+            />
           </div>
         )}
 
-        {/* Menú de secciones */}
-        <h2 className="text-white font-semibold mb-4">Explorar por sección</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {menuItems.map(item => (
-            <button
-              key={item.href}
-              onClick={() => window.location.href = item.href}
-              className={`bg-gradient-to-br ${item.color} border rounded-xl p-5 text-left hover:scale-[1.02] transition-all`}
-            >
-              <div className="text-2xl mb-2">{item.icon}</div>
-              <p className="text-white font-semibold">{item.label}</p>
-              <p className="text-gray-400 text-xs mt-1">{item.desc}</p>
-            </button>
+        <div className="flex items-center gap-1 mb-8">
+          {STEPS.map((s, i) => (
+            <div
+              key={s.id}
+              className={`h-2 flex-1 rounded-full transition-all ${
+                i < currentStep ? 'bg-blue-500' :
+                i === currentStep ? 'bg-blue-400' :
+                'bg-gray-800'
+              }`}
+            />
           ))}
         </div>
 
+        {!isLastStep ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+
+            <div className="px-6 py-5 border-b border-gray-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-3xl">{step.icon}</span>
+                <div>
+                  <p className="text-white font-bold text-lg">{step.label}</p>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    step.system === 'Toast'
+                      ? 'bg-orange-900 text-orange-300'
+                      : 'bg-blue-900 text-blue-300'
+                  }`}>
+                    {step.system}
+                  </span>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-gray-500 text-xs">Paso {currentStep + 1} de {STEPS.length}</p>
+                {step.required
+                  ? <span className="text-red-400 text-xs">Requerido</span>
+                  : <span className="text-gray-600 text-xs">Opcional</span>
+                }
+              </div>
+            </div>
+
+            <div className="px-6 py-5 border-b border-gray-800">
+              <p className="text-gray-400 text-sm font-medium mb-3">📍 Dónde descargarlo:</p>
+              <p className="text-blue-400 text-sm font-mono bg-gray-800 px-3 py-2 rounded-lg mb-4">
+                {step.where}
+              </p>
+              <ol className="space-y-2">
+                {step.instructions.map((inst, i) => (
+                  <li key={i} className="flex items-start gap-3 text-sm text-gray-400">
+                    <span className="bg-gray-800 text-gray-500 rounded-full w-5 h-5 flex items-center justify-center text-xs shrink-0 mt-0.5">
+                      {i + 1}
+                    </span>
+                    {inst}
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <div className="px-6 py-4 border-b border-gray-800 bg-gray-950">
+              <p className="text-gray-600 text-xs mb-1">La IA va a extraer:</p>
+              <p className="text-gray-400 text-sm">{step.extracts}</p>
+            </div>
+
+            <div className="px-6 py-5">
+              {files[step.id] ? (
+                <div className="flex items-center justify-between bg-green-950 border border-green-800 rounded-xl px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-green-400 text-xl">✓</span>
+                    <div>
+                      <p className="text-green-400 font-medium text-sm">Archivo listo</p>
+                      <p className="text-green-600 text-xs">{files[step.id].name}</p>
+                    </div>
+                  </div>
+                  <label className="cursor-pointer text-gray-400 text-sm hover:text-white">
+                    Cambiar
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv,.pdf"
+                      className="hidden"
+                      onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <label className="cursor-pointer block border-2 border-dashed border-gray-700 hover:border-gray-500 rounded-xl p-8 text-center transition">
+                  <div className="text-4xl mb-3">📎</div>
+                  <p className="text-white font-medium mb-1">Seleccionar archivo</p>
+                  <p className="text-gray-500 text-sm">Excel, CSV o PDF</p>
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv,.pdf"
+                    className="hidden"
+                    onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
+                  />
+                </label>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-800 flex justify-between">
+              <button
+                onClick={goBack}
+                disabled={currentStep === 0}
+                className="text-gray-400 hover:text-white disabled:opacity-0 transition text-sm"
+              >
+                ← Anterior
+              </button>
+              <div className="flex gap-3">
+                {!step.required && !files[step.id] && (
+                  <button
+                    onClick={goNext}
+                    className="text-gray-500 hover:text-gray-300 text-sm transition"
+                  >
+                    Omitir →
+                  </button>
+                )}
+                <button
+                  onClick={goNext}
+                  disabled={step.required && !files[step.id]}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2 rounded-lg text-sm font-medium transition"
+                >
+                  {files[step.id] ? 'Continuar →' : step.required ? 'Archivo requerido' : 'Continuar →'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+        ) : (
+
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+            <div className="px-6 py-5 border-b border-gray-800">
+              <h2 className="text-white font-bold text-lg">Resumen del reporte</h2>
+              <p className="text-gray-500 text-sm mt-1">Semana: {week || 'No seleccionada'}</p>
+            </div>
+
+            <div className="divide-y divide-gray-800">
+              {STEPS.map(s => (
+                <div key={s.id} className="px-6 py-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span>{s.icon}</span>
+                    <span className="text-gray-300 text-sm">{s.label}</span>
+                    {s.required && <span className="text-red-400 text-xs">requerido</span>}
+                  </div>
+                  {files[s.id]
+                    ? <span className="text-green-400 text-sm">✓ Listo</span>
+                    : <span className="text-gray-600 text-sm">— No subido</span>
+                  }
+                </div>
+              ))}
+            </div>
+
+            <div className="px-6 py-5 border-t border-gray-800">
+              {status && (
+                <div className={`mb-4 px-4 py-3 rounded-lg text-sm whitespace-pre-line ${
+                  status.startsWith('✅') ? 'bg-green-950 border border-green-800 text-green-400' :
+                  status.startsWith('⚠️') ? 'bg-yellow-950 border border-yellow-800 text-yellow-400' :
+                  status.startsWith('❌') ? 'bg-red-950 border border-red-800 text-red-400' :
+                  'bg-blue-950 border border-blue-800 text-blue-400'
+                }`}>
+                  {status}
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={goBack}
+                  className="text-gray-400 hover:text-white text-sm transition"
+                >
+                  ← Regresar
+                </button>
+                <button
+                  onClick={handleProcess}
+                  disabled={uploading || !completedRequired || !week}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white font-semibold py-3 rounded-xl transition"
+                >
+                  {uploading ? 'Procesando con IA...' : '🚀 Procesar reporte'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   )
