@@ -107,15 +107,15 @@ export default function FoodCostPage() {
   }
 
   function buildWeekData(w: any) {
-    const sales = w.sales?.net_sales || 0
+    const netSales = w.sales?.net_sales || 0
     const cat = w.cogs?.by_category || {}
     const categories = w.sales?.categories || []
-    const foodSales = getMappedSales(categories, 'food') || sales
-    const beerSales = getMappedSales(categories, 'beer') || sales
-    const liquorSales = getMappedSales(categories, 'liquor') || sales
-    const naBevSales = getMappedSales(categories, 'na_beverage') || sales
-    const wineSales = getMappedSales(categories, 'wine') || sales
-    const totalABSales = foodSales + beerSales + liquorSales + naBevSales + wineSales || sales
+    const foodSales = getMappedSales(categories, 'food') || netSales
+    const beerSales = getMappedSales(categories, 'beer') || netSales
+    const liquorSales = getMappedSales(categories, 'liquor') || netSales
+    const naBevSales = getMappedSales(categories, 'na_beverage') || netSales
+    const wineSales = getMappedSales(categories, 'wine') || netSales
+    const totalABSales = foodSales + beerSales + liquorSales + naBevSales + wineSales || netSales
     const totalAB = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
     return {
       week: w.report.week.replace('2026-', ''),
@@ -124,7 +124,7 @@ export default function FoodCostPage() {
       liquor: pct(cat.liquor, liquorSales) || 0,
       beer: pct(cat.beer, beerSales) || 0,
       wine: pct(cat.wine, wineSales) || 0,
-      general: pct(cat.general, sales) || 0,
+      general: pct(cat.general, netSales) || 0,
       totalAB: pct(totalAB, totalABSales) || 0,
       food$: cat.food || 0,
       na_beverage$: cat.na_beverage || 0,
@@ -134,7 +134,7 @@ export default function FoodCostPage() {
       general$: cat.general || 0,
       total$: w.cogs?.total || 0,
       foodSales, beerSales, liquorSales, naBevSales, wineSales,
-      totalABSales, totalAB, sales,
+      totalABSales, totalAB, netSales,
       cat,
     }
   }
@@ -163,7 +163,6 @@ export default function FoodCostPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -190,7 +189,6 @@ export default function FoodCostPage() {
         </div>
       </div>
 
-      {/* Selector de rango o comparación */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-3">
         {viewMode === 'range' ? (
           <div className="flex items-center gap-4">
@@ -244,7 +242,6 @@ export default function FoodCostPage() {
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
 
-        {/* Nota explicativa */}
         <div className="bg-orange-950 border border-orange-900 rounded-xl px-5 py-3 flex items-start gap-3">
           <span className="text-orange-400 text-lg">ℹ️</span>
           <div>
@@ -258,7 +255,6 @@ export default function FoodCostPage() {
 
         {viewMode === 'range' && latestData && (
           <>
-            {/* KPIs semana más reciente */}
             <div>
               <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
                 Semana más reciente — {latest?.report?.week}
@@ -281,13 +277,12 @@ export default function FoodCostPage() {
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <p className="text-gray-500 text-xs mb-1">% COGS Total</p>
                   <p className="text-2xl font-bold text-orange-400">
-                    {pct(latest?.cogs?.total, latestData.sales) ? pct(latest?.cogs?.total, latestData.sales) + '%' : '—'}
+                    {pct(latest?.cogs?.total, latestData.netSales) ? pct(latest?.cogs?.total, latestData.netSales) + '%' : '—'}
                   </p>
                   <p className="text-gray-600 text-xs mt-1">vs ventas netas</p>
                 </div>
               </div>
 
-              {/* Cards por categoría */}
               <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                 {CATEGORIES.map(cat => {
                   const catSales = {
@@ -296,8 +291,8 @@ export default function FoodCostPage() {
                     liquor: latestData.liquorSales,
                     na_beverage: latestData.naBevSales,
                     wine: latestData.wineSales,
-                    general: latestData.sales,
-                  }[cat.key] || latestData.sales
+                    general: latestData.netSales,
+                  }[cat.key] || latestData.netSales
                   const val = pct(latestData.cat[cat.key], catSales)
                   const overMeta = cat.meta && val && val > cat.meta
                   return (
@@ -323,7 +318,6 @@ export default function FoodCostPage() {
               </div>
             </div>
 
-            {/* Leyenda interactiva */}
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-gray-500 text-xs">Mostrar/ocultar:</span>
               {CATEGORIES.map(cat => (
@@ -345,7 +339,6 @@ export default function FoodCostPage() {
               ))}
             </div>
 
-            {/* Gráfica categoría seleccionada */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-1">% {activeCat?.label} — Costo de Compra</h2>
               <p className="text-gray-500 text-xs mb-4">
@@ -365,7 +358,6 @@ export default function FoodCostPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Gráfica todas las categorías */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-1">Total A&B % — Costo de Compra por semana</h2>
               <p className="text-gray-500 text-xs mb-4">Haz click en los botones arriba para mostrar/ocultar categorías</p>
@@ -391,7 +383,6 @@ export default function FoodCostPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Gráfica en $ */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-1">Compras en $ por categoría</h2>
               <p className="text-gray-500 text-xs mb-4">Desglose semanal de compras a proveedores</p>
@@ -409,7 +400,6 @@ export default function FoodCostPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Tabla comparativa */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Comparativo por semana — Costo de Compra</h2>
               <div className="overflow-x-auto">
@@ -451,7 +441,6 @@ export default function FoodCostPage() {
           </>
         )}
 
-        {/* MODO COMPARACIÓN */}
         {viewMode === 'compare' && weekAData && weekBData && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -467,8 +456,8 @@ export default function FoodCostPage() {
                         liquor: data.liquorSales,
                         na_beverage: data.naBevSales,
                         wine: data.wineSales,
-                        general: data.sales,
-                      }[cat.key] || data.sales
+                        general: data.netSales,
+                      }[cat.key] || data.netSales
                       const val = pct(data.cat[cat.key], catSales)
                       const overMeta = cat.meta && val && val > cat.meta
                       return (
@@ -508,15 +497,14 @@ export default function FoodCostPage() {
               ))}
             </div>
 
-            {/* Diferencias */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Diferencias {compareA} vs {compareB}</h2>
               <div className="space-y-3">
                 {CATEGORIES.map(cat => {
                   const getSales = (d: any) => ({
                     food: d.foodSales, beer: d.beerSales, liquor: d.liquorSales,
-                    na_beverage: d.naBevSales, wine: d.wineSales, general: d.sales,
-                  }[cat.key] || d.sales)
+                    na_beverage: d.naBevSales, wine: d.wineSales, general: d.netSales,
+                  }[cat.key] || d.netSales)
                   const valA = pct(weekAData.cat[cat.key], getSales(weekAData))
                   const valB = pct(weekBData.cat[cat.key], getSales(weekBData))
                   if (!valA && !valB) return null
