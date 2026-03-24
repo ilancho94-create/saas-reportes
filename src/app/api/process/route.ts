@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
 
-    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'avt']
+    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'avt']
 
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
@@ -209,7 +209,19 @@ ${dateInstruction}
   "items": [{"name": string, "uom": string, "qty": número, "unit_cost": número, "total": número, "category": string, "comment": string}],
   "date_warning": string | null
 }`,
-
+inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
+Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
+El reporte tiene una sección "Total by Inventory Account" con Current Value y Previous Value.
+${dateInstruction}
+{
+  "count_date": "YYYY-MM-DD",
+  "by_account": [
+    {"account": string, "current_value": número, "previous_value": número, "adjustment": número}
+  ],
+  "grand_total_current": número,
+  "grand_total_previous": número,
+  "date_warning": string | null
+}`,
     avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365 y extrae datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 FALTANTE = varianza POSITIVA. SOBRANTE = varianza NEGATIVA.
@@ -252,6 +264,7 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
     voids: 'voids_data',
     discounts: 'discounts_data',
     waste: 'waste_data',
+    inventory: 'inventory_data',
     avt: 'avt_data',
   }
 
@@ -284,6 +297,11 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
   } else if (fileType === 'waste') {
     insertData.total_cost = data.total_cost
     insertData.items = data.items
+  } else if (fileType === 'inventory') {
+    insertData.count_date = data.count_date
+    insertData.by_account = data.by_account
+    insertData.grand_total_current = data.grand_total_current
+    insertData.grand_total_previous = data.grand_total_previous
   } else if (fileType === 'voids') {
     insertData.total = data.total
     insertData.items = data.items

@@ -101,6 +101,22 @@ const STEPS = [
     extracts: 'Items de merma, cantidad, costo unitario y total',
   },
   {
+  id: 'inventory',
+  label: 'Inventory Count',
+  icon: '📦',
+  system: 'R365',
+  required: false,
+  where: 'R365 → Inventory → Inventory Count Review',
+  instructions: [
+    'Abre Restaurant365',
+    'Ve a Inventory',
+    'Click en Inventory Count Review',
+    'Selecciona la fecha del conteo (lunes de tu semana)',
+    'Exporta como .xlsx',
+  ],
+  extracts: 'Inventario actual y anterior por categoría para calcular costo de uso',
+},
+  {
     id: 'avt',
     label: 'Actual vs Teórico',
     icon: '📊',
