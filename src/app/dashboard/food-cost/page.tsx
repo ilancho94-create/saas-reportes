@@ -134,7 +134,7 @@ export default function FoodCostPage() {
       general$: cat.general || 0,
       total$: w.cogs?.total || 0,
       foodSales, beerSales, liquorSales, naBevSales, wineSales,
-      totalABSales, totalAB, netSales,
+      totalABSales, totalAB,
       cat,
     }
   }
