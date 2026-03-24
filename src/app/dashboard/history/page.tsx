@@ -15,29 +15,29 @@ export default function HistoryPage() {
   }, [])
 
   async function loadReports() {
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('restaurant_id')
-    .eq('id', user.id)
-    .single()
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('restaurant_id')
+      .eq('id', user.id)
+      .single()
 
-  if (!profile?.restaurant_id) {
+    if (!profile?.restaurant_id) {
+      setLoading(false)
+      return
+    }
+
+    const { data } = await supabase
+      .from('reports')
+      .select(`*, sales_data (net_sales, orders, guests), labor_data (total_pay, total_hours, total_ot_hours), waste_data (total_cost)`)
+      .eq('restaurant_id', profile.restaurant_id)
+      .order('created_at', { ascending: false })
+
+    setReports(data || [])
     setLoading(false)
-    return
   }
-
-  const { data } = await supabase
-    .from('reports')
-    .select(`*, sales_data (net_sales, orders, guests), labor_data (total_pay, total_hours, total_ot_hours), waste_data (total_cost)`)
-    .eq('restaurant_id', profile.restaurant_id)
-    .order('created_at', { ascending: false })
-
-  setReports(data || [])
-  setLoading(false)
-}
 
   function fmt(n: any) {
     if (!n) return '—'
@@ -54,7 +54,7 @@ export default function HistoryPage() {
     <div className="min-h-screen bg-gray-950">
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center gap-4">
         <button
-          onClick={() => window.location.href = `/dashboard/week/${report.id}`}
+          onClick={() => window.location.href = '/dashboard'}
           className="text-gray-400 hover:text-white text-sm"
         >
           ← Dashboard
