@@ -16,10 +16,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       { label: 'Dashboard CEO', icon: '👑', href: '/dashboard/ceo' },
     ]},
     { section: 'ANÁLISIS', items: [
-      { label: 'Ventas', icon: '💰', href: '/dashboard/ventas' },
-      { label: 'Labor', icon: '👥', href: '/dashboard/labor' },
-      { label: 'Food Cost', icon: '🛒', href: '/dashboard/food-cost' },
-      { label: 'Waste y AvT', icon: '📊', href: '/dashboard/waste' },
+  { label: 'Ventas', icon: '💰', href: '/dashboard/ventas' },
+  { label: 'Labor', icon: '👥', href: '/dashboard/labor' },
+  { label: 'Food Cost', icon: '🛒', href: '/dashboard/food-cost' },
+  { label: 'Costo de Uso', icon: '📦', href: '/dashboard/costo-uso' },
+  { label: 'Waste y AvT', icon: '📊', href: '/dashboard/waste' },
+]},
     ]},
     { section: 'REPORTES', items: [
       { label: 'Historial', icon: '📅', href: '/dashboard/history' },
