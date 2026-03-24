@@ -32,6 +32,7 @@ export default function CostoUsoPage() {
   const [alerts, setAlerts] = useState<string[]>([])
   const [rangeStart, setRangeStart] = useState(0)
   const [rangeEnd, setRangeEnd] = useState(99)
+  const [operatingDays, setOperatingDays] = useState(6)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -51,6 +52,7 @@ export default function CostoUsoPage() {
     const { data: rest } = await supabase
       .from('restaurants').select('*, organizations(name)').eq('id', profile.restaurant_id).single()
     setRestaurant(rest)
+    setOperatingDays(rest?.operating_days || 6)
 
     const { data: maps } = await supabase
       .from('category_mappings').select('*').eq('restaurant_id', profile.restaurant_id)
@@ -65,12 +67,13 @@ export default function CostoUsoPage() {
     if (!reports || reports.length === 0) { setLoading(false); return }
 
     const weeksData = await Promise.all(reports.map(async (r) => {
-      const [s, c, inv] = await Promise.all([
+      const [s, c, inv, pm] = await Promise.all([
         supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
         supabase.from('cogs_data').select('*').eq('report_id', r.id).single(),
         supabase.from('inventory_data').select('*').eq('report_id', r.id).single(),
+        supabase.from('product_mix_data').select('*').eq('report_id', r.id).single(),
       ])
-      return { report: r, sales: s.data, cogs: c.data, inventory: inv.data }
+      return { report: r, sales: s.data, cogs: c.data, inventory: inv.data, productMix: pm.data }
     }))
 
     const sorted = weeksData.reverse()
@@ -84,18 +87,14 @@ export default function CostoUsoPage() {
       const prev = sorted[i - 1]
       const curr = sorted[i]
       if (prev.inventory && curr.inventory) {
-        const prevCurrent = prev.inventory.grand_total_current
-        const currPrevious = curr.inventory.grand_total_previous
-        if (prevCurrent && currPrevious) {
-          const diff = Math.abs(Number(prevCurrent) - Number(currPrevious))
-          if (diff > 10) {
-            newAlerts.push(
-              `⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: ` +
-              `inv. final anterior $${Number(prevCurrent).toLocaleString('en-US', { maximumFractionDigits: 0 })} ` +
-              `vs inv. inicial actual $${Number(currPrevious).toLocaleString('en-US', { maximumFractionDigits: 0 })} ` +
-              `(diferencia: $${diff.toFixed(0)})`
-            )
-          }
+        const diff = Math.abs(
+          Number(prev.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous)
+        )
+        if (diff > 10) {
+          newAlerts.push(
+            `⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: ` +
+            `diferencia de $${diff.toFixed(0)} en inventario`
+          )
         }
       }
     }
@@ -106,6 +105,11 @@ export default function CostoUsoPage() {
   function fmt(n: any) {
     if (n === null || n === undefined) return '—'
     return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })
+  }
+
+  function fmtPct(n: any) {
+    if (n === null || n === undefined) return '—'
+    return Number(n).toFixed(1) + '%'
   }
 
   function pct(part: any, total: any) {
@@ -129,18 +133,11 @@ export default function CostoUsoPage() {
     if (!invAccounts) return { current: 0, previous: 0 }
     const accounts = Object.entries(ACCOUNT_MAP)
       .filter(([_, cat]) => cat === categoryKey)
-      .map(([acc, _]) => acc)
-    const current = invAccounts
-      .filter(a => accounts.includes(a.account))
-      .reduce((sum, a) => sum + Number(a.current_value || 0), 0)
-    const previous = invAccounts
-      .filter(a => accounts.includes(a.account))
-      .reduce((sum, a) => sum + Number(a.previous_value || 0), 0)
-    return { current, previous }
-  }
-
-  function calcUsoCost(prevInv: number, purchases: number, currInv: number) {
-    return prevInv + purchases - currInv
+      .map(([acc]) => acc)
+    return {
+      current: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.current_value || 0), 0),
+      previous: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.previous_value || 0), 0),
+    }
   }
 
   function buildWeekData(w: any) {
@@ -148,32 +145,62 @@ export default function CostoUsoPage() {
     const cogsCat = w.cogs?.by_category || {}
     const invAccounts = w.inventory?.by_account || []
     const salesCategories = w.sales?.categories || []
+    const theoCostByCat = w.productMix?.theo_cost_by_category || {}
+    const hasInventory = invAccounts.length > 0
 
-    const result: any = { week: w.report.week.replace('2026-', ''), netSales }
+    const result: any = {
+      week: w.report.week.replace('2026-', ''),
+      netSales,
+      hasInventory,
+      hasProductMix: !!w.productMix,
+    }
 
     let totalUsoCost = 0
+    let totalTheoCost = 0
     let totalABSales = 0
 
     CATEGORIES.forEach(cat => {
       const inv = getInventoryByCategory(invAccounts, cat.key)
       const purchases = cogsCat[cat.key] || 0
-      const uso = calcUsoCost(inv.previous, purchases, inv.current)
-      const catSales = getMappedSales(salesCategories, cat.key) || netSales
-      const usoPct = pct(uso, catSales)
+      const uso = hasInventory ? Math.max((inv.previous + purchases - inv.current), 0) : 0
+      const catSales = getMappedSales(salesCategories, cat.key) || 0
+      const theoCost = theoCostByCat[cat.key] || 0
 
-      result[cat.key + '_uso'] = uso > 0 ? uso : 0
-      result[cat.key + '_uso_pct'] = usoPct || 0
+      const realPct = catSales > 0 ? pct(uso, catSales) : null
+      const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
+      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
+        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2))
+        : null
+
+      // Días de inventario = ((Inv Final + Inv Inicial) / 2) / Uso * días operación
+      const diasInv = uso > 0
+        ? parseFloat((((inv.current + inv.previous) / 2) / uso * operatingDays).toFixed(1))
+        : null
+
+      result[cat.key + '_uso'] = uso
+      result[cat.key + '_uso_pct'] = realPct || 0
+      result[cat.key + '_theo_pct'] = mixPct || 0
+      result[cat.key + '_variacion'] = variacionDolares
+      result[cat.key + '_dias_inv'] = diasInv
       result[cat.key + '_inv_current'] = inv.current
       result[cat.key + '_inv_previous'] = inv.previous
       result[cat.key + '_purchases'] = purchases
+      result[cat.key + '_sales'] = catSales
 
       if (uso > 0) totalUsoCost += uso
-      totalABSales += catSales !== netSales ? catSales : 0
+      if (theoCost > 0) totalTheoCost += theoCost
+      if (catSales > 0) totalABSales += catSales
     })
 
     result.totalUsoCost = totalUsoCost
-    result.totalUsoPct = pct(totalUsoCost, totalABSales || netSales) || 0
-    result.hasInventory = invAccounts.length > 0
+    result.totalTheoCost = totalTheoCost
+    result.totalABSales = totalABSales
+    result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
+    result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
+    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
+      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2))
+      : null
+
     return result
   }
 
@@ -181,6 +208,7 @@ export default function CostoUsoPage() {
   const chartData = filtered.map(buildWeekData)
   const latest = filtered[filtered.length - 1]
   const latestData = latest ? buildWeekData(latest) : null
+  const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
 
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -188,16 +216,18 @@ export default function CostoUsoPage() {
     </div>
   )
 
-  const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
-
   return (
     <div className="min-h-screen bg-gray-950">
+      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-white font-bold text-lg">📦 Costo de Uso</h1>
             <span className="bg-blue-900 text-blue-400 text-xs px-2 py-0.5 rounded-full font-medium">
               Inventario Real
+            </span>
+            <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">
+              {operatingDays} días/semana
             </span>
           </div>
           <p className="text-gray-500 text-xs mt-0.5">
@@ -236,31 +266,28 @@ export default function CostoUsoPage() {
           <div>
             <p className="text-blue-300 text-sm font-medium">Costo de Uso de Inventario</p>
             <p className="text-blue-400 text-xs mt-0.5">
-              Calcula el costo <strong>real</strong> de lo que se consumió:
-              <strong> Inventario Anterior + Compras − Inventario Actual</strong>.
-              Requiere subir el reporte Inventory Count Review cada semana.
+              <strong>% Real</strong> = (Inv. Anterior + Compras − Inv. Actual) / Ventas ·
+              <strong> % P.Mix</strong> = Costo teórico según lo vendido (Menu Item Analysis) ·
+              <strong> Variación $</strong> = (% Real − % P.Mix) × Ventas ·
+              <strong> Días Inv</strong> = ((Inv. Final + Inv. Inicial) / 2) / Uso × {operatingDays} días
             </p>
           </div>
         </div>
 
-        {/* Alertas de ajuste */}
-        {alerts.length > 0 && (
-          <div className="space-y-2">
-            {alerts.map((alert, i) => (
-              <div key={i} className="bg-yellow-950 border border-yellow-800 rounded-xl px-5 py-3 flex items-start gap-3">
-                <span className="text-yellow-400 text-lg shrink-0">⚠️</span>
-                <p className="text-yellow-300 text-sm">{alert}</p>
-              </div>
-            ))}
+        {/* Alertas */}
+        {alerts.length > 0 && alerts.map((alert, i) => (
+          <div key={i} className="bg-yellow-950 border border-yellow-800 rounded-xl px-5 py-3 flex items-start gap-3">
+            <span className="text-yellow-400 shrink-0">⚠️</span>
+            <p className="text-yellow-300 text-sm">{alert}</p>
           </div>
-        )}
+        ))}
 
         {!hasInventory ? (
           <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">
             <div className="text-5xl mb-4">📦</div>
             <h2 className="text-white font-semibold text-lg mb-2">No hay datos de inventario</h2>
             <p className="text-gray-500 mb-6">
-              Sube el reporte <strong>Inventory Count Review</strong> de R365 junto con tu reporte semanal.
+              Sube el <strong>Inventory Count Review</strong> de R365 para ver el costo de uso real.
             </p>
             <button
               onClick={() => window.location.href = '/upload'}
@@ -277,69 +304,170 @@ export default function CostoUsoPage() {
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
                   Semana más reciente — {latest?.report?.week}
                 </p>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 md:col-span-1">
-                    <p className="text-gray-500 text-xs mb-1">Total Costo de Uso A&B</p>
+
+                {/* Resumen Total A&B */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                    <p className="text-gray-500 text-xs mb-1">% Costo Real A&B</p>
                     <p className="text-3xl font-bold text-blue-400">
-                      {latestData.totalUsoPct ? latestData.totalUsoPct + '%' : '—'}
+                      {fmtPct(latestData.totalRealPct)}
                     </p>
-                    <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalUsoCost)} costo real</p>
+                    <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalUsoCost)} uso real</p>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                    <p className="text-gray-500 text-xs mb-1">% Costo P.Mix</p>
+                    <p className="text-3xl font-bold text-green-400">
+                      {fmtPct(latestData.totalMixPct)}
+                    </p>
+                    <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalTheoCost)} teórico</p>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                    <p className="text-gray-500 text-xs mb-1">Variación $</p>
+                    <p className={`text-3xl font-bold ${latestData.totalVariacion > 0 ? 'text-red-400' : latestData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
+                      {latestData.totalVariacion !== null ? (latestData.totalVariacion > 0 ? '+' : '') + fmt(latestData.totalVariacion) : '—'}
+                    </p>
+                    <p className="text-gray-600 text-xs mt-1">
+                      {latestData.totalVariacion > 0 ? 'sobre lo teórico' : latestData.totalVariacion < 0 ? 'bajo lo teórico' : ''}
+                    </p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
                     <p className="text-2xl font-bold text-white">
                       {fmt(latest?.inventory?.grand_total_current)}
                     </p>
-                    <p className="text-gray-600 text-xs mt-1">valor al cierre de semana</p>
-                  </div>
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <p className="text-gray-500 text-xs mb-1">Inv. Anterior Total</p>
-                    <p className="text-2xl font-bold text-white">
-                      {fmt(latest?.inventory?.grand_total_previous)}
-                    </p>
-                    <p className="text-gray-600 text-xs mt-1">valor al inicio de semana</p>
+                    <p className="text-gray-600 text-xs mt-1">cierre de semana</p>
                   </div>
                 </div>
 
-                {/* Cards por categoría */}
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                  {CATEGORIES.map(cat => {
-                    const usoPct = latestData[cat.key + '_uso_pct']
-                    const uso$ = latestData[cat.key + '_uso']
-                    const overMeta = cat.meta && usoPct && usoPct > cat.meta
-                    return (
-                      <div
-                        key={cat.key}
-                        className="bg-gray-900 border border-gray-800 rounded-xl p-4"
-                      >
-                        <p className="text-gray-500 text-xs mb-1">{cat.label}</p>
-                        <p className="text-lg font-bold" style={{ color: cat.color }}>
-                          {usoPct ? usoPct + '%' : '—'}
-                        </p>
-                        <p className="text-gray-600 text-xs">{fmt(uso$)}</p>
-                        <div className="mt-2 space-y-1 text-xs text-gray-600">
-                          <p>Inv ant: {fmt(latestData[cat.key + '_inv_previous'])}</p>
-                          <p>Compras: {fmt(latestData[cat.key + '_purchases'])}</p>
-                          <p>Inv act: {fmt(latestData[cat.key + '_inv_current'])}</p>
-                        </div>
-                        {cat.meta && usoPct && (
-                          <p className={`text-xs mt-2 ${overMeta ? 'text-red-400' : 'text-green-400'}`}>
-                            {overMeta ? '▲ sobre meta' : '✓ en meta'}
-                          </p>
-                        )}
-                      </div>
-                    )
-                  })}
+                {/* Tabla detalle por categoría */}
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                  <h2 className="text-white font-semibold mb-4">Detalle por categoría — {latest?.report?.week}</h2>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-800">
+                          <th className="text-left text-gray-500 text-xs pb-3 font-medium">Categoría</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Inv. Ant.</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Compras</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Inv. Act.</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Uso $</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">% Real</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Días Inv</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {CATEGORIES.map(cat => {
+                          const realPct = latestData[cat.key + '_uso_pct']
+                          const mixPct = latestData[cat.key + '_theo_pct']
+                          const variacion = latestData[cat.key + '_variacion']
+                          const dias = latestData[cat.key + '_dias_inv']
+                          const overMeta = cat.meta && realPct && realPct > cat.meta
+                          return (
+                            <tr key={cat.key} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                              <td className="py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color }} />
+                                  <span className="text-gray-300 text-sm">{cat.label}</span>
+                                </div>
+                              </td>
+                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_inv_previous'])}</td>
+                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_purchases'])}</td>
+                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_inv_current'])}</td>
+                              <td className="py-3 text-right text-white text-sm font-medium">{fmt(latestData[cat.key + '_uso'])}</td>
+                              <td className="py-3 text-right text-gray-400 text-sm">{fmt(latestData[cat.key + '_sales'])}</td>
+                              <td className="py-3 text-right">
+                                <span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>
+                                  {fmtPct(realPct)}
+                                </span>
+                              </td>
+                              <td className="py-3 text-right text-blue-400 text-sm">
+                                {fmtPct(mixPct)}
+                              </td>
+                              <td className="py-3 text-right">
+                                {variacion !== null ? (
+                                  <span className={`text-sm font-medium ${variacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                    {variacion > 0 ? '+' : ''}{fmt(variacion)}
+                                  </span>
+                                ) : <span className="text-gray-600">—</span>}
+                              </td>
+                              <td className="py-3 text-right text-gray-400 text-sm">
+                                {dias !== null ? dias + 'd' : '—'}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                        {/* Total row */}
+                        <tr className="border-t-2 border-gray-700">
+                          <td className="py-3 text-white font-bold">Total A&B</td>
+                          <td colSpan={3} />
+                          <td className="py-3 text-right text-white font-bold">{fmt(latestData.totalUsoCost)}</td>
+                          <td className="py-3 text-right text-white font-bold">{fmt(latestData.totalABSales)}</td>
+                          <td className="py-3 text-right">
+                            <span className={`font-bold ${latestData.totalRealPct && latestData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>
+                              {fmtPct(latestData.totalRealPct)}
+                            </span>
+                          </td>
+                          <td className="py-3 text-right text-blue-400 font-bold">{fmtPct(latestData.totalMixPct)}</td>
+                          <td className="py-3 text-right">
+                            {latestData.totalVariacion !== null ? (
+                              <span className={`font-bold ${latestData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                {latestData.totalVariacion > 0 ? '+' : ''}{fmt(latestData.totalVariacion)}
+                              </span>
+                            ) : '—'}
+                          </td>
+                          <td />
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Gráfica costo de uso % por semana */}
+            {/* Gráficas tendencia */}
             {chartData.filter(d => d.hasInventory).length > 1 && (
               <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                    <h2 className="text-white font-semibold mb-1">% Real vs % P.Mix por semana</h2>
+                    <p className="text-gray-500 text-xs mb-4">Total A&B</p>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={chartData.filter(d => d.hasInventory)}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                        <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                        <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
+                        <Line type="monotone" dataKey="totalRealPct" name="% Real" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
+                        <Line type="monotone" dataKey="totalMixPct" name="% P.Mix" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                    <h2 className="text-white font-semibold mb-1">Variación $ por semana</h2>
+                    <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno)</p>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={chartData.filter(d => d.hasInventory)}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                        <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
+                        <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]}
+                          fill="#ef4444"
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Gráfica % Real por categoría */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                  <h2 className="text-white font-semibold mb-1">Costo de Uso % por semana</h2>
-                  <p className="text-gray-500 text-xs mb-4">Tendencia por categoría</p>
+                  <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
+                  <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
                   <ResponsiveContainer width="100%" height={220}>
                     <LineChart data={chartData.filter(d => d.hasInventory)}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -361,42 +489,24 @@ export default function CostoUsoPage() {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
-
-                {/* Gráfica costo de uso $ */}
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                  <h2 className="text-white font-semibold mb-1">Costo de Uso $ por semana</h2>
-                  <p className="text-gray-500 text-xs mb-4">Desglose en dólares</p>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={chartData.filter(d => d.hasInventory)}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                      <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + (v/1000).toFixed(0) + 'k'} />
-                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => ['$' + Number(v).toLocaleString(), name]} />
-                      <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
-                      {CATEGORIES.map(cat => (
-                        <Bar key={cat.key} dataKey={cat.key + '_uso'} name={cat.label} fill={cat.color} stackId="a" />
-                      ))}
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
               </>
             )}
 
-            {/* Tabla comparativa */}
+            {/* Tabla histórica */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Detalle por semana — Costo de Uso</h2>
+              <h2 className="text-white font-semibold mb-4">Histórico por semana</h2>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-800">
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">Semana</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Food %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Liquor %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Beer %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">NA Bev %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Wine %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total Uso $</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">% Real</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Uso $</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas A&B</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Inventario</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">P.Mix</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -405,16 +515,31 @@ export default function CostoUsoPage() {
                       return (
                         <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
                           <td className="py-3 text-gray-300">{w.report.week}</td>
-                          <td className="py-3 text-right text-orange-400">{d.food_uso_pct ? d.food_uso_pct + '%' : '—'}</td>
-                          <td className="py-3 text-right text-purple-400">{d.liquor_uso_pct ? d.liquor_uso_pct + '%' : '—'}</td>
-                          <td className="py-3 text-right text-yellow-400">{d.beer_uso_pct ? d.beer_uso_pct + '%' : '—'}</td>
-                          <td className="py-3 text-right text-cyan-400">{d.na_beverage_uso_pct ? d.na_beverage_uso_pct + '%' : '—'}</td>
-                          <td className="py-3 text-right text-pink-400">{d.wine_uso_pct ? d.wine_uso_pct + '%' : '—'}</td>
-                          <td className="py-3 text-right text-white font-medium">{fmt(d.totalUsoCost)}</td>
+                          <td className="py-3 text-right">
+                            <span className={`font-medium ${d.totalRealPct && d.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>
+                              {fmtPct(d.totalRealPct)}
+                            </span>
+                          </td>
+                          <td className="py-3 text-right text-blue-400">{fmtPct(d.totalMixPct)}</td>
+                          <td className="py-3 text-right">
+                            {d.totalVariacion !== null ? (
+                              <span className={`font-medium ${d.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                {d.totalVariacion > 0 ? '+' : ''}{fmt(d.totalVariacion)}
+                              </span>
+                            ) : <span className="text-gray-600">—</span>}
+                          </td>
+                          <td className="py-3 text-right text-white">{fmt(d.totalUsoCost)}</td>
+                          <td className="py-3 text-right text-gray-400">{fmt(d.totalABSales)}</td>
                           <td className="py-3 text-right">
                             {d.hasInventory
-                              ? <span className="text-green-400 text-xs">✓ Subido</span>
-                              : <span className="text-gray-600 text-xs">— Sin datos</span>
+                              ? <span className="text-green-400 text-xs">✓</span>
+                              : <span className="text-gray-600 text-xs">—</span>
+                            }
+                          </td>
+                          <td className="py-3 text-right">
+                            {d.hasProductMix
+                              ? <span className="text-green-400 text-xs">✓</span>
+                              : <span className="text-gray-600 text-xs">—</span>
                             }
                           </td>
                         </tr>
