@@ -26,10 +26,20 @@ export async function POST(request: NextRequest) {
       authHeader?.replace('Bearer ', '') || ''
     )
 
-    // Por ahora usamos un restaurant_id fijo para probar
-    // En sesión 4 lo conectamos al usuario real
-    const restaurant_id = '00000000-0000-0000-0000-000000000001'
+    // Obtener restaurant_id real del perfil del usuario
+let restaurant_id = '00000000-0000-0000-0000-000000000001' // fallback
 
+if (user) {
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('restaurant_id')
+    .eq('id', user.id)
+    .single()
+  
+  if (profile?.restaurant_id) {
+    restaurant_id = profile.restaurant_id
+  }
+}
     // Crear el reporte en la base de datos
     const { data: report, error: reportError } = await supabase
       .from('reports')

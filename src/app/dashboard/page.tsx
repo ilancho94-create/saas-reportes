@@ -22,9 +22,24 @@ export default function Dashboard() {
   }, [])
 
   async function loadLatestReport() {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('restaurant_id')
+      .eq('id', user.id)
+      .single()
+
+    if (!profile?.restaurant_id) {
+      setLoading(false)
+      return
+    }
+
     const { data: reports } = await supabase
       .from('reports')
       .select('*')
+      .eq('restaurant_id', profile.restaurant_id)
       .order('created_at', { ascending: false })
       .limit(1)
 
@@ -70,15 +85,15 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-gray-950">
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
-<div className="flex items-center gap-6">
-  <span className="text-xl font-bold text-white">SaaS Reportes 🚀</span>
-  <button
-    onClick={() => window.location.href = '/dashboard/history'}
-    className="text-gray-400 hover:text-white text-sm transition"
-  >
-    Historial
-  </button>
-</div>
+        <div className="flex items-center gap-6">
+          <span className="text-xl font-bold text-white">SaaS Reportes 🚀</span>
+          <button
+            onClick={() => window.location.href = '/dashboard/history'}
+            className="text-gray-400 hover:text-white text-sm transition"
+          >
+            Historial
+          </button>
+        </div>
         <div className="flex items-center gap-4">
           <span className="text-gray-400 text-sm">{user?.email}</span>
           <button
@@ -166,14 +181,14 @@ export default function Dashboard() {
                         <div className="w-24 bg-gray-800 rounded-full h-1.5">
                           <div
                             className="bg-blue-500 h-1.5 rounded-full"
-                            style={{ width: `${Math.min(Number(cat.pct) * 100, 100)}%` }}
+                            style={{ width: `${Math.min(Number(cat.pct), 100)}%` }}
                           />
                         </div>
                         <span className="text-white text-sm font-medium w-16 text-right">
                           {fmt(cat.net)}
                         </span>
                         <span className="text-gray-600 text-xs w-10 text-right">
-                          {(Number(cat.pct) * 100).toFixed(1)}%
+                          {Number(cat.pct).toFixed(1)}%
                         </span>
                       </div>
                     </div>
