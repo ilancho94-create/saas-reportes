@@ -15,13 +15,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       { label: 'Inicio', icon: '🏠', href: '/dashboard' },
       { label: 'Dashboard CEO', icon: '👑', href: '/dashboard/ceo' },
     ]},
-    { section: 'ANÁLISIS', items: [
-  { label: 'Ventas', icon: '💰', href: '/dashboard/ventas' },
-  { label: 'Labor', icon: '👥', href: '/dashboard/labor' },
-  { label: 'Food Cost', icon: '🛒', href: '/dashboard/food-cost' },
-  { label: 'Costo de Uso', icon: '📦', href: '/dashboard/costo-uso' },
-  { label: 'Waste y AvT', icon: '📊', href: '/dashboard/waste' },
-]},
+    { section: 'ANALISIS', items: [
+      { label: 'Ventas', icon: '💰', href: '/dashboard/ventas' },
+      { label: 'Labor', icon: '👥', href: '/dashboard/labor' },
+      { label: 'Food Cost', icon: '🛒', href: '/dashboard/food-cost' },
+      { label: 'Costo de Uso', icon: '📦', href: '/dashboard/costo-uso' },
+      { label: 'Waste y AvT', icon: '📊', href: '/dashboard/waste' },
     ]},
     { section: 'REPORTES', items: [
       { label: 'Historial', icon: '📅', href: '/dashboard/history' },
@@ -64,7 +63,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="min-h-screen bg-gray-950 flex">
-
       <aside
         className={
           (collapsed ? 'w-16' : 'w-56') +
@@ -105,7 +103,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     ? 'bg-blue-600 text-white'
                     : 'text-gray-400 hover:text-white hover:bg-gray-800'
                   return (
-                    <a
+                    
                       key={item.href}
                       href={item.href}
                       title={item.label}
@@ -155,7 +153,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="flex-1 min-w-0">
         {children}
       </div>
-
     </div>
   )
 }
