@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell
@@ -16,33 +17,26 @@ const RANGES = [
 ]
 
 export default function VentasPage() {
+  const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
   const [range, setRange] = useState(4)
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const [restaurantName, setRestaurantName] = useState('')
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [])
+    if (restaurantId) loadData()
+  }, [restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles').select('restaurant_id').eq('id', user.id).single()
-    if (!profile?.restaurant_id) { setLoading(false); return }
+    setLoading(true)
 
     const { data: rest } = await supabase
-      .from('restaurants').select('*, organizations(name)').eq('id', profile.restaurant_id).single()
-    setRestaurant(rest)
+      .from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
 
     const { data: reports } = await supabase
       .from('reports').select('*')
-      .eq('restaurant_id', profile.restaurant_id)
+      .eq('restaurant_id', restaurantId)
       .order('created_at', { ascending: false })
       .limit(12)
 
@@ -92,23 +86,17 @@ export default function VentasPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-white font-bold text-lg">💰 Ventas</h1>
-          <p className="text-gray-500 text-xs">{restaurant?.name} · Análisis de ventas por período</p>
+          <p className="text-gray-500 text-xs">{restaurantName} · Análisis de ventas por período</p>
         </div>
         <div className="flex items-center gap-2">
           {RANGES.map(r => (
-            <button
-              key={r.value}
-              onClick={() => setRange(r.value)}
+            <button key={r.value} onClick={() => setRange(r.value)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                range === r.value
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:text-white'
-              }`}
-            >
+                range === r.value ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+              }`}>
               {r.label}
             </button>
           ))}
@@ -116,8 +104,6 @@ export default function VentasPage() {
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-
-        {/* KPIs semana más reciente */}
         <div>
           <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
             Semana más reciente — {latest?.report?.week} ({latest?.report?.week_start} al {latest?.report?.week_end})
@@ -156,7 +142,6 @@ export default function VentasPage() {
           </div>
         </div>
 
-        {/* Gráfica ventas por semana */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h2 className="text-white font-semibold mb-1">Ventas netas por semana</h2>
           <p className="text-gray-500 text-xs mb-4">Últimas {filtered.length} semanas</p>
@@ -165,16 +150,13 @@ export default function VentasPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
               <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + (v/1000).toFixed(0) + 'k'} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Ventas']}
-              />
+              <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Ventas']} />
               <Bar dataKey="ventas" fill="#3b82f6" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Avg/Guest y Órdenes */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-white font-semibold mb-1">Avg / Guest por semana</h2>
@@ -184,10 +166,8 @@ export default function VentasPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                 <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                  formatter={(v: any) => ['$' + Number(v).toFixed(2), 'Avg/Guest']}
-                />
+                <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                  formatter={(v: any) => ['$' + Number(v).toFixed(2), 'Avg/Guest']} />
                 <Line type="monotone" dataKey="avgGuest" stroke="#eab308" strokeWidth={2} dot={{ fill: '#eab308', r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
@@ -210,7 +190,6 @@ export default function VentasPage() {
           </div>
         </div>
 
-        {/* Descuentos por semana */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h2 className="text-white font-semibold mb-1">Descuentos por semana</h2>
           <p className="text-gray-500 text-xs mb-4">Impacto en ventas</p>
@@ -219,16 +198,13 @@ export default function VentasPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
               <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Descuentos']}
-              />
+              <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Descuentos']} />
               <Bar dataKey="descuentos" fill="#ef4444" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Categorías + Revenue Centers de la semana más reciente */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {latestCategories.length > 0 && (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -239,13 +215,8 @@ export default function VentasPage() {
                   <div key={cat.name} className="flex items-center gap-3">
                     <span className="text-gray-400 text-sm w-36 truncate">{cat.name}</span>
                     <div className="flex-1 bg-gray-800 rounded-full h-2">
-                      <div
-                        className="h-2 rounded-full"
-                        style={{
-                          width: `${Math.min(Number(cat.pct), 100)}%`,
-                          backgroundColor: COLORS[i % COLORS.length]
-                        }}
-                      />
+                      <div className="h-2 rounded-full"
+                        style={{ width: `${Math.min(Number(cat.pct), 100)}%`, backgroundColor: COLORS[i % COLORS.length] }} />
                     </div>
                     <span className="text-white text-sm font-medium w-20 text-right">{fmt(cat.net)}</span>
                     <span className="text-gray-500 text-xs w-10 text-right">{Number(cat.pct).toFixed(1)}%</span>
@@ -261,23 +232,14 @@ export default function VentasPage() {
               <p className="text-gray-500 text-xs mb-4">{latest?.report?.week}</p>
               <div className="flex gap-6">
                 <PieChart width={140} height={140}>
-                  <Pie
-                    data={latestRevenueCenters}
-                    cx={65}
-                    cy={65}
-                    innerRadius={40}
-                    outerRadius={65}
-                    dataKey="net"
-                    nameKey="name"
-                  >
+                  <Pie data={latestRevenueCenters} cx={65} cy={65} innerRadius={40} outerRadius={65}
+                    dataKey="net" nameKey="name">
                     {latestRevenueCenters.map((_: any, i: number) => (
                       <Cell key={i} fill={COLORS[i % COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                    formatter={(v: any) => ['$' + Number(v).toLocaleString()]}
-                  />
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                    formatter={(v: any) => ['$' + Number(v).toLocaleString()]} />
                 </PieChart>
                 <div className="flex-1 space-y-2 justify-center flex flex-col">
                   {latestRevenueCenters.map((rc: any, i: number) => (
@@ -298,7 +260,6 @@ export default function VentasPage() {
           )}
         </div>
 
-        {/* Tabla comparativa por semana */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h2 className="text-white font-semibold mb-4">Comparativo por semana</h2>
           <div className="overflow-x-auto">
@@ -344,7 +305,6 @@ export default function VentasPage() {
             </table>
           </div>
         </div>
-
       </main>
     </div>
   )

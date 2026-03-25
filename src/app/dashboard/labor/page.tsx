@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, ReferenceLine
@@ -14,34 +15,29 @@ const RANGES = [
 ]
 
 export default function LaborPage() {
+  const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
   const [range, setRange] = useState(4)
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const [restaurantName, setRestaurantName] = useState('')
   const [activeTab, setActiveTab] = useState<'resumen' | 'empleados'>('resumen')
+  const [filterEmployee, setFilterEmployee] = useState('')
+  const [filterPosition, setFilterPosition] = useState('')
+  const [selectedWeekIdx, setSelectedWeekIdx] = useState<number | null>(null)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [])
+    if (restaurantId) loadData()
+  }, [restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles').select('restaurant_id').eq('id', user.id).single()
-    if (!profile?.restaurant_id) { setLoading(false); return }
-
+    setLoading(true)
     const { data: rest } = await supabase
-      .from('restaurants').select('*, organizations(name)').eq('id', profile.restaurant_id).single()
-    setRestaurant(rest)
+      .from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
 
     const { data: reports } = await supabase
       .from('reports').select('*')
-      .eq('restaurant_id', profile.restaurant_id)
+      .eq('restaurant_id', restaurantId)
       .order('created_at', { ascending: false })
       .limit(12)
 
@@ -70,7 +66,8 @@ export default function LaborPage() {
   }
 
   const filtered = weeks.slice(-range)
-  const latest = filtered[filtered.length - 1]
+  const displayWeekIdx = selectedWeekIdx !== null ? selectedWeekIdx : filtered.length - 1
+  const latest = filtered[displayWeekIdx] || filtered[filtered.length - 1]
   const prev = filtered[filtered.length - 2]
 
   const laborPct = pct(latest?.labor?.total_pay, latest?.sales?.net_sales)
@@ -80,10 +77,43 @@ export default function LaborPage() {
   const chartData = filtered.map(w => ({
     week: w.report.week.replace('2026-', ''),
     laborPct: pct(w.labor?.total_pay, w.sales?.net_sales) || 0,
-    labor$: w.labor?.total_pay || 0,
+    'labor$': w.labor?.total_pay || 0,
     horas: w.labor?.total_hours || 0,
     ot: w.labor?.total_ot_hours || 0,
   }))
+
+  // Empleados de todas las semanas para filtros
+  const allEmployees = [...new Set(
+    filtered.flatMap(w => (w.labor?.by_employee || []).map((e: any) => e.name))
+  )].sort()
+
+  const allPositions = [...new Set(
+    filtered.flatMap(w => (w.labor?.by_employee || []).map((e: any) => e.position))
+  )].sort()
+
+  // Empleados filtrados de la semana seleccionada
+  const filteredEmployees = (latest?.labor?.by_employee || [])
+    .filter((e: any) => {
+      const matchEmp = !filterEmployee || e.name.toLowerCase().includes(filterEmployee.toLowerCase())
+      const matchPos = !filterPosition || e.position === filterPosition
+      return matchEmp && matchPos
+    })
+    .sort((a: any, b: any) => b.total_pay - a.total_pay)
+
+  // Tendencia de un empleado específico a través de semanas
+  const employeeTrend = filterEmployee
+    ? filtered.map(w => {
+        const emp = (w.labor?.by_employee || []).find((e: any) =>
+          e.name.toLowerCase().includes(filterEmployee.toLowerCase())
+        )
+        return {
+          week: w.report.week.replace('2026-', ''),
+          horas: emp ? Number(emp.regular_hours) + Number(emp.ot_hours || 0) : 0,
+          costo: emp ? Number(emp.total_pay) : 0,
+          ot: emp ? Number(emp.ot_hours || 0) : 0,
+        }
+      })
+    : []
 
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -93,43 +123,30 @@ export default function LaborPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-white font-bold text-lg">👥 Labor</h1>
-          <p className="text-gray-500 text-xs">{restaurant?.name} · Análisis de labor por período</p>
+          <p className="text-gray-500 text-xs">{restaurantName} · Análisis de labor por período</p>
         </div>
         <div className="flex items-center gap-2">
           {RANGES.map(r => (
-            <button
-              key={r.value}
-              onClick={() => setRange(r.value)}
+            <button key={r.value} onClick={() => { setRange(r.value); setSelectedWeekIdx(null) }}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
                 range === r.value ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
-              }`}
-            >
+              }`}>
               {r.label}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="border-b border-gray-800 bg-gray-900 px-6">
         <div className="flex gap-1">
-          {[
-            { key: 'resumen', label: 'Resumen' },
-            { key: 'empleados', label: 'Por empleado' },
-          ].map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key as any)}
+          {[{ key: 'resumen', label: '📊 Resumen' }, { key: 'empleados', label: '👤 Por empleado / puesto' }].map(tab => (
+            <button key={tab.key} onClick={() => setActiveTab(tab.key as any)}
               className={`px-4 py-3 text-sm font-medium transition border-b-2 ${
-                activeTab === tab.key
-                  ? 'border-blue-500 text-white'
-                  : 'border-transparent text-gray-500 hover:text-gray-300'
-              }`}
-            >
+                activeTab === tab.key ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
+              }`}>
               {tab.label}
             </button>
           ))}
@@ -138,46 +155,55 @@ export default function LaborPage() {
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
 
-        {/* KPIs semana más reciente */}
+        {/* KPIs */}
         <div>
-          <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
-            Semana más reciente — {latest?.report?.week} ({latest?.report?.week_start} al {latest?.report?.week_end})
-          </p>
+          <div className="flex items-center gap-3 mb-3">
+            <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider flex-1">
+              Semana — {latest?.report?.week} ({latest?.report?.week_start} al {latest?.report?.week_end})
+            </p>
+            {filtered.length > 1 && (
+              <select
+                value={displayWeekIdx}
+                onChange={e => setSelectedWeekIdx(Number(e.target.value))}
+                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+                {filtered.map((w, i) => (
+                  <option key={i} value={i}>{w.report.week}</option>
+                ))}
+              </select>
+            )}
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <p className="text-gray-500 text-xs mb-1">% Labor Cost</p>
               <p className="text-2xl font-bold text-purple-400">{laborPct ? laborPct + '%' : '—'}</p>
               {laborDiff && (
                 <p className={`text-xs mt-1 font-medium ${Number(laborDiff) <= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {Number(laborDiff) > 0 ? '▲' : '▼'} {Math.abs(Number(laborDiff))}% vs semana anterior
+                  {Number(laborDiff) > 0 ? '▲' : '▼'} {Math.abs(Number(laborDiff))}% vs sem. ant.
                 </p>
               )}
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <p className="text-gray-500 text-xs mb-1">Costo Total</p>
               <p className="text-2xl font-bold text-white">{fmt(latest?.labor?.total_pay)}</p>
-              <p className="text-gray-600 text-xs mt-1">período completo</p>
+              <p className="text-gray-600 text-xs mt-1">{latest?.labor?.by_employee?.length || 0} empleados</p>
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <p className="text-gray-500 text-xs mb-1">Horas Regulares</p>
               <p className="text-2xl font-bold text-blue-400">
                 {latest?.labor?.total_hours ? Number(latest.labor.total_hours).toFixed(0) + 'h' : '—'}
               </p>
-              <p className="text-gray-600 text-xs mt-1">horas trabajadas</p>
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <p className="text-gray-500 text-xs mb-1">Overtime</p>
               <p className={`text-2xl font-bold ${latest?.labor?.total_ot_hours > 0 ? 'text-amber-400' : 'text-green-400'}`}>
                 {latest?.labor?.total_ot_hours ? Number(latest.labor.total_ot_hours).toFixed(1) + 'h' : '0h'}
               </p>
-              <p className="text-gray-600 text-xs mt-1">horas extra</p>
             </div>
           </div>
         </div>
 
         {activeTab === 'resumen' && (
           <>
-            {/* Gráficas */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">% Labor Cost por semana</h2>
@@ -188,10 +214,8 @@ export default function LaborPage() {
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
                     <ReferenceLine y={30} stroke="#ef4444" strokeDasharray="4 4" label={{ value: '30%', fill: '#ef4444', fontSize: 10, position: 'right' }} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any) => [v + '%', '% Labor']}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                      formatter={(v: any) => [v + '%', '% Labor']} />
                     <Line type="monotone" dataKey="laborPct" stroke="#a855f7" strokeWidth={2} dot={{ fill: '#a855f7', r: 4 }} />
                   </LineChart>
                 </ResponsiveContainer>
@@ -205,17 +229,14 @@ export default function LaborPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + (v/1000).toFixed(1) + 'k'} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Labor $']}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                      formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Labor $']} />
                     <Bar dataKey="labor$" fill="#a855f7" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
-            {/* Horas regulares vs OT */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-1">Horas regulares vs Overtime</h2>
               <p className="text-gray-500 text-xs mb-4">Control de horas extra</p>
@@ -232,7 +253,6 @@ export default function LaborPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Labor por puesto semana más reciente */}
             {latest?.labor?.by_position && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">Labor por puesto — {latest?.report?.week}</h2>
@@ -243,15 +263,10 @@ export default function LaborPage() {
                       <div key={pos.position} className="flex items-center gap-4">
                         <span className="text-gray-300 text-sm w-32 truncate">{pos.position}</span>
                         <div className="flex-1 bg-gray-800 rounded-full h-2">
-                          <div
-                            className="bg-purple-500 h-2 rounded-full"
-                            style={{ width: `${Math.min(posPct || 0, 100)}%` }}
-                          />
+                          <div className="bg-purple-500 h-2 rounded-full" style={{ width: `${Math.min(posPct || 0, 100)}%` }} />
                         </div>
                         <span className="text-gray-500 text-xs w-10">{Number(pos.regular_hours).toFixed(0)}h</span>
-                        {pos.ot_hours > 0 && (
-                          <span className="text-amber-400 text-xs w-14">{Number(pos.ot_hours).toFixed(1)}h OT</span>
-                        )}
+                        {pos.ot_hours > 0 && <span className="text-amber-400 text-xs w-14">{Number(pos.ot_hours).toFixed(1)}h OT</span>}
                         <span className="text-white text-sm font-medium w-16 text-right">{fmt(pos.total_pay)}</span>
                         <span className="text-gray-500 text-xs w-10 text-right">{posPct}%</span>
                       </div>
@@ -261,7 +276,6 @@ export default function LaborPage() {
               </div>
             )}
 
-            {/* Tabla comparativa */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Comparativo por semana</h2>
               <div className="overflow-x-auto">
@@ -272,7 +286,7 @@ export default function LaborPage() {
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">% Labor</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Costo Total</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Horas Reg</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">OT Hours</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">OT</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas</th>
                     </tr>
                   </thead>
@@ -305,56 +319,135 @@ export default function LaborPage() {
           </>
         )}
 
-        {activeTab === 'empleados' && latest?.labor?.by_employee && (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-white font-semibold mb-4">Labor por empleado — {latest?.report?.week}</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-800">
-                    <th className="text-left text-gray-500 text-xs pb-3 font-medium">Empleado</th>
-                    <th className="text-left text-gray-500 text-xs pb-3 font-medium">Puesto</th>
-                    <th className="text-right text-gray-500 text-xs pb-3 font-medium">$/hr</th>
-                    <th className="text-right text-gray-500 text-xs pb-3 font-medium">Horas Reg</th>
-                    <th className="text-right text-gray-500 text-xs pb-3 font-medium">OT</th>
-                    <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {latest.labor.by_employee
-                    .sort((a: any, b: any) => b.total_pay - a.total_pay)
-                    .map((emp: any) => (
-                      <tr key={emp.name} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                        <td className="py-3 text-gray-300 font-medium">{emp.name}</td>
-                        <td className="py-3 text-gray-500">{emp.position}</td>
-                        <td className="py-3 text-right text-gray-400">${Number(emp.hourly_rate).toFixed(2)}</td>
-                        <td className="py-3 text-right text-gray-400">{Number(emp.regular_hours).toFixed(1)}h</td>
-                        <td className="py-3 text-right">
-                          <span className={emp.ot_hours > 0 ? 'text-amber-400' : 'text-gray-600'}>
-                            {emp.ot_hours > 0 ? Number(emp.ot_hours).toFixed(1) + 'h' : '—'}
-                          </span>
-                        </td>
-                        <td className="py-3 text-right text-white font-medium">{fmt(emp.total_pay)}</td>
-                      </tr>
-                    ))}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 border-gray-700">
-                    <td colSpan={3} className="py-3 text-gray-400 font-medium">Total</td>
-                    <td className="py-3 text-right text-white font-bold">
-                      {Number(latest.labor.total_hours).toFixed(0)}h
-                    </td>
-                    <td className="py-3 text-right text-amber-400 font-bold">
-                      {Number(latest.labor.total_ot_hours).toFixed(1)}h
-                    </td>
-                    <td className="py-3 text-right text-white font-bold">{fmt(latest.labor.total_pay)}</td>
-                  </tr>
-                </tfoot>
-              </table>
+        {activeTab === 'empleados' && (
+          <>
+            {/* Filtros */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center gap-4 flex-wrap">
+              <div className="flex-1 min-w-48">
+                <label className="text-gray-500 text-xs mb-1 block">Buscar empleado</label>
+                <input type="text" value={filterEmployee} onChange={e => setFilterEmployee(e.target.value)}
+                  placeholder="Nombre del empleado..."
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500" />
+              </div>
+              <div className="min-w-48">
+                <label className="text-gray-500 text-xs mb-1 block">Filtrar por puesto</label>
+                <select value={filterPosition} onChange={e => setFilterPosition(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+                  <option value="">Todos los puestos</option>
+                  {allPositions.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              {(filterEmployee || filterPosition) && (
+                <button onClick={() => { setFilterEmployee(''); setFilterPosition('') }}
+                  className="mt-4 text-gray-400 hover:text-white text-xs border border-gray-700 px-3 py-2 rounded-lg transition">
+                  Limpiar filtros
+                </button>
+              )}
             </div>
-          </div>
-        )}
 
+            {/* Tendencia del empleado si está buscando uno */}
+            {filterEmployee && employeeTrend.some(e => e.costo > 0) && (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                <h2 className="text-white font-semibold mb-1">Tendencia — {filterEmployee}</h2>
+                <p className="text-gray-500 text-xs mb-4">Horas y costo a través de las semanas</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <ResponsiveContainer width="100%" height={160}>
+                    <LineChart data={employeeTrend}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                      <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => v + 'h'} />
+                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                        formatter={(v: any, name: any) => [v + 'h', name]} />
+                      <Line type="monotone" dataKey="horas" name="Total horas" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
+                      <Line type="monotone" dataKey="ot" name="OT" stroke="#f59e0b" strokeWidth={2} dot={{ fill: '#f59e0b', r: 3 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <ResponsiveContainer width="100%" height={160}>
+                    <BarChart data={employeeTrend}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                      <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
+                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                        formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Costo']} />
+                      <Bar dataKey="costo" fill="#a855f7" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+
+            {/* Tabla de empleados */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-white font-semibold">
+                  Empleados — {latest?.report?.week}
+                  <span className="text-gray-500 font-normal text-sm ml-2">
+                    ({filteredEmployees.length} empleados · {fmt(filteredEmployees.reduce((a: number, e: any) => a + Number(e.total_pay), 0))})
+                  </span>
+                </h2>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-800">
+                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Empleado</th>
+                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Puesto</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">$/hr</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Horas Reg</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">OT</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">% del total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredEmployees.map((emp: any) => {
+                      const empPct = pct(emp.total_pay, latest?.labor?.total_pay)
+                      return (
+                        <tr key={emp.name} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                          <td className="py-3 text-gray-300 font-medium">{emp.name}</td>
+                          <td className="py-3">
+                            <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{emp.position}</span>
+                          </td>
+                          <td className="py-3 text-right text-gray-400">${Number(emp.hourly_rate).toFixed(2)}</td>
+                          <td className="py-3 text-right text-gray-400">{Number(emp.regular_hours).toFixed(1)}h</td>
+                          <td className="py-3 text-right">
+                            <span className={emp.ot_hours > 0 ? 'text-amber-400' : 'text-gray-600'}>
+                              {emp.ot_hours > 0 ? Number(emp.ot_hours).toFixed(1) + 'h' : '—'}
+                            </span>
+                          </td>
+                          <td className="py-3 text-right text-white font-medium">{fmt(emp.total_pay)}</td>
+                          <td className="py-3 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <div className="w-16 bg-gray-800 rounded-full h-1.5">
+                                <div className="bg-purple-500 h-1.5 rounded-full" style={{ width: `${Math.min(empPct || 0, 100)}%` }} />
+                              </div>
+                              <span className="text-gray-500 text-xs w-8">{empPct}%</span>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-gray-700">
+                      <td colSpan={3} className="py-3 text-gray-400 font-medium">Total</td>
+                      <td className="py-3 text-right text-white font-bold">
+                        {filteredEmployees.reduce((a: number, e: any) => a + Number(e.regular_hours), 0).toFixed(0)}h
+                      </td>
+                      <td className="py-3 text-right text-amber-400 font-bold">
+                        {filteredEmployees.reduce((a: number, e: any) => a + Number(e.ot_hours || 0), 0).toFixed(1)}h
+                      </td>
+                      <td className="py-3 text-right text-white font-bold">
+                        {fmt(filteredEmployees.reduce((a: number, e: any) => a + Number(e.total_pay), 0))}
+                      </td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
       </main>
     </div>
   )
