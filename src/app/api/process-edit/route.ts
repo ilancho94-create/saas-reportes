@@ -56,15 +56,28 @@ export async function POST(request: NextRequest) {
     const avtFile = formData.get('avt') as File | null
     if (avtFile && avtFile.size > 0) {
       try {
-const buffer = Buffer.from(await avtFile.arrayBuffer())
-const isCsv = avtFile.name.endsWith('.csv')
-const avtData = isCsv
-  ? parseAvtCsv(buffer.toString('utf-8'))
-  : parseAvtExcel(buffer)
+        const buffer = Buffer.from(await avtFile.arrayBuffer())
+        const isCsv = avtFile.name.endsWith('.csv')
+        const avtData = isCsv
+          ? parseAvtCsv(buffer.toString('utf-8'))
+          : parseAvtExcel(buffer)
         results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
         console.log(`AvT: ${avtData.shortages.length} faltantes, ${avtData.overages.length} sobrantes`)
         await supabase.from('avt_data').delete().eq('report_id', reportId)
         await saveToDatabase(reportId, 'avt', avtData)
+
+        // Guardar categorías detectadas automáticamente
+        const { data: report } = await supabase
+          .from('reports').select('restaurant_id').eq('id', reportId).single()
+        const restaurantId = report?.restaurant_id || '00000000-0000-0000-0000-000000000001'
+        const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
+        for (const cat of detectedCats) {
+          await supabase.from('avt_categories').upsert({
+            restaurant_id: restaurantId,
+            category: cat,
+            active: true,
+          }, { onConflict: 'restaurant_id,category', ignoreDuplicates: true })
+        }
       } catch (err) {
         console.error('Error processing avt:', err)
         results['avt'] = { error: 'No se pudo procesar' }

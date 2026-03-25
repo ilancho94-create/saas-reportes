@@ -65,14 +65,24 @@ export async function POST(request: NextRequest) {
     const avtFile = formData.get('avt') as File | null
     if (avtFile && avtFile.size > 0) {
       try {
-const buffer = Buffer.from(await avtFile.arrayBuffer())
-const isCsv = avtFile.name.endsWith('.csv')
-const avtData = isCsv
-  ? parseAvtCsv(buffer.toString('utf-8'))
-  : parseAvtExcel(buffer)
+        const buffer = Buffer.from(await avtFile.arrayBuffer())
+        const isCsv = avtFile.name.endsWith('.csv')
+        const avtData = isCsv
+          ? parseAvtCsv(buffer.toString('utf-8'))
+          : parseAvtExcel(buffer)
         results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
         console.log(`AvT: ${avtData.shortages.length} faltantes, ${avtData.overages.length} sobrantes`)
         await saveToDatabase(report.id, 'avt', avtData)
+
+        // Guardar categorías detectadas automáticamente
+        const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
+        for (const cat of detectedCats) {
+          await supabase.from('avt_categories').upsert({
+            restaurant_id,
+            category: cat,
+            active: true,
+          }, { onConflict: 'restaurant_id,category', ignoreDuplicates: true })
+        }
       } catch (err) {
         console.error('Error processing avt:', err)
         results['avt'] = { error: 'No se pudo procesar' }

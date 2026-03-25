@@ -277,6 +277,8 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              <AvtCategoriesSection restaurantId={restaurant?.id} />
+
               {statusOp && (
                 <p className={`text-sm ${statusOp.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
                   {statusOp}
@@ -473,6 +475,60 @@ export default function SettingsPage() {
         )}
 
       </main>
+    </div>
+  )
+}
+
+function AvtCategoriesSection({ restaurantId }: { restaurantId: string }) {
+  const [cats, setCats] = useState<any[]>([])
+  const [saving, setSaving] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (restaurantId) loadCats()
+  }, [restaurantId])
+
+  async function loadCats() {
+    const { data } = await supabase.from('avt_categories')
+      .select('*').eq('restaurant_id', restaurantId).order('category')
+    setCats(data || [])
+  }
+
+  async function toggle(id: string, active: boolean) {
+    setSaving(id)
+    await supabase.from('avt_categories').update({ active }).eq('id', id)
+    setCats(prev => prev.map(c => c.id === id ? { ...c, active } : c))
+    setSaving(null)
+  }
+
+  if (cats.length === 0) return (
+    <div className="bg-gray-800 rounded-xl p-4">
+      <p className="text-gray-400 text-xs font-medium mb-1">Categorías de AvT</p>
+      <p className="text-gray-600 text-xs">Se detectan automáticamente al subir un reporte de AvT. Aún no hay categorías registradas.</p>
+    </div>
+  )
+
+  return (
+    <div>
+      <label className="text-white font-medium text-sm block mb-1">Categorías de AvT</label>
+      <p className="text-gray-500 text-xs mb-3">
+        Se detectan automáticamente al subir reportes. Desactiva las que no quieras ver en filtros y reportes.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {cats.map(cat => (
+          <button
+            key={cat.id}
+            onClick={() => toggle(cat.id, !cat.active)}
+            disabled={saving === cat.id}
+            className={`px-4 py-2 rounded-lg text-sm font-medium border transition ${
+              cat.active
+                ? 'bg-blue-600 border-blue-500 text-white'
+                : 'border-gray-700 text-gray-500 line-through'
+            }`}
+          >
+            {saving === cat.id ? '...' : cat.category}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

@@ -21,7 +21,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }
   in_progress: { label: 'En proceso', color: 'text-blue-400', bg: 'bg-blue-950' },
   resolved: { label: 'Resuelto', color: 'text-green-400', bg: 'bg-green-950' },
 }
-const MAIN_CATEGORIES = ['BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
+const MAIN_CATEGORIES_FALLBACK = ['BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
 type SortKey = 'variance_dollar' | 'name' | 'unit_cost' | 'variance_qty'
 type ViewMode = 'dollar' | 'qty'
 
@@ -41,6 +41,7 @@ export default function AvtPage() {
   const [showAllOverages, setShowAllOverages] = useState(false)
   const [activeTab, setActiveTab] = useState<'dashboard' | 'seguimiento'>('dashboard')
   const [expandedItem, setExpandedItem] = useState<string | null>(null)
+  const [activeCategories, setActiveCategories] = useState<string[]>(MAIN_CATEGORIES_FALLBACK)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -80,6 +81,17 @@ export default function AvtPage() {
       .order('week', { ascending: false })
     setAllTracking(allT || [])
     setLoading(false)
+
+    // Cargar categorías activas del restaurante
+    const { data: cats } = await supabase
+      .from('avt_categories')
+      .select('category')
+      .eq('restaurant_id', rid)
+      .eq('active', true)
+      .order('category')
+    if (cats && cats.length > 0) {
+      setActiveCategories(cats.map((c: any) => c.category))
+    }
   }
 
   async function loadTracking(week: string) {
@@ -220,7 +232,7 @@ export default function AvtPage() {
   const pendingCount = Object.values(tracking).filter((t: any) => t.status === 'pending' || !t.status).length
 
   // Top 10 por categoría para seguimiento
-  const top10ByCat = MAIN_CATEGORIES.map(cat => {
+  const top10ByCat = activeCategories.map(cat => {
     const catShortages = [...allShortages.filter((i: any) => i.category === cat)]
       .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
       .slice(0, 10)
@@ -282,7 +294,7 @@ export default function AvtPage() {
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-gray-500 text-xs">Categoría:</span>
               <div className="flex gap-1 flex-wrap">
-                {['Todas', ...MAIN_CATEGORIES].map(cat => (
+                {['Todas', ...activeCategories].map(cat => (
                   <button key={cat} onClick={() => setSelectedCategory(cat)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${selectedCategory === cat ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400 hover:text-white'}`}>
                     {cat}
