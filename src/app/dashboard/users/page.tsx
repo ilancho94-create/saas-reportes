@@ -529,8 +529,15 @@ export default function UsersPage() {
               <p className="text-yellow-400 text-xs mt-1">Puedes asignar usuarios existentes a cualquier organización y restaurante de la plataforma.</p>
             </div>
 
+            {/* Crear nuevo usuario */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Asignar usuario a organización</h2>
+              <h2 className="text-white font-semibold mb-1">Crear nuevo usuario</h2>
+              <p className="text-gray-500 text-xs mb-4">El usuario podrá entrar inmediatamente con estas credenciales</p>
+              <CreateUserForm allOrgs={allOrgs} onSuccess={(msg) => { setStatus(msg) }} />
+            </div>
+
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-4">Asignar usuario existente a organización</h2>
               <div className="space-y-4">
                 <div>
                   <label className="text-gray-400 text-xs mb-1 block">Buscar usuario por email</label>
@@ -724,6 +731,122 @@ export default function UsersPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function CreateUserForm({ allOrgs, onSuccess }: { allOrgs: any[], onSuccess: (msg: string) => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [orgId, setOrgId] = useState('')
+  const [restaurantId, setRestaurantId] = useState('')
+  const [role, setRole] = useState('manager')
+  const [restaurants, setRestaurants] = useState<any[]>([])
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState('')
+
+  const ROLES = [
+    { value: 'owner', label: 'Owner / Dueño' },
+    { value: 'gm', label: 'General Manager' },
+    { value: 'manager', label: 'Manager' },
+    { value: 'chef', label: 'Chef / Jefe de Cocina' },
+    { value: 'supervisor', label: 'Supervisor' },
+  ]
+
+  async function loadRestaurants(orgId: string) {
+    const { data } = await supabase.from('restaurants').select('id, name').eq('organization_id', orgId)
+    setRestaurants(data || [])
+    setRestaurantId('')
+  }
+
+  async function handleCreate() {
+    if (!email || !password || !orgId || !restaurantId) {
+      setError('Completa todos los campos')
+      return
+    }
+    if (password.length < 6) {
+      setError('La contraseña debe tener al menos 6 caracteres')
+      return
+    }
+    setCreating(true)
+    setError('')
+
+    const { data: { user } } = await supabase.auth.getUser()
+    const res = await fetch('/api/admin/create-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        password,
+        organizationId: orgId,
+        restaurantId,
+        role,
+        requesterId: user?.id,
+      }),
+    })
+
+    const result = await res.json()
+    setCreating(false)
+
+    if (result.error) {
+      setError(result.error)
+    } else {
+      onSuccess('✅ Usuario creado exitosamente — ya puede iniciar sesión')
+      setEmail('')
+      setPassword('')
+      setOrgId('')
+      setRestaurantId('')
+      setRestaurants([])
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Email</label>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+            placeholder="usuario@ejemplo.com"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Contraseña</label>
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+            placeholder="Mínimo 6 caracteres"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500" />
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Organización</label>
+          <select value={orgId} onChange={e => { setOrgId(e.target.value); loadRestaurants(e.target.value) }}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+            <option value="">Seleccionar...</option>
+            {allOrgs.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Restaurante</label>
+          <select value={restaurantId} onChange={e => setRestaurantId(e.target.value)}
+            disabled={!orgId}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50">
+            <option value="">Seleccionar...</option>
+            {restaurants.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Rol</label>
+          <select value={role} onChange={e => setRole(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+            {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
+        </div>
+      </div>
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+      <button onClick={handleCreate} disabled={creating}
+        className="bg-green-600 hover:bg-green-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2 rounded-lg text-sm font-medium transition">
+        {creating ? 'Creando usuario...' : '+ Crear usuario'}
+      </button>
     </div>
   )
 }
