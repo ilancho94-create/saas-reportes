@@ -229,11 +229,25 @@ Busca la sección "Total by Inventory Account" con columnas Current Value y Prev
 ${dateInstruction}
 {"count_date":"YYYY-MM-DD","by_account":[{"account":string,"current_value":número,"previous_value":número,"adjustment":número}],"grand_total_current":número,"grand_total_previous":número,"date_warning":string|null}`,
 
-    avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365 y extrae datos en JSON.
+   avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-FALTANTE = varianza POSITIVA. SOBRANTE = varianza NEGATIVA.
+
+ESTRUCTURA DEL REPORTE:
+- Tiene categorías principales: BAR, FOOD, BEVERAGE, CHEMICALS, SUPPLIES
+- Columnas (de izquierda a derecha): Item, UofM, Unit Cost, [Quantity section: Begin/Purch/Xfer/End/Actl/Theo/Var/Waste/Donation/UnExp Var/Effcy], [Dollar section: mismas columnas]
+- LA COLUMNA QUE IMPORTA ES "UnExp Var" (Unexpected Variance) — es la varianza DESPUÉS de descontar waste
+- En la sección Quantity: UnExp Var es la columna 19 (contando desde 0)
+- En la sección Dollar: UnExp Var es la columna 31
+
+CLASIFICACIÓN:
+- UnExp Var POSITIVO ($) = FALTANTE (aparece en rojo en el reporte) = más consumo del teórico
+- UnExp Var NEGATIVO ($) = SOBRANTE (aparece entre paréntesis en el reporte) = menos consumo del teórico
+- Ignora items donde UnExp Var $ = 0
+
+EXTRAE todos los items con UnExp Var ≠ 0, con su categoría principal (BAR/FOOD/BEVERAGE/CHEMICALS/SUPPLIES).
+
 ${dateInstruction}
-{"total_shortages":número,"total_overages":número,"net_variance":número,"shortages":[{"name":string,"uom":string,"unit_cost":número,"variance_qty":número,"variance_dollar":número}],"overages":[{"name":string,"uom":string,"unit_cost":número,"variance_qty":número,"variance_dollar":número}],"date_warning":string|null}`,
+{"by_category":[{"category":string,"total_shortage_dollar":número,"total_overage_dollar":número,"net_dollar":número}],"shortages":[{"name":string,"category":string,"uom":string,"unit_cost":número,"unexp_var_qty":número,"unexp_var_dollar":número}],"overages":[{"name":string,"category":string,"uom":string,"unit_cost":número,"unexp_var_qty":número,"unexp_var_dollar":número}],"total_shortage_dollar":número,"total_overage_dollar":número,"net_variance_dollar":número,"date_warning":string|null}`,
   }
 
   const response = await anthropic.messages.create({
