@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, LineChart, Line, ReferenceLine, Cell
@@ -29,8 +30,9 @@ export default function AvtPage() {
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
   const [selectedWeek, setSelectedWeek] = useState('')
-  const [restaurant, setRestaurant] = useState<any>(null)
-  const [restaurantId, setRestaurantId] = useState('00000000-0000-0000-0000-000000000001')
+  const restaurantIdHook = useRestaurantId()
+  const restaurantId = restaurantIdHook || '00000000-0000-0000-0000-000000000001'
+  const [restaurantName, setRestaurantName] = useState('')
   const [tracking, setTracking] = useState<Record<string, any>>({})
   const [allTracking, setAllTracking] = useState<any[]>([])
   const [savingId, setSavingId] = useState<string | null>(null)
@@ -44,11 +46,8 @@ export default function AvtPage() {
   const [activeCategories, setActiveCategories] = useState<string[]>(MAIN_CATEGORIES_FALLBACK)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [])
+    if (restaurantIdHook) loadData()
+  }, [restaurantIdHook])
 
   useEffect(() => {
     if (selectedWeek && restaurantId) {
@@ -57,15 +56,13 @@ export default function AvtPage() {
   }, [selectedWeek, restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    const { data: profile } = await supabase.from('profiles').select('restaurant_id').eq('id', user.id).single()
-    const rid = profile?.restaurant_id || '00000000-0000-0000-0000-000000000001'
-    setRestaurantId(rid)
-    const { data: rest } = await supabase.from('restaurants').select('*').eq('id', rid).single()
-    setRestaurant(rest)
+  if (!restaurantIdHook) return
+  setLoading(true)
+  setWeeks([])
+  const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
+  setRestaurantName(rest?.name || '')
     const { data: reports } = await supabase.from('reports').select('*')
-      .eq('restaurant_id', rid).order('week', { ascending: false }).limit(12)
+      .eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12)
     if (!reports?.length) { setLoading(false); return }
     const weeksData = await Promise.all(reports.map(async r => {
       const { data: avt } = await supabase.from('avt_data').select('*').eq('report_id', r.id).single()
@@ -77,7 +74,7 @@ export default function AvtPage() {
 
     // Cargar todo el historial de tracking
     const { data: allT } = await supabase.from('avt_tracking')
-      .select('*').eq('restaurant_id', rid)
+      .select('*').eq('restaurant_id', restaurantId)
       .order('week', { ascending: false })
     setAllTracking(allT || [])
     setLoading(false)
@@ -86,7 +83,7 @@ export default function AvtPage() {
     const { data: cats } = await supabase
       .from('avt_categories')
       .select('category')
-      .eq('restaurant_id', rid)
+      .eq('restaurant_id', restaurantId)
       .eq('active', true)
       .order('category')
     if (cats && cats.length > 0) {
@@ -254,7 +251,7 @@ export default function AvtPage() {
         <div>
           <h1 className="text-white font-bold text-lg">📊 Actual vs Teórico</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            {restaurant?.name} · Faltante = varianza inesperada positiva (rojo) · Sobrante = negativa (entre paréntesis)
+            {restaurantName} · Faltante = varianza inesperada positiva (rojo) · Sobrante = negativa (entre paréntesis)
           </p>
         </div>
         <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}

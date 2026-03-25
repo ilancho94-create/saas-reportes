@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine, Cell
@@ -10,11 +11,12 @@ import {
 const CATEGORIES = ['Todas', 'BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
 
 export default function ComprasPage() {
+  const restaurantIdHook = useRestaurantId()
+  const restaurantId = restaurantIdHook || '00000000-0000-0000-0000-000000000001'
+  const [restaurantName, setRestaurantName] = useState('')
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<string[]>([])
   const [selectedWeek, setSelectedWeek] = useState('')
-  const [restaurantId, setRestaurantId] = useState('00000000-0000-0000-0000-000000000001')
-  const [restaurant, setRestaurant] = useState<any>(null)
   const [currentItems, setCurrentItems] = useState<any[]>([])
   const [prevItems, setPrevItems] = useState<any[]>([])
   const [allData, setAllData] = useState<any[]>([])
@@ -26,11 +28,8 @@ export default function ComprasPage() {
   const [showAllProveedores, setShowAllProveedores] = useState(false)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [])
+    if (restaurantIdHook) loadData()
+  }, [restaurantIdHook])
 
   useEffect(() => {
     if (selectedWeek) loadWeekData(selectedWeek)
@@ -44,17 +43,16 @@ export default function ComprasPage() {
   }, [activeTab])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    const { data: profile } = await supabase.from('profiles').select('restaurant_id').eq('id', user.id).single()
-    const rid = profile?.restaurant_id || '00000000-0000-0000-0000-000000000001'
-    setRestaurantId(rid)
-    const { data: rest } = await supabase.from('restaurants').select('*').eq('id', rid).single()
-    setRestaurant(rest)
+    if (!restaurantIdHook) return
+    setLoading(true)
+    setAllData([])
+    setWeeks([])
+    const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
     const { data: allRows } = await supabase
       .from('receiving_data')
       .select('week, item_name, uom, category, vendor, total_qty, unit_cost, total_cost')
-      .eq('restaurant_id', rid)
+      .eq('restaurant_id', restaurantId)
       .order('week', { ascending: false })
     if (!allRows?.length) { setLoading(false); return }
     setAllData(allRows)
@@ -157,7 +155,7 @@ export default function ComprasPage() {
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-white font-bold text-lg">🧾 Compras de Insumos</h1>
-          <p className="text-gray-500 text-xs mt-0.5">{restaurant?.name} · Variación de precios y análisis de proveedores</p>
+          <p className="text-gray-500 text-xs mt-0.5">{restaurantName} · Variación de precios y análisis de proveedores</p>
         </div>
         <div className="flex items-center gap-3">
           <select value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}
