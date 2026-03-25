@@ -13,12 +13,21 @@ interface UserRestaurant {
   custom_permissions: any
 }
 
+interface Organization {
+  id: string
+  name: string
+  restaurants: UserRestaurant[]
+}
+
 interface AuthContextType {
   user: any
   loading: boolean
   currentRestaurant: UserRestaurant | null
+  currentOrganization: Organization | null
   restaurants: UserRestaurant[]
+  organizations: Organization[]
   switchRestaurant: (restaurantId: string) => void
+  switchOrganization: (orgId: string) => void
   can: (module: Module, action: Action) => boolean
 }
 
@@ -26,8 +35,11 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
   currentRestaurant: null,
+  currentOrganization: null,
   restaurants: [],
+  organizations: [],
   switchRestaurant: () => {},
+  switchOrganization: () => {},
   can: () => false,
 })
 
@@ -35,7 +47,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [restaurants, setRestaurants] = useState<UserRestaurant[]>([])
+  const [organizations, setOrganizations] = useState<Organization[]>([])
   const [currentRestaurant, setCurrentRestaurant] = useState<UserRestaurant | null>(null)
+  const [currentOrganization, setCurrentOrganization] = useState<Organization | null>(null)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -54,46 +68,70 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .select(`
         id, role, custom_permissions,
         restaurant_id,
-        restaurants(id, name, organization_id, organizations(name))
+        restaurants(id, name, organization_id, organizations(id, name))
       `)
       .eq('user_id', userId)
       .eq('active', true)
 
+    let mapped: UserRestaurant[] = []
+
     if (!data?.length) {
+      // Fallback a profiles
       const { data: profile } = await supabase
         .from('profiles').select('restaurant_id, role').eq('id', userId).single()
       if (profile?.restaurant_id) {
         const { data: rest } = await supabase
-          .from('restaurants').select('id, name, organization_id, organizations(name)')
+          .from('restaurants').select('id, name, organization_id, organizations(id, name)')
           .eq('id', profile.restaurant_id).single()
         if (rest) {
-          const r: UserRestaurant = {
+          mapped = [{
             id: rest.id, name: rest.name,
             organization_id: rest.organization_id,
             organization_name: (rest.organizations as any)?.name || '',
             role: profile.role || 'manager',
             custom_permissions: null,
-          }
-          setRestaurants([r])
-          setCurrentRestaurant(r)
+          }]
         }
       }
-      setLoading(false)
-      return
+    } else {
+      mapped = data.map((ur: any) => ({
+        id: ur.restaurants.id,
+        name: ur.restaurants.name,
+        organization_id: ur.restaurants.organization_id,
+        organization_name: ur.restaurants.organizations?.name || '',
+        role: ur.role,
+        custom_permissions: ur.custom_permissions,
+      }))
     }
 
-    const mapped: UserRestaurant[] = data.map((ur: any) => ({
-      id: ur.restaurants.id, name: ur.restaurants.name,
-      organization_id: ur.restaurants.organization_id,
-      organization_name: ur.restaurants.organizations?.name || '',
-      role: ur.role,
-      custom_permissions: ur.custom_permissions,
-    }))
-
     setRestaurants(mapped)
-    const savedId = typeof window !== 'undefined' ? localStorage.getItem('xray_restaurant_id') : null
-    const saved = mapped.find(r => r.id === savedId)
-    setCurrentRestaurant(saved || mapped[0])
+
+    // Agrupar por organización
+    const orgMap: Record<string, Organization> = {}
+    mapped.forEach(r => {
+      if (!orgMap[r.organization_id]) {
+        orgMap[r.organization_id] = {
+          id: r.organization_id,
+          name: r.organization_name,
+          restaurants: [],
+        }
+      }
+      orgMap[r.organization_id].restaurants.push(r)
+    })
+    const orgs = Object.values(orgMap)
+    setOrganizations(orgs)
+
+    // Restaurar selección previa
+    const savedRestId = typeof window !== 'undefined' ? localStorage.getItem('xray_restaurant_id') : null
+    const savedRest = mapped.find(r => r.id === savedRestId)
+    const activeRest = savedRest || mapped[0]
+    setCurrentRestaurant(activeRest)
+
+    if (activeRest) {
+      const activeOrg = orgs.find(o => o.id === activeRest.organization_id) || orgs[0]
+      setCurrentOrganization(activeOrg)
+    }
+
     setLoading(false)
   }
 
@@ -102,6 +140,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (r) {
       setCurrentRestaurant(r)
       localStorage.setItem('xray_restaurant_id', restaurantId)
+      const org = organizations.find(o => o.id === r.organization_id)
+      if (org) setCurrentOrganization(org)
+    }
+  }
+
+  function switchOrganization(orgId: string) {
+    const org = organizations.find(o => o.id === orgId)
+    if (org) {
+      setCurrentOrganization(org)
+      // Seleccionar primer restaurante de la org
+      const firstRest = org.restaurants[0]
+      if (firstRest) {
+        setCurrentRestaurant(firstRest)
+        localStorage.setItem('xray_restaurant_id', firstRest.id)
+      }
     }
   }
 
@@ -111,7 +164,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, currentRestaurant, restaurants, switchRestaurant, can: canDo }}>
+    <AuthContext.Provider value={{
+      user, loading,
+      currentRestaurant, currentOrganization,
+      restaurants, organizations,
+      switchRestaurant, switchOrganization,
+      can: canDo,
+    }}>
       {children}
     </AuthContext.Provider>
   )

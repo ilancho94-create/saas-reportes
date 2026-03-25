@@ -6,8 +6,9 @@ import { useAuth } from '@/lib/auth-context'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
-  const { user, currentRestaurant: restaurant, restaurants, switchRestaurant, can } = useAuth()
+  const { user, currentRestaurant: restaurant, currentOrganization, organizations, switchRestaurant, switchOrganization, can } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
+  const [showOrgMenu, setShowOrgMenu] = useState(false)
 
   const nav = [
     { section: 'GENERAL', items: [
@@ -47,35 +48,73 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="min-h-screen bg-gray-950 flex">
       <aside className={(collapsed ? 'w-16' : 'w-56') + ' min-h-screen bg-gray-900 border-r border-gray-800 flex flex-col transition-all duration-200 shrink-0'}>
+
+        {/* Header con org + restaurante */}
         <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between gap-2">
           {!collapsed && (
             <div className="min-w-0 flex-1">
               <p className="text-white font-bold text-sm">Restaurant X-Ray 🔬</p>
-              {restaurants.length > 1 ? (
+
+              {/* Selector de organización */}
+              {organizations.length > 1 ? (
+                <div className="relative mt-0.5">
+                  <button
+                    onClick={() => setShowOrgMenu(!showOrgMenu)}
+                    className="w-full text-left text-gray-500 text-xs hover:text-gray-300 transition flex items-center gap-1 truncate">
+                    <span className="truncate">{currentOrganization?.name}</span>
+                    <span className="shrink-0">▾</span>
+                  </button>
+                  {showOrgMenu && (
+                    <div className="absolute top-full left-0 mt-1 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                      <p className="text-gray-500 text-xs px-3 py-2 border-b border-gray-700">Organizaciones</p>
+                      {organizations.map(org => (
+                        <button
+                          key={org.id}
+                          onClick={() => { switchOrganization(org.id); setShowOrgMenu(false) }}
+                          className={`w-full text-left px-3 py-2 text-xs transition ${
+                            currentOrganization?.id === org.id
+                              ? 'bg-blue-600 text-white'
+                              : 'text-gray-300 hover:bg-gray-700'
+                          }`}>
+                          {org.name}
+                          <span className="text-gray-500 ml-1">({org.restaurants.length})</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-gray-600 text-xs truncate mt-0.5">{currentOrganization?.name}</p>
+              )}
+
+              {/* Selector de restaurante dentro de la org */}
+              {currentOrganization && currentOrganization.restaurants.length > 1 ? (
                 <select
                   value={restaurant?.id || ''}
                   onChange={e => switchRestaurant(e.target.value)}
-                  className="mt-0.5 w-full bg-transparent text-gray-500 text-xs focus:outline-none cursor-pointer truncate"
-                >
-                  {restaurants.map(r => (
+                  className="mt-0.5 w-full bg-transparent text-gray-400 text-xs focus:outline-none cursor-pointer truncate">
+                  {currentOrganization.restaurants.map(r => (
                     <option key={r.id} value={r.id} className="bg-gray-900">{r.name}</option>
                   ))}
                 </select>
               ) : (
-                restaurant && <p className="text-gray-500 text-xs truncate">{restaurant.name}</p>
+                <p className="text-gray-400 text-xs truncate mt-0.5">{restaurant?.name}</p>
               )}
             </div>
           )}
+
           {collapsed && (
             <div className="w-full flex justify-center">
               <span className="text-white font-bold text-sm">X</span>
             </div>
           )}
+
           <button onClick={() => setCollapsed(!collapsed)} className="text-gray-500 hover:text-white transition p-1 rounded shrink-0">
             {collapsed ? '→' : '←'}
           </button>
         </div>
 
+        {/* Nav */}
         <nav className="flex-1 py-4 overflow-y-auto">
           {nav.map(function(group) {
             const visibleItems = group.items.filter(item =>
@@ -102,15 +141,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           })}
         </nav>
 
+        {/* Footer */}
         <div className="border-t border-gray-800 p-3">
           {!collapsed ? (
             <div className="flex items-center justify-between">
               <div className="min-w-0">
                 <p className="text-gray-300 text-xs truncate">{user?.email}</p>
                 {restaurant && (
-                  <p className="text-gray-600 text-xs truncate">
-                    {restaurant.organization_name} · <span className="capitalize">{restaurant.role}</span>
-                  </p>
+                  <p className="text-gray-600 text-xs truncate capitalize">{restaurant.role}</p>
                 )}
               </div>
               <button onClick={handleLogout} className="text-gray-500 hover:text-red-400 text-xs ml-2 shrink-0 transition" title="Salir">⏻</button>
@@ -120,6 +158,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           )}
         </div>
       </aside>
+
+      {/* Cerrar org menu al hacer click fuera */}
+      {showOrgMenu && (
+        <div className="fixed inset-0 z-40" onClick={() => setShowOrgMenu(false)} />
+      )}
 
       <div className="flex-1 min-w-0">{children}</div>
     </div>
