@@ -210,12 +210,22 @@ export default function AvtPage() {
   const totalOverage = filteredOverages.reduce((a, b) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
   const netVariance = totalShortage - totalOverage
 
-  const trendData = [...weeks].reverse().map(w => ({
-    week: w.report.week.replace('2026-', ''),
-    faltantes: Number(w.avt?.total_shortage_dollar || 0),
-    sobrantes: Number(w.avt?.total_overage_dollar || 0),
-    neto: Number(w.avt?.net_variance_dollar || 0),
-  }))
+  const trendData = [...weeks].reverse().map(w => {
+    const wShortages: any[] = w.avt?.shortages || []
+    const wOverages: any[] = w.avt?.overages || []
+    const filtered_s = selectedCategory === 'Todas'
+      ? wShortages : wShortages.filter((i: any) => i.category === selectedCategory)
+    const filtered_o = selectedCategory === 'Todas'
+      ? wOverages : wOverages.filter((i: any) => i.category === selectedCategory)
+    const faltantes = filtered_s.reduce((a: number, b: any) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
+    const sobrantes = filtered_o.reduce((a: number, b: any) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
+    return {
+      week: w.report.week.replace('2026-', ''),
+      faltantes,
+      sobrantes,
+      neto: faltantes - sobrantes,
+    }
+  })
 
   // Items recurrentes con info completa
   const recurrentItems = [...new Set([...allShortages, ...allOverages].map(i => i.name))]
