@@ -590,11 +590,20 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
   })
 
   // Items recurrentes con recaídas
+  // Filtramos UOMs que aparecen como nombres (bug en parser de R365)
+  const KNOWN_UOMS = new Set([
+    'LB', 'Liter', 'Bottle', 'Each', 'Gallon', 'BIB', 'Pack',
+    'Case', 'Can', 'OZ', 'oz', 'Bag', 'Box', 'Keg', 'Pint', 'Quart'
+  ])
   const itemWeekCount: Record<string, number> = {}
   weeks.forEach((w: any) => {
     const s = w.avt?.shortages || []
     const o = w.avt?.overages || []
     ;[...s, ...o].forEach((item: any) => {
+      if (!item.name) return
+      // Ignorar si el primer token del nombre es un UOM conocido (ej: "Bottle (750 mL)", "LB")
+      const firstWord = item.name.split(/[\s(]/)[0]
+      if (KNOWN_UOMS.has(firstWord)) return
       itemWeekCount[item.name] = (itemWeekCount[item.name] || 0) + 1
     })
   })
