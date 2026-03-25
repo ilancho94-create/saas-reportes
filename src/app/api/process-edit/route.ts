@@ -20,6 +20,13 @@ export async function POST(request: NextRequest) {
     const week = formData.get('week') as string
     const reportId = formData.get('report_id') as string
 
+    // DEBUG: log all keys received
+    const allKeys = [...formData.keys()]
+    console.log('=== PROCESS-EDIT DEBUG ===')
+    console.log('Keys recibidos:', allKeys)
+    console.log('week:', week)
+    console.log('report_id:', reportId)
+
     if (!week || !reportId) {
       return NextResponse.json({ success: false, error: 'Faltan parámetros' })
     }
@@ -33,10 +40,14 @@ export async function POST(request: NextRequest) {
 
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
-      if (!file) continue
-      console.log(`Re-processing ${fileType}...`)
+      if (!file || file.size === 0) {
+        console.log(`Skipping ${fileType}: no file or empty`)
+        continue
+      }
+      console.log(`Processing ${fileType}: ${file.name} (${file.size} bytes)`)
       try {
         const extracted = await extractWithClaude(file, fileType, week)
+        console.log(`Extracted ${fileType}:`, JSON.stringify(extracted).substring(0, 200))
         results[fileType] = extracted
         if (extracted.date_warning) warnings[fileType] = extracted.date_warning
 
@@ -44,6 +55,8 @@ export async function POST(request: NextRequest) {
           productMixData = extracted
         } else if (fileType === 'menu_analysis') {
           menuAnalysisData = extracted
+          console.log('menu_analysis by_item count:', extracted?.by_item?.length)
+          console.log('menu_analysis total_theo_cost:', extracted?.total_theo_cost)
         } else {
           const table = TABLE_MAP[fileType]
           if (table) {
@@ -52,13 +65,43 @@ export async function POST(request: NextRequest) {
           }
         }
       } catch (err) {
-        console.error(`Error re-processing ${fileType}:`, err)
+        console.error(`Error processing ${fileType}:`, err)
         results[fileType] = { error: 'No se pudo procesar' }
       }
     }
 
+    console.log('productMixData present:', !!productMixData)
+    console.log('menuAnalysisData present:', !!menuAnalysisData)
+
     if (productMixData || menuAnalysisData) {
-      await supabase.from('product_mix_data').delete().eq('report_id', reportId)
+      // Borrar registro anterior y guardar nuevo
+      const { error: deleteError } = await supabase
+        .from('product_mix_data')
+        .delete()
+        .eq('report_id', reportId)
+      if (deleteError) console.error('Error deleting product_mix_data:', deleteError)
+
+      // Si solo viene uno de los dos, recuperar el otro de Supabase
+      if (!productMixData || !menuAnalysisData) {
+        console.log('Solo un archivo recibido, recuperando el otro de Supabase...')
+        const { data: existing } = await supabase
+          .from('product_mix_data')
+          .select('raw_data')
+          .eq('report_id', reportId)
+          .single()
+
+        if (existing?.raw_data) {
+          if (!productMixData && existing.raw_data.product_mix) {
+            productMixData = existing.raw_data.product_mix
+            console.log('product_mix recuperado de Supabase')
+          }
+          if (!menuAnalysisData && existing.raw_data.menu_analysis) {
+            menuAnalysisData = existing.raw_data.menu_analysis
+            console.log('menu_analysis recuperado de Supabase')
+          }
+        }
+      }
+
       await saveProductMixCombined(reportId, productMixData, menuAnalysisData)
     }
 
@@ -94,6 +137,14 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
           sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
         }
       })
+      if (sheets.length === 0) {
+        // fallback: usar todas las hojas si no encuentra las esperadas
+        console.log('product_mix: sheets disponibles:', workbook.SheetNames)
+        workbook.SheetNames.forEach((name: string) => {
+          const sheet = workbook.Sheets[name]
+          sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
+        })
+      }
     } else {
       workbook.SheetNames.forEach((name: string) => {
         const sheet = workbook.Sheets[name]
@@ -101,7 +152,16 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
       })
     }
     fileContent = sheets.join('\n\n')
+  } else {
+    // Intentar leer como texto si no es CSV ni Excel conocido
+    fileContent = buffer.toString('utf-8')
   }
+
+  if (!fileContent || fileContent.trim().length === 0) {
+    throw new Error(`Archivo vacío o formato no reconocido para ${fileType}`)
+  }
+
+  console.log(`fileContent length for ${fileType}:`, fileContent.length)
 
   const weekStart = getWeekStart(week)
   const weekEnd = getWeekEnd(week)
@@ -193,14 +253,21 @@ ${dateInstruction}
   const text = response.content[0].type === 'text' ? response.content[0].text : ''
   const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
 
+  console.log(`Claude raw response for ${fileType} (first 300 chars):`, clean.substring(0, 300))
+
   try {
     return JSON.parse(clean)
   } catch {
+    console.error(`Parse error for ${fileType}. Raw text:`, clean.substring(0, 500))
     throw new Error(`No se pudo parsear la respuesta de Claude para ${fileType}`)
   }
 }
 
 async function saveProductMixCombined(reportId: string, productMix: any, menuAnalysis: any) {
+  console.log('saveProductMixCombined - productMix present:', !!productMix)
+  console.log('saveProductMixCombined - menuAnalysis present:', !!menuAnalysis)
+  console.log('saveProductMixCombined - menuAnalysis by_item count:', menuAnalysis?.by_item?.length)
+
   const insertData: Record<string, any> = {
     report_id: reportId,
     raw_data: { product_mix: productMix, menu_analysis: menuAnalysis },
@@ -209,12 +276,17 @@ async function saveProductMixCombined(reportId: string, productMix: any, menuAna
   if (productMix) {
     insertData.by_menu = productMix.by_menu
     insertData.by_category = productMix.by_category || buildCategoryFromMenus(productMix.by_menu)
+    insertData.by_item = productMix.by_item
+    insertData.total_net_sales = productMix.total_net_sales
+    insertData.total_qty = productMix.total_qty
   }
 
-  if (productMix?.by_item && menuAnalysis?.by_item) {
+  if (productMix?.by_item && menuAnalysis?.by_item && menuAnalysis.by_item.length > 0) {
+    // Caso completo: hacer match por nombre de item
     const theoCostByCategory: Record<string, number> = {
       food: 0, na_beverage: 0, liquor: 0, beer: 0, wine: 0, general: 0
     }
+    let matchCount = 0
     productMix.by_item.forEach((toastItem: any) => {
       const r365Item = menuAnalysis.by_item.find((r: any) =>
         r.item?.toLowerCase().trim() === toastItem.item?.toLowerCase().trim()
@@ -222,17 +294,27 @@ async function saveProductMixCombined(reportId: string, productMix: any, menuAna
       if (r365Item && Number(r365Item.theo_cost) > 0) {
         const cat = toastItem.menu_category || 'general'
         theoCostByCategory[cat] = (theoCostByCategory[cat] || 0) + Number(r365Item.theo_cost)
+        matchCount++
       }
     })
+    console.log(`Match count: ${matchCount} de ${productMix.by_item.length} items`)
     insertData.theo_cost_by_category = theoCostByCategory
     insertData.total_theo_cost = Object.values(theoCostByCategory)
       .reduce((a: number, b: number) => a + b, 0)
-  } else if (menuAnalysis?.total_theo_cost) {
+    console.log('total_theo_cost calculado:', insertData.total_theo_cost)
+
+  } else if (menuAnalysis?.total_theo_cost && Number(menuAnalysis.total_theo_cost) > 0) {
+    // Caso parcial: usar total directo de R365 sin match por categoría
     insertData.total_theo_cost = menuAnalysis.total_theo_cost
+    console.log('Usando total_theo_cost directo de R365:', insertData.total_theo_cost)
   }
 
   const { error } = await supabase.from('product_mix_data').insert(insertData)
-  if (error) console.error('Error saving product_mix_data:', error)
+  if (error) {
+    console.error('Error saving product_mix_data:', error)
+  } else {
+    console.log('product_mix_data guardado correctamente')
+  }
 }
 
 function buildCategoryFromMenus(byMenu: any[]) {
