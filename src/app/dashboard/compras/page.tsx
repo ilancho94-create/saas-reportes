@@ -431,6 +431,80 @@ export default function ComprasPage() {
                     <p className="text-gray-600 text-xs mb-3">Solo aparece en 1 semana — sube más reportes para ver tendencia</p>
                   )}
 
+                  {/* Impacto del cambio de precio */}
+                  {prevItem && latestItem && Math.abs(latestItem.unit_cost - prevItem.unit_cost) > 0.001 && (() => {
+                    const diff = latestItem.unit_cost - prevItem.unit_cost
+                    const weeklyQtyVal = avgWeeklyQty(selectedItem)
+                    const weeklyImpact = diff * weeklyQtyVal
+                    const monthlyImpact = weeklyImpact * 4.33
+                    const annualImpact = weeklyImpact * 52
+                    const isIncrease = diff > 0
+                    const vendors = vendorAnalysis(selectedItem)
+                    const cheapest = vendors[0]
+                    const currentVendorCost = latestItem.unit_cost
+                    const savingsPerUnit = cheapest ? currentVendorCost - cheapest.avg_cost : 0
+                    const weeklySavings = savingsPerUnit * weeklyQtyVal
+                    return (
+                      <div className="mt-6 space-y-3">
+                        <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider">
+                          Impacto del cambio de precio vs semana anterior
+                        </p>
+                        <div className={`rounded-xl p-4 border ${isIncrease ? 'bg-red-950/40 border-red-800' : 'bg-green-950/40 border-green-800'}`}>
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className={`text-sm font-semibold ${isIncrease ? 'text-red-400' : 'text-green-400'}`}>
+                              {isIncrease ? '▲ Subió' : '▼ Bajó'} {fmt(Math.abs(diff))}/{latestItem.uom}
+                            </span>
+                            <span className="text-gray-500 text-xs">
+                              ({isIncrease ? '+' : ''}{((diff / prevItem.unit_cost) * 100).toFixed(1)}%)
+                            </span>
+                            <span className="text-gray-600 text-xs">· Qty prom. semanal: {weeklyQtyVal.toFixed(2)} {latestItem.uom}</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="text-center">
+                              <p className={`text-lg font-bold ${isIncrease ? 'text-red-400' : 'text-green-400'}`}>
+                                {isIncrease ? '+' : ''}{fmt(weeklyImpact)}
+                              </p>
+                              <p className="text-gray-500 text-xs">por semana</p>
+                            </div>
+                            <div className="text-center">
+                              <p className={`text-lg font-bold ${isIncrease ? 'text-red-400' : 'text-green-400'}`}>
+                                {isIncrease ? '+' : ''}{fmt(monthlyImpact)}
+                              </p>
+                              <p className="text-gray-500 text-xs">por mes</p>
+                            </div>
+                            <div className="text-center">
+                              <p className={`text-lg font-bold ${isIncrease ? 'text-red-300' : 'text-green-300'}`}>
+                                {isIncrease ? '+' : ''}{fmt(annualImpact)}
+                              </p>
+                              <p className="text-gray-500 text-xs">por año</p>
+                            </div>
+                          </div>
+                        </div>
+                        {vendors.length > 1 && savingsPerUnit > 0.01 && (
+                          <div className="bg-blue-950/40 border border-blue-800 rounded-xl p-4">
+                            <p className="text-blue-300 text-xs font-semibold mb-2">
+                              💡 Ahorro potencial comprando con {cheapest.vendor}
+                            </p>
+                            <div className="grid grid-cols-3 gap-3">
+                              <div className="text-center">
+                                <p className="text-blue-400 text-lg font-bold">{fmt(weeklySavings)}</p>
+                                <p className="text-gray-500 text-xs">por semana</p>
+                              </div>
+                              <div className="text-center">
+                                <p className="text-blue-400 text-lg font-bold">{fmt(weeklySavings * 4.33)}</p>
+                                <p className="text-gray-500 text-xs">por mes</p>
+                              </div>
+                              <div className="text-center">
+                                <p className="text-blue-300 text-lg font-bold">{fmt(weeklySavings * 52)}</p>
+                                <p className="text-gray-500 text-xs">por año</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+
                   {vendors.length > 0 && (
                     <div className="mt-6">
                       <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">Proveedores históricos</p>
