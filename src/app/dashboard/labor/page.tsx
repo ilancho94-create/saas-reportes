@@ -673,7 +673,7 @@ function ComparativaTab({ filtered, fmt, pct }: any) {
                     const p = (w.labor?.by_position || []).find((p: any) => p.position === pos)
                     return p ? Number(p.total_pay) : null
                   })
-                  const validValues = values.filter(v => v !== null) as number[]
+                  const validValues = values.filter((v): v is number => v !== null)
                   const trend = validValues.length >= 2
                     ? validValues[validValues.length - 1] - validValues[validValues.length - 2]
                     : null
