@@ -49,28 +49,19 @@ export default function UsersPage() {
 
   async function loadUsers() {
     setLoading(true)
-    const { data } = await supabase
-      .from('user_restaurants')
-      .select(`
-        id, role, custom_permissions, active, created_at,
-        user_id,
-        profiles:user_id(id, role)
-      `)
-      .eq('restaurant_id', currentRestaurant!.id)
-      .order('created_at')
+    const { data, error } = await supabase
+      .rpc('get_users_with_email', { p_restaurant_id: currentRestaurant!.id })
 
-    // Obtener emails de auth.users via función o fallback
     if (data) {
-      // Enriquecer con emails desde profiles o user_invitations
-      const enriched = await Promise.all(data.map(async (ur: any) => {
-        const { data: authUser } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('id', ur.user_id)
-          .single()
-        return { ...ur, email: ur.user_id } // fallback con user_id
-      }))
       setUsers(data)
+    } else {
+      // Fallback si la función no existe
+      const { data: fallback } = await supabase
+        .from('user_restaurants')
+        .select('id, role, custom_permissions, active, created_at, user_id')
+        .eq('restaurant_id', currentRestaurant!.id)
+        .order('created_at')
+      setUsers(fallback || [])
     }
     setLoading(false)
   }
@@ -247,7 +238,7 @@ export default function UsersPage() {
               {users.map((ur: any) => (
                 <div key={ur.id} className={`px-6 py-4 flex items-center justify-between gap-4 ${!ur.active ? 'opacity-50' : ''}`}>
                   <div className="flex-1 min-w-0">
-                    <p className="text-white text-sm font-medium">{ur.user_id}</p>
+                    <p className="text-white text-sm font-medium">{ur.email || ur.user_id}</p>
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                         ur.role === 'admin' || ur.role === 'owner' ? 'bg-yellow-900 text-yellow-300' :
