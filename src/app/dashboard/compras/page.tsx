@@ -21,6 +21,7 @@ export default function ComprasPage() {
   const [activeTab, setActiveTab] = useState<'impacto' | 'tendencia' | 'proveedores' | 'tabla'>('impacto')
   const [selectedCategory, setSelectedCategory] = useState('Todas')
   const [searchQuery, setSearchQuery] = useState('')
+  const [selectedItem, setSelectedItem] = useState<string | null>(null)
   const [showAllTendencia, setShowAllTendencia] = useState(false)
   const [showAllProveedores, setShowAllProveedores] = useState(false)
 
@@ -35,6 +36,13 @@ export default function ComprasPage() {
     if (selectedWeek) loadWeekData(selectedWeek)
   }, [selectedWeek])
 
+  // Reset selected item when changing tabs
+  useEffect(() => {
+    setSelectedItem(null)
+    setSearchQuery('')
+    setShowAllTendencia(false)
+  }, [activeTab])
+
   async function loadData() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
@@ -43,16 +51,12 @@ export default function ComprasPage() {
     setRestaurantId(rid)
     const { data: rest } = await supabase.from('restaurants').select('*').eq('id', rid).single()
     setRestaurant(rest)
-
-    // Obtener semanas con datos de receiving
     const { data: allRows } = await supabase
       .from('receiving_data')
       .select('week, item_name, uom, category, vendor, total_qty, unit_cost, total_cost')
       .eq('restaurant_id', rid)
       .order('week', { ascending: false })
-
     if (!allRows?.length) { setLoading(false); return }
-
     setAllData(allRows)
     const uniqueWeeks = [...new Set(allRows.map(r => r.week))].sort().reverse()
     setWeeks(uniqueWeeks)
@@ -63,13 +67,9 @@ export default function ComprasPage() {
   async function loadWeekData(week: string) {
     const current = allData.filter(r => r.week === week)
     setCurrentItems(current)
-
-    // Semana anterior
     const weekIdx = weeks.indexOf(week)
     if (weekIdx < weeks.length - 1) {
-      const prevWeek = weeks[weekIdx + 1]
-      const prev = allData.filter(r => r.week === prevWeek)
-      setPrevItems(prev)
+      setPrevItems(allData.filter(r => r.week === weeks[weekIdx + 1]))
     } else {
       setPrevItems([])
     }
@@ -80,12 +80,6 @@ export default function ComprasPage() {
     return '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
-  function fmtShort(n: any) {
-    if (!n && n !== 0) return '—'
-    return '$' + Math.abs(Number(n)).toLocaleString('en-US', { maximumFractionDigits: 0 })
-  }
-
-  // Calcular variaciones para impacto
   const prevMap: Record<string, any> = {}
   prevItems.forEach(i => { prevMap[i.item_name] = i })
 
@@ -107,18 +101,12 @@ export default function ComprasPage() {
   const increased = variations.filter(v => v.impact > 0).sort((a, b) => b.impact - a.impact)
   const decreased = variations.filter(v => v.impact < 0).sort((a, b) => a.impact - b.impact)
   const totalImpact = variations.reduce((a, b) => a + b.impact, 0)
-
-  // Nuevos items esta semana
   const newItems = currentItems.filter(i => !prevMap[i.item_name])
 
-  // KPIs por categoría para impacto
   const impactByCat: Record<string, number> = {}
-  variations.forEach(v => {
-    impactByCat[v.category] = (impactByCat[v.category] || 0) + v.impact
-  })
+  variations.forEach(v => { impactByCat[v.category] = (impactByCat[v.category] || 0) + v.impact })
   const byCatData = Object.entries(impactByCat).map(([cat, impact]) => ({ cat, impact })).sort((a, b) => b.impact - a.impact)
 
-  // Tendencia por item
   const itemHistory = (itemName: string) => {
     return allData
       .filter(r => r.item_name === itemName)
@@ -126,21 +114,20 @@ export default function ComprasPage() {
       .map(r => ({ week: r.week.replace('2026-', ''), unit_cost: r.unit_cost, total_cost: r.total_cost, total_qty: r.total_qty }))
   }
 
-  // Items filtrados para búsqueda
   const filteredItems = currentItems.filter(item => {
     const matchCat = selectedCategory === 'Todas' || item.category === selectedCategory
     const matchSearch = !searchQuery || item.item_name.toLowerCase().includes(searchQuery.toLowerCase())
     return matchCat && matchSearch
   })
 
-  // Proveedores por item buscado
   const vendorAnalysis = (itemName: string) => {
     const history = allData.filter(r => r.item_name === itemName)
-    const byVendor: Record<string, { weeks: number; avg_cost: number; min_cost: number; max_cost: number; costs: number[] }> = {}
+    const byVendor: Record<string, { weeks: number; avg_cost: number; min_cost: number; max_cost: number; costs: number[]; total_qty: number }> = {}
     history.forEach(r => {
-      if (!byVendor[r.vendor]) byVendor[r.vendor] = { weeks: 0, avg_cost: 0, min_cost: Infinity, max_cost: -Infinity, costs: [] }
+      if (!byVendor[r.vendor]) byVendor[r.vendor] = { weeks: 0, avg_cost: 0, min_cost: Infinity, max_cost: -Infinity, costs: [], total_qty: 0 }
       byVendor[r.vendor].weeks++
       byVendor[r.vendor].costs.push(r.unit_cost)
+      byVendor[r.vendor].total_qty += Number(r.total_qty || 0)
       byVendor[r.vendor].min_cost = Math.min(byVendor[r.vendor].min_cost, r.unit_cost)
       byVendor[r.vendor].max_cost = Math.max(byVendor[r.vendor].max_cost, r.unit_cost)
     })
@@ -148,6 +135,15 @@ export default function ComprasPage() {
       v.avg_cost = v.costs.reduce((a, b) => a + b, 0) / v.costs.length
     })
     return Object.entries(byVendor).map(([vendor, data]) => ({ vendor, ...data })).sort((a, b) => a.avg_cost - b.avg_cost)
+  }
+
+  // Calcular qty promedio semanal comprada para proyecciones de ahorro
+  const avgWeeklyQty = (itemName: string) => {
+    const history = allData.filter(r => r.item_name === itemName)
+    if (!history.length) return 0
+    const totalQty = history.reduce((a, r) => a + Number(r.total_qty || 0), 0)
+    const uniqueWeeks = new Set(history.map(r => r.week)).size
+    return totalQty / uniqueWeeks
   }
 
   if (loading) return (
@@ -158,7 +154,6 @@ export default function ComprasPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-white font-bold text-lg">🧾 Compras de Insumos</h1>
@@ -176,7 +171,6 @@ export default function ComprasPage() {
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="border-b border-gray-800 bg-gray-900 px-6">
         <div className="flex gap-1">
           {[
@@ -204,9 +198,9 @@ export default function ComprasPage() {
               Subir reporte
             </button>
           </div>
+
         ) : activeTab === 'impacto' ? (
           <>
-            {/* KPIs */}
             <div className="grid grid-cols-4 gap-4">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-xs mb-1">Impacto neto {selectedWeek}</p>
@@ -232,7 +226,6 @@ export default function ComprasPage() {
               </div>
             </div>
 
-            {/* Gráfica por categoría */}
             {byCatData.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Impacto por categoría</h2>
@@ -242,8 +235,7 @@ export default function ComprasPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v.toFixed(0)} />
                     <YAxis type="category" dataKey="cat" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} tickLine={false} width={90} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any) => [fmt(v), 'Impacto']} />
+                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Impacto']} />
                     <ReferenceLine x={0} stroke="#374151" />
                     <Bar dataKey="impact" radius={[0, 4, 4, 0]}>
                       {byCatData.map((entry, i) => <Cell key={i} fill={entry.impact > 0 ? '#ef4444' : '#22c55e'} />)}
@@ -253,7 +245,6 @@ export default function ComprasPage() {
               </div>
             )}
 
-            {/* Items que subieron */}
             {increased.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">
@@ -264,7 +255,6 @@ export default function ComprasPage() {
               </div>
             )}
 
-            {/* Items que bajaron */}
             {decreased.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">
@@ -275,7 +265,6 @@ export default function ComprasPage() {
               </div>
             )}
 
-            {/* Items nuevos */}
             {newItems.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">
@@ -313,137 +302,164 @@ export default function ComprasPage() {
               </div>
             )}
           </>
+
         ) : activeTab === 'tendencia' ? (
           <div className="space-y-6">
-            {/* Buscador */}
+            {/* Header con búsqueda y limpiar */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center gap-3 mb-4">
                 <h2 className="text-white font-semibold flex-1">Tendencia por item</h2>
+                {selectedItem && (
+                  <button onClick={() => { setSelectedItem(null); setSearchQuery('') }}
+                    className="text-gray-400 hover:text-white text-xs border border-gray-700 px-3 py-1.5 rounded-lg transition">
+                    ← Ver todos los items
+                  </button>
+                )}
               </div>
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Escribe para filtrar items..."
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 mb-4"
-              />
-              {(() => {
-                const allSorted = [...new Set(currentItems.map(i => i.item_name))]
-                  .map(name => {
-                    const item = currentItems.find(i => i.item_name === name)
-                    return { name, total_cost: item?.total_cost || 0, uom: item?.uom || '', category: item?.category }
-                  })
-                  .filter(i => !searchQuery || i.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                  .sort((a, b) => b.total_cost - a.total_cost)
-                const top = showAllTendencia ? allSorted : allSorted.slice(0, 10)
-                return (
-                  <div>
-                    <p className="text-gray-500 text-xs mb-2">
-                      {searchQuery ? `${allSorted.length} resultados` : 'Top 10 por mayor gasto — click para ver detalle'}
-                    </p>
-                    <div className="flex flex-wrap gap-2 mb-3">
-                      {top.map(item => (
-                        <button key={item.name}
-                          onClick={() => setSearchQuery(item.name)}
-                          className={`px-3 py-1.5 rounded-lg text-xs border transition text-left ${
-                            searchQuery === item.name
-                              ? 'bg-blue-600 border-blue-500 text-white'
-                              : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white'
-                          }`}>
-                          <span className="font-medium">{item.name}</span>
-                          <span className="text-gray-500 ml-1">· {fmt(item.total_cost)}</span>
-                          <span className="text-gray-600 ml-1 text-xs">· {item.uom}</span>
-                        </button>
-                      ))}
-                    </div>
-                    {!searchQuery && allSorted.length > 10 && (
-                      <button onClick={() => setShowAllTendencia(!showAllTendencia)}
-                        className="text-blue-400 text-xs hover:text-blue-300 transition">
-                        {showAllTendencia ? 'Ver menos' : `Cargar más (${allSorted.length - 10} items más)`}
-                      </button>
-                    )}
-                  </div>
-                )
-              })()}
-            </div>
 
-            {/* Detalle del item seleccionado */}
-            {searchQuery && (() => {
-              const exactMatch = currentItems.find(i => i.item_name === searchQuery)
-              const matches = exactMatch
-                ? [searchQuery]
-                : [...new Set(allData.map((r: any) => r.item_name))]
-                    .filter(name => name.toLowerCase().includes(searchQuery.toLowerCase()))
-                    .slice(0, 5)
+              {!selectedItem && (
+                <>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={e => { setSearchQuery(e.target.value); setShowAllTendencia(false) }}
+                    placeholder="Buscar item..."
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 mb-4 text-sm"
+                  />
+                  {(() => {
+                    const allSorted = [...new Set(currentItems.map(i => i.item_name))]
+                      .map(name => {
+                        const item = currentItems.find(i => i.item_name === name)
+                        return { name, total_cost: item?.total_cost || 0, uom: item?.uom || '', category: item?.category, vendor: item?.vendor }
+                      })
+                      .filter(i => !searchQuery || i.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                      .sort((a, b) => b.total_cost - a.total_cost)
+                    const top = showAllTendencia ? allSorted : allSorted.slice(0, 10)
 
-              return matches.map(itemName => {
-                const history = itemHistory(itemName)
-                const vendors = vendorAnalysis(itemName)
-                const latestItem = allData.find((r: any) => r.item_name === itemName && r.week === weeks[0])
-
-                return (
-                  <div key={itemName} className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                    <div className="flex items-start justify-between mb-4">
+                    return (
                       <div>
-                        <h3 className="text-white font-bold text-base">{itemName}</h3>
-                        <p className="text-gray-500 text-xs mt-0.5">
-                          {latestItem?.category} · {latestItem?.uom} · Proveedor actual: {latestItem?.vendor || '—'}
+                        <p className="text-gray-500 text-xs mb-3">
+                          {searchQuery ? `${allSorted.length} resultados` : 'Top 10 por mayor gasto — click para ver detalle'}
                         </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-white font-bold">{fmt(latestItem?.unit_cost)}</p>
-                        <p className="text-gray-500 text-xs">costo actual</p>
-                        {prevMap[itemName] && (
-                          <p className={`text-xs ${latestItem?.unit_cost > prevMap[itemName].unit_cost ? 'text-red-400' : 'text-green-400'}`}>
-                            {latestItem?.unit_cost > prevMap[itemName].unit_cost ? '▲' : '▼'}
-                            {' '}{Math.abs(((latestItem?.unit_cost - prevMap[itemName].unit_cost) / prevMap[itemName].unit_cost) * 100).toFixed(1)}% vs sem. ant.
-                          </p>
+                        <div className="space-y-2">
+                          {top.map((item, idx) => {
+                            const prev = prevMap[item.name]
+                            const diff = prev ? item.total_cost / (currentItems.find(i => i.item_name === item.name)?.unit_cost || 1) * (currentItems.find(i => i.item_name === item.name)?.unit_cost - prev.unit_cost) : null
+                            const pct = prev && prev.unit_cost > 0 ? ((currentItems.find(i => i.item_name === item.name)?.unit_cost - prev.unit_cost) / prev.unit_cost) * 100 : null
+                            const currentUnit = currentItems.find(i => i.item_name === item.name)?.unit_cost
+                            return (
+                              <button key={item.name} onClick={() => setSelectedItem(item.name)}
+                                className="w-full flex items-center justify-between p-3 bg-gray-800 border border-gray-700 rounded-xl hover:border-gray-500 hover:bg-gray-750 transition text-left">
+                                <div className="flex items-center gap-3">
+                                  <span className="text-gray-500 text-xs w-5">{idx + 1}</span>
+                                  <div>
+                                    <p className="text-white text-sm font-medium">{item.name}</p>
+                                    <p className="text-gray-500 text-xs">{item.category} · {item.uom} · {item.vendor}</p>
+                                  </div>
+                                </div>
+                                <div className="text-right flex items-center gap-4">
+                                  {pct !== null && (
+                                    <span className={`text-xs font-medium ${pct > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                      {pct > 0 ? '▲' : '▼'} {Math.abs(pct).toFixed(1)}%
+                                    </span>
+                                  )}
+                                  <div>
+                                    <p className="text-white text-sm font-bold">{fmt(item.total_cost)}</p>
+                                    <p className="text-gray-500 text-xs">{fmt(currentUnit)}/{item.uom}</p>
+                                  </div>
+                                  <span className="text-gray-600 text-xs">→</span>
+                                </div>
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {allSorted.length > 10 && (
+                          <button onClick={() => setShowAllTendencia(!showAllTendencia)}
+                            className="text-blue-400 text-xs hover:text-blue-300 transition mt-3">
+                            {showAllTendencia ? 'Ver menos' : `Cargar más (${allSorted.length - 10} items más)`}
+                          </button>
                         )}
                       </div>
+                    )
+                  })()}
+                </>
+              )}
+            </div>
+
+            {/* Detalle item seleccionado */}
+            {selectedItem && (() => {
+              const history = itemHistory(selectedItem)
+              const vendors = vendorAnalysis(selectedItem)
+              const latestItem = currentItems.find(i => i.item_name === selectedItem) ||
+                allData.find(r => r.item_name === selectedItem && r.week === weeks[0])
+              const prevItem = prevMap[selectedItem]
+
+              return (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                  <div className="flex items-start justify-between mb-6">
+                    <div>
+                      <h3 className="text-white font-bold text-lg">{selectedItem}</h3>
+                      <p className="text-gray-500 text-xs mt-1">
+                        {latestItem?.category} · {latestItem?.uom} · Proveedor actual: <span className="text-gray-300">{latestItem?.vendor || '—'}</span>
+                      </p>
                     </div>
-
-                    {history.length > 1 ? (
-                      <>
-                        <p className="text-gray-500 text-xs mb-3">Historial de precio unitario ({history.length} semanas)</p>
-                        <ResponsiveContainer width="100%" height={160}>
-                          <LineChart data={history}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                            <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
-                            <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v.toFixed(2)} />
-                            <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                              formatter={(v: any) => [fmt(v), 'Costo unit.']} />
-                            <Line type="monotone" dataKey="unit_cost" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 4 }} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </>
-                    ) : (
-                      <p className="text-gray-600 text-xs mb-3">Solo aparece en 1 semana — sube más reportes para ver tendencia</p>
-                    )}
-
-                    {vendors.length > 0 && (
-                      <div className="mt-4">
-                        <p className="text-gray-500 text-xs mb-2">Proveedores históricos</p>
-                        <div className="space-y-2">
-                          {vendors.map((v, i) => (
-                            <div key={i} className={`flex items-center justify-between p-2 rounded-lg border ${i === 0 ? 'bg-green-950 border-green-800' : 'bg-gray-800 border-gray-700'}`}>
-                              <div>
-                                <p className="text-white text-xs font-medium">{v.vendor}</p>
-                                <p className="text-gray-500 text-xs">{v.weeks} sem. · {i === 0 ? '⭐ más barato' : ''}</p>
-                              </div>
-                              <div className="text-right">
-                                <p className={`text-sm font-bold ${i === 0 ? 'text-green-400' : 'text-gray-300'}`}>{fmt(v.avg_cost)}</p>
-                                <p className="text-gray-600 text-xs">min {fmt(v.min_cost)} · max {fmt(v.max_cost)}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <div className="text-right">
+                      <p className="text-white font-bold text-xl">{fmt(latestItem?.unit_cost)}<span className="text-gray-500 text-xs font-normal">/{latestItem?.uom}</span></p>
+                      <p className="text-gray-500 text-xs">costo actual</p>
+                      {prevItem && (
+                        <p className={`text-xs font-medium mt-0.5 ${latestItem?.unit_cost > prevItem.unit_cost ? 'text-red-400' : 'text-green-400'}`}>
+                          {latestItem?.unit_cost > prevItem.unit_cost ? '▲' : '▼'}
+                          {' '}{Math.abs(((latestItem?.unit_cost - prevItem.unit_cost) / prevItem.unit_cost) * 100).toFixed(1)}% vs sem. ant.
+                        </p>
+                      )}
+                    </div>
                   </div>
-                )
-              })
+
+                  {history.length > 1 ? (
+                    <>
+                      <p className="text-gray-500 text-xs mb-3">Historial de precio unitario ({history.length} semanas)</p>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <LineChart data={history}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                          <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v.toFixed(2)} />
+                          <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                            formatter={(v: any) => [fmt(v), 'Costo unit.']} />
+                          <Line type="monotone" dataKey="unit_cost" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 5 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </>
+                  ) : (
+                    <p className="text-gray-600 text-xs mb-3">Solo aparece en 1 semana — sube más reportes para ver tendencia</p>
+                  )}
+
+                  {vendors.length > 0 && (
+                    <div className="mt-6">
+                      <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">Proveedores históricos</p>
+                      <div className="space-y-2">
+                        {vendors.map((v, i) => (
+                          <div key={i} className={`flex items-center justify-between p-3 rounded-xl border ${i === 0 ? 'bg-green-950 border-green-800' : 'bg-gray-800 border-gray-700'}`}>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="text-white text-sm font-medium">{v.vendor}</p>
+                                {i === 0 && <span className="text-green-400 text-xs">⭐ más barato</span>}
+                              </div>
+                              <p className="text-gray-500 text-xs mt-0.5">{v.weeks} semanas comprado</p>
+                            </div>
+                            <div className="text-right">
+                              <p className={`text-sm font-bold ${i === 0 ? 'text-green-400' : 'text-gray-300'}`}>{fmt(v.avg_cost)}<span className="text-xs font-normal text-gray-500">/{latestItem?.uom}</span></p>
+                              <p className="text-gray-600 text-xs">min {fmt(v.min_cost)} · max {fmt(v.max_cost)}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
             })()}
           </div>
+
         ) : activeTab === 'proveedores' ? (
           <div className="space-y-6">
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -467,10 +483,27 @@ export default function ComprasPage() {
                   .map(name => {
                     const item = currentItems.find(i => i.item_name === name)
                     const vendors = vendorAnalysis(name)
-                    const savings = vendors[vendors.length - 1].avg_cost - vendors[0].avg_cost
-                    return { name, total_cost: item?.total_cost || 0, uom: item?.uom || allData.find((r: any) => r.item_name === name)?.uom, vendors, savings }
+                    const cheapest = vendors[0]
+                    const mostExpensive = vendors[vendors.length - 1]
+                    const savingsPerUnit = mostExpensive.avg_cost - cheapest.avg_cost
+                    const weeklyQty = avgWeeklyQty(name)
+                    const weeklySavings = savingsPerUnit * weeklyQty
+                    const monthlySavings = weeklySavings * 4.33
+                    const annualSavings = weeklySavings * 52
+                    const uom = item?.uom || allData.find((r: any) => r.item_name === name)?.uom
+                    return {
+                      name,
+                      total_cost: item?.total_cost || 0,
+                      uom,
+                      vendors,
+                      savingsPerUnit,
+                      weeklySavings,
+                      monthlySavings,
+                      annualSavings,
+                      weeklyQty,
+                    }
                   })
-                  .sort((a, b) => b.total_cost - a.total_cost)
+                  .sort((a, b) => b.annualSavings - a.annualSavings)
                 const withMultipleVendors = showAllProveedores ? allWithMultiple : allWithMultiple.slice(0, 10)
 
                 if (withMultipleVendors.length === 0) return (
@@ -482,29 +515,45 @@ export default function ComprasPage() {
                 return (
                   <div className="space-y-4">
                     <p className="text-gray-500 text-xs mb-2">
-                      {searchQuery ? `${allWithMultiple.length} resultados` : `Top 10 items con mayor gasto que tienen múltiples proveedores históricos`}
+                      {searchQuery ? `${allWithMultiple.length} resultados` : `Top 10 items con mayor ahorro potencial anual — ordenados por impacto`}
                     </p>
-                    {withMultipleVendors.map(({ name, total_cost, uom, vendors, savings }) => (
+                    {withMultipleVendors.map(({ name, total_cost, uom, vendors, savingsPerUnit, weeklySavings, monthlySavings, annualSavings, weeklyQty }) => (
                       <div key={name} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-                        <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-start justify-between mb-3">
                           <div>
                             <p className="text-white font-medium">{name}</p>
-                            <p className="text-gray-500 text-xs">{uom} · Gasto esta semana: {fmt(total_cost)}</p>
+                            <p className="text-gray-500 text-xs mt-0.5">{uom} · Qty prom. semanal: {weeklyQty.toFixed(2)} · Gasto esta semana: {fmt(total_cost)}</p>
                           </div>
-                          <span className="text-green-400 text-xs bg-green-950 px-2 py-1 rounded">
-                            Ahorro potencial: {fmt(savings)}/{uom}
-                          </span>
+                          <div className="text-right ml-4">
+                            <p className="text-green-400 text-xs font-semibold">Ahorro potencial</p>
+                            <div className="flex gap-3 mt-1">
+                              <div className="text-right">
+                                <p className="text-green-400 text-sm font-bold">{fmt(weeklySavings)}</p>
+                                <p className="text-gray-600 text-xs">semanal</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-green-400 text-sm font-bold">{fmt(monthlySavings)}</p>
+                                <p className="text-gray-600 text-xs">mensual</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-green-300 text-sm font-bold">{fmt(annualSavings)}</p>
+                                <p className="text-gray-600 text-xs">anual</p>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                         <div className="space-y-2">
                           {vendors.map((v: any, i: number) => (
-                            <div key={i} className={`flex items-center justify-between p-2 rounded-lg ${i === 0 ? 'bg-green-950 border border-green-800' : 'bg-gray-700'}`}>
+                            <div key={i} className={`flex items-center justify-between p-2.5 rounded-lg ${i === 0 ? 'bg-green-950 border border-green-800' : 'bg-gray-700'}`}>
                               <div className="flex items-center gap-2">
                                 {i === 0 && <span className="text-green-400 text-xs">⭐ Más barato</span>}
-                                <p className="text-white text-xs">{v.vendor}</p>
+                                <p className="text-white text-xs font-medium">{v.vendor}</p>
                                 <span className="text-gray-500 text-xs">· {v.weeks} sem.</span>
                               </div>
                               <div className="text-right">
-                                <p className={`text-sm font-bold ${i === 0 ? 'text-green-400' : 'text-gray-300'}`}>{fmt(v.avg_cost)}<span className="text-xs font-normal text-gray-500">/{uom}</span></p>
+                                <p className={`text-sm font-bold ${i === 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                                  {fmt(v.avg_cost)}<span className="text-xs font-normal text-gray-500">/{uom}</span>
+                                </p>
                                 <p className="text-gray-600 text-xs">min {fmt(v.min_cost)} · max {fmt(v.max_cost)}</p>
                               </div>
                             </div>
@@ -512,7 +561,7 @@ export default function ComprasPage() {
                         </div>
                       </div>
                     ))}
-                    {!searchQuery && allWithMultiple.length > 10 && (
+                    {allWithMultiple.length > 10 && (
                       <button onClick={() => setShowAllProveedores(!showAllProveedores)}
                         className="text-blue-400 text-xs hover:text-blue-300 transition w-full text-center py-2">
                         {showAllProveedores ? 'Ver menos' : `Cargar más (${allWithMultiple.length - 10} items más)`}
@@ -523,8 +572,8 @@ export default function ComprasPage() {
               })()}
             </div>
           </div>
+
         ) : (
-          /* TABLA COMPLETA */
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-white font-semibold">
@@ -606,7 +655,7 @@ function VariationTable({ items, type, fmt }: any) {
             <th className="text-right text-gray-500 text-xs pb-3">Sem. ant.</th>
             <th className="text-right text-gray-500 text-xs pb-3">Esta sem.</th>
             <th className="text-right text-gray-500 text-xs pb-3">Variación</th>
-            <th className="text-right text-gray-500 text-xs pb-3">Qty</th>
+            <th className="text-right text-gray-500 text-xs pb-3">Qty · UOM</th>
             <th className="text-right text-gray-500 text-xs pb-3">Impacto $</th>
           </tr>
         </thead>
