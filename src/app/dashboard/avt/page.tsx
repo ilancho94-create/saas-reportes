@@ -598,8 +598,21 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
     byResponsible[t.responsible].push(t)
   })
 
-  async function updateTrackingStatus(id: string, status: string) {
+  async function updateTrackingStatus(id: string, status: string, itemName: string) {
     await supabase.from('avt_tracking').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
+    // Recargar todo el tracking para sincronizar todos los componentes
+    const { data: allT } = await supabase.from('avt_tracking')
+      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: false })
+    if (allT) {
+      // Actualizar allTracking en el padre via onSave que ya tiene el mecanismo
+      const item = allT.find((t: any) => t.id === id)
+      if (item) {
+        onSave(
+          { name: itemName, variance_dollar: item.variance_dollar, category: item.category, uom: item.uom, unit_cost: item.unit_cost },
+          { status }
+        )
+      }
+    }
   }
 
   return (
@@ -735,7 +748,7 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
                         )}
                       </div>
                       <select value={task.status} onChange={async e => {
-                        await updateTrackingStatus(task.id, e.target.value)
+                        await updateTrackingStatus(task.id, e.target.value, task.item_name)
                         task.status = e.target.value
                       }}
                         className={`bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none shrink-0 ${STATUS_LABELS[task.status]?.color}`}>
