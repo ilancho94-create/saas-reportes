@@ -416,7 +416,7 @@ export function parseReceivingCsv(csvContent: string): any[] {
 
   const idx = (name: string) => headers.indexOf(name)
   const itemNameIdx = idx('ItemName')
-  const uomIdx = idx('UofM')
+  const uomIdx = idx('PurchaseUnit')
   const cat1Idx = idx('ItemCategory1')
   const vendorIdx = idx('VendorName')
   const totalQtyIdx = idx('TotalItemQuantity')
