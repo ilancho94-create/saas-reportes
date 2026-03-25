@@ -46,37 +46,37 @@ const STEPS = [
     extracts: 'Faltantes y sobrantes de inventario',
   },
   {
-  id: 'product_mix',
-  label: 'Product Mix Toast',
-  icon: '🍽️',
-  system: 'Toast',
-  required: false,
-  where: 'Toast → Reports → Product Mix',
-  instructions: [
-    'Abre Toast POS',
-    'Ve a Reports',
-    'Click en Product Mix',
-    'Selecciona el rango de fechas de tu semana',
-    'Exporta como .xlsx',
-  ],
-  extracts: 'Ventas por item y categoría de menú',
-},
-{
-  id: 'menu_analysis',
-  label: 'Menu Item Analysis',
-  icon: '📋',
-  system: 'R365',
-  required: false,
-  where: 'R365 → Reports → Menu Item Analysis',
-  instructions: [
-    'Abre Restaurant365',
-    'Ve a Reports',
-    'Busca Menu Item Analysis',
-    'Selecciona el rango de fechas de tu semana',
-    'Exporta como .xlsx',
-  ],
-  extracts: 'Costo teórico por item para calcular % P.Mix',
-},
+    id: 'product_mix',
+    label: 'Product Mix Toast',
+    icon: '🍽️',
+    system: 'Toast',
+    required: false,
+    where: 'Toast → Reports → Product Mix',
+    instructions: [
+      'Abre Toast POS',
+      'Ve a Reports',
+      'Click en Product Mix',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .xlsx',
+    ],
+    extracts: 'Ventas por item y categoría de menú',
+  },
+  {
+    id: 'menu_analysis',
+    label: 'Menu Item Analysis',
+    icon: '📋',
+    system: 'R365',
+    required: false,
+    where: 'R365 → Reports → Menu Item Analysis',
+    instructions: [
+      'Abre Restaurant365',
+      'Ve a Reports',
+      'Busca Menu Item Analysis',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .xlsx',
+    ],
+    extracts: 'Costo teórico por item para calcular % P.Mix',
+  },
 ]
 
 const TABLE_MAP: Record<string, string> = {
@@ -114,7 +114,7 @@ export default function EditReportPage() {
     if (!rep) { window.location.href = '/dashboard/history'; return }
     setReport(rep)
 
-    // Verificar qué datos ya existen
+    // Verificar qué datos ya existen en tablas estándar
     const checks = await Promise.all(
       Object.entries(TABLE_MAP).map(async ([fileType, table]) => {
         const { data } = await supabase
@@ -122,7 +122,16 @@ export default function EditReportPage() {
         return [fileType, !!data]
       })
     )
-    setExistingData(Object.fromEntries(checks))
+
+    // Verificar product_mix_data (cubre product_mix Y menu_analysis)
+    const { data: pmData } = await supabase
+      .from('product_mix_data').select('id').eq('report_id', reportId).single()
+
+    const existingMap = Object.fromEntries(checks)
+    existingMap['product_mix'] = !!pmData
+    existingMap['menu_analysis'] = !!pmData
+
+    setExistingData(existingMap)
     setLoading(false)
   }
 
