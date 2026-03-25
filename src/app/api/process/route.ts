@@ -31,9 +31,14 @@ export async function POST(request: NextRequest) {
       if (profile?.restaurant_id) restaurant_id = profile.restaurant_id
     }
 
+    // ── Calcular fechas usando fiscal_year_start del restaurante ──────────────
+    const weekStart = await getWeekStartFromFiscal(week, restaurant_id)
+    const weekEnd = getWeekEndFromStart(weekStart)
+    // ─────────────────────────────────────────────────────────────────────────
+
     const { data: report, error: reportError } = await supabase
       .from('reports')
-      .insert({ restaurant_id, week, week_start: getWeekStart(week), week_end: getWeekEnd(week) })
+      .insert({ restaurant_id, week, week_start: weekStart, week_end: weekEnd })
       .select().single()
 
     if (reportError) {
@@ -51,7 +56,7 @@ export async function POST(request: NextRequest) {
       if (!file) continue
       console.log(`Processing ${fileType}...`)
       try {
-        const extracted = await extractWithClaude(file, fileType, week)
+        const extracted = await extractWithClaude(file, fileType, week, weekStart, weekEnd)
         results[fileType] = extracted
         if (extracted.date_warning) warnings[fileType] = extracted.date_warning
         await saveToDatabase(report.id, fileType, extracted)
@@ -203,7 +208,14 @@ async function processProductMixDirect(
   else console.log('product_mix_data saved OK')
 }
 
-async function extractWithClaude(file: File, fileType: string, week: string): Promise<any> {
+// ── extractWithClaude ahora recibe weekStart y weekEnd ya calculados ──────────
+async function extractWithClaude(
+  file: File,
+  fileType: string,
+  week: string,
+  weekStart: string,
+  weekEnd: string
+): Promise<any> {
   const bytes = await file.arrayBuffer()
   const buffer = Buffer.from(bytes)
   const isCSV = file.name.endsWith('.csv')
@@ -223,8 +235,6 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
     fileContent = sheets.join('\n\n')
   }
 
-  const weekStart = getWeekStart(week)
-  const weekEnd = getWeekEnd(week)
   const dateInstruction = `Semana: ${week} (${weekStart} al ${weekEnd}). Si fechas no coinciden agrega "date_warning" con mensaje. Si coinciden pon "date_warning": null.`
 
   const prompts: Record<string, string> = {
@@ -353,7 +363,41 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
   if (error) console.error(`Error saving ${fileType}:`, error)
 }
 
-function getWeekStart(week: string): string {
+// ── Calcula week_start usando fiscal_year_start del restaurante ───────────────
+// Si no está configurado, hace fallback a ISO 8601.
+async function getWeekStartFromFiscal(week: string, restaurantId: string): Promise<string> {
+  const [, weekNum] = week.split('-W').map(Number)
+
+  const { data: restaurant } = await supabase
+    .from('restaurants')
+    .select('fiscal_year_start')
+    .eq('id', restaurantId)
+    .single()
+
+  if (restaurant?.fiscal_year_start) {
+    // fiscal_year_start es el lunes de W1 del año fiscal del restaurante.
+    // Cada semana es exactamente 7 días después.
+    const fiscalStart = new Date(restaurant.fiscal_year_start + 'T00:00:00')
+    const weekStart = new Date(fiscalStart)
+    weekStart.setDate(fiscalStart.getDate() + (weekNum - 1) * 7)
+    return weekStart.toISOString().split('T')[0]
+  }
+
+  // Fallback: ISO 8601 estándar
+  console.warn(`fiscal_year_start no configurado para restaurante ${restaurantId}, usando ISO 8601`)
+  return getWeekStartISO(week)
+}
+
+// Calcula week_end sumando 6 días al week_start
+function getWeekEndFromStart(weekStart: string): string {
+  const start = new Date(weekStart + 'T00:00:00')
+  const end = new Date(start)
+  end.setDate(start.getDate() + 6)
+  return end.toISOString().split('T')[0]
+}
+
+// ISO 8601 puro — solo se usa como fallback
+function getWeekStartISO(week: string): string {
   const [year, weekNum] = week.split('-W').map(Number)
   const jan4 = new Date(year, 0, 4)
   const startOfWeek1 = new Date(jan4)
@@ -363,9 +407,6 @@ function getWeekStart(week: string): string {
   return weekStart.toISOString().split('T')[0]
 }
 
-function getWeekEnd(week: string): string {
-  const start = new Date(getWeekStart(week))
-  const end = new Date(start)
-  end.setDate(start.getDate() + 6)
-  return end.toISOString().split('T')[0]
-}
+// Estas dos se mantienen por si algún otro lugar del código las llama
+function getWeekStart(week: string): string { return getWeekStartISO(week) }
+function getWeekEnd(week: string): string { return getWeekEndFromStart(getWeekStartISO(week)) }
