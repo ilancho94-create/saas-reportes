@@ -132,6 +132,22 @@ const STEPS = [
     ],
     extracts: 'Faltantes y sobrantes de inventario con impacto en dólares',
   },
+  {
+    id: 'receiving',
+    label: 'Compras de Insumos',
+    icon: '📦',
+    system: 'R365',
+    required: false,
+    where: 'R365 → Reports → Receiving by Purchased Item',
+    instructions: [
+      'Abre Restaurant365',
+      'Ve a Reports',
+      'Busca Receiving by Purchased Item',
+      'Selecciona el rango de fechas de tu semana',
+      'Exporta como .csv',
+    ],
+    extracts: 'Costo unitario por insumo, proveedor y categoría para análisis de variación de precios',
+  },
 ]
 
 export default function UploadPage() {
