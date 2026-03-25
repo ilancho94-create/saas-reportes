@@ -209,10 +209,12 @@ Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks
 ${dateInstruction}
 {"total":número,"total_applications":número,"total_orders":número,"items":[{"name":string,"applications":número,"orders":número,"amount":número,"pct":número}],"date_warning":string|null}`,
 
-    waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
+ waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
+Columnas del reporte: Number, Date, Location, Item, U of M, Qty, Each Amount, Total, Account Name.
+NO incluyas el campo "comment" — ese campo no existe en este reporte.
 ${dateInstruction}
-{"total_cost":número,"total_qty":número,"items":[{"name":string,"uom":string,"qty":número,"unit_cost":número,"total":número,"category":string,"comment":string}],"date_warning":string|null}`,
+{"total_cost":número,"total_qty":número,"items":[{"name":string,"uom":string,"qty":número,"unit_cost":número,"total":número,"category":string}],"date_warning":string|null}`,
 
     inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
