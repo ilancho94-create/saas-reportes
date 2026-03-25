@@ -21,7 +21,7 @@ export default function SettingsPage() {
   const [newMappedTo, setNewMappedTo] = useState('food')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante'>('categorias')
+  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items'>('categorias')
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -117,6 +117,7 @@ export default function SettingsPage() {
           {[
             { key: 'categorias', label: 'Mapeo de Categorías' },
             { key: 'restaurante', label: 'Restaurante' },
+          { key: 'mapeo-items', label: '🗂 Mapeo de Items R365' },
           ].map(tab => (
             <button
               key={tab.key}
@@ -288,7 +289,22 @@ export default function SettingsPage() {
           </div>
         )}
 
+      )}
+
+        {activeTab === 'mapeo-items' && (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h2 className="text-white font-semibold mb-2">Mapeo de Items R365</h2>
+            <p className="text-gray-500 text-sm mb-6">
+              Asigna categoría (food, beverage, liquor...) a los items de Menu Item Analysis
+              que no tienen match automático con Toast. Se aplican en todos los reportes futuros.
+            </p>
+            
+              href="/dashboard/settings/mapeo-items"
+              className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-xl transition"
+            >
+              🗂 Ir a Mapeo de Items →
+            </a>
+          </div>
+        )}
+
       </main>
-    </div>
-  )
-}
