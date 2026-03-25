@@ -20,7 +20,7 @@ export default function LaborPage() {
   const [weeks, setWeeks] = useState<any[]>([])
   const [range, setRange] = useState(4)
   const [restaurantName, setRestaurantName] = useState('')
-  const [activeTab, setActiveTab] = useState<'resumen' | 'empleados'>('resumen')
+  const [activeTab, setActiveTab] = useState<'resumen' | 'empleados' | 'comparativa'>('resumen')
   const [filterEmployee, setFilterEmployee] = useState('')
   const [filterPosition, setFilterPosition] = useState('')
   const [selectedWeekIdx, setSelectedWeekIdx] = useState<number | null>(null)
@@ -142,7 +142,7 @@ export default function LaborPage() {
 
       <div className="border-b border-gray-800 bg-gray-900 px-6">
         <div className="flex gap-1">
-          {[{ key: 'resumen', label: '📊 Resumen' }, { key: 'empleados', label: '👤 Por empleado / puesto' }].map(tab => (
+          {[{ key: 'resumen', label: '📊 Resumen' }, { key: 'empleados', label: '👤 Por empleado / puesto' }, { key: 'comparativa', label: '📈 Comparativa semanal' }].map(tab => (
             <button key={tab.key} onClick={() => setActiveTab(tab.key as any)}
               className={`px-4 py-3 text-sm font-medium transition border-b-2 ${
                 activeTab === tab.key ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
@@ -448,7 +448,258 @@ export default function LaborPage() {
             </div>
           </>
         )}
+
+        {activeTab === 'comparativa' && (
+          <ComparativaTab filtered={filtered} fmt={fmt} pct={pct} />
+        )}
+
       </main>
+    </div>
+  )
+}
+
+function ComparativaTab({ filtered, fmt, pct }: any) {
+  // Build employee comparison: current vs previous week
+  const latest = filtered[filtered.length - 1]
+  const prev = filtered[filtered.length - 2]
+
+  const latestEmps: any[] = latest?.labor?.by_employee || []
+  const prevEmps: any[] = prev?.labor?.by_employee || []
+  const prevMap: Record<string, any> = {}
+  prevEmps.forEach(e => { prevMap[e.name] = e })
+
+  // Compare employees
+  const comparison = latestEmps.map(emp => {
+    const prevEmp = prevMap[emp.name]
+    const hoursDiff = prevEmp ? Number(emp.regular_hours) + Number(emp.ot_hours || 0) - (Number(prevEmp.regular_hours) + Number(prevEmp.ot_hours || 0)) : null
+    const costDiff = prevEmp ? Number(emp.total_pay) - Number(prevEmp.total_pay) : null
+    const otDiff = prevEmp ? Number(emp.ot_hours || 0) - Number(prevEmp.ot_hours || 0) : null
+    return { ...emp, prevEmp, hoursDiff, costDiff, otDiff, isNew: !prevEmp }
+  }).sort((a, b) => Math.abs(b.costDiff || 0) - Math.abs(a.costDiff || 0))
+
+  // Employees who left (in prev but not in latest)
+  const leftEmps = prevEmps.filter(e => !latestEmps.find(le => le.name === e.name))
+
+  // Top OT across all weeks
+  const otRanking: Record<string, number> = {}
+  filtered.forEach((w: any) => {
+    (w.labor?.by_employee || []).forEach((e: any) => {
+      otRanking[e.name] = (otRanking[e.name] || 0) + Number(e.ot_hours || 0)
+    })
+  })
+  const topOT = Object.entries(otRanking)
+    .filter(([_, h]) => h > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+
+  // Cost per hour by position across weeks
+  const positionCostPerHour: Record<string, { totalPay: number; totalHours: number }> = {}
+  filtered.forEach((w: any) => {
+    (w.labor?.by_position || []).forEach((p: any) => {
+      if (!positionCostPerHour[p.position]) positionCostPerHour[p.position] = { totalPay: 0, totalHours: 0 }
+      positionCostPerHour[p.position].totalPay += Number(p.total_pay || 0)
+      positionCostPerHour[p.position].totalHours += Number(p.regular_hours || 0) + Number(p.ot_hours || 0)
+    })
+  })
+  const positionRates = Object.entries(positionCostPerHour)
+    .map(([pos, data]) => ({
+      pos,
+      rate: data.totalHours > 0 ? data.totalPay / data.totalHours : 0,
+      totalPay: data.totalPay,
+    }))
+    .sort((a, b) => b.rate - a.rate)
+
+  if (filtered.length < 2) return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
+      <p className="text-gray-500">Necesitas al menos 2 semanas de datos para ver la comparativa.</p>
+    </div>
+  )
+
+  return (
+    <div className="space-y-6">
+      {/* Employee week-over-week comparison */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h2 className="text-white font-semibold mb-1">
+          Comparativa por empleado — {latest?.report?.week} vs {prev?.report?.week}
+        </h2>
+        <p className="text-gray-500 text-xs mb-4">Diferencia de horas y costo entre las dos semanas más recientes</p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800">
+                <th className="text-left text-gray-500 text-xs pb-3 font-medium">Empleado</th>
+                <th className="text-left text-gray-500 text-xs pb-3 font-medium">Puesto</th>
+                <th className="text-right text-gray-500 text-xs pb-3 font-medium">Sem. ant. hrs</th>
+                <th className="text-right text-gray-500 text-xs pb-3 font-medium">Esta sem. hrs</th>
+                <th className="text-right text-gray-500 text-xs pb-3 font-medium">Δ Horas</th>
+                <th className="text-right text-gray-500 text-xs pb-3 font-medium">Sem. ant. $</th>
+                <th className="text-right text-gray-500 text-xs pb-3 font-medium">Esta sem. $</th>
+                <th className="text-right text-gray-500 text-xs pb-3 font-medium">Δ Costo</th>
+                <th className="text-right text-gray-500 text-xs pb-3 font-medium">Δ OT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparison.map((emp: any) => {
+                const totalHours = Number(emp.regular_hours) + Number(emp.ot_hours || 0)
+                const prevTotalHours = emp.prevEmp ? Number(emp.prevEmp.regular_hours) + Number(emp.prevEmp.ot_hours || 0) : null
+                return (
+                  <tr key={emp.name} className={`border-b border-gray-800 hover:bg-gray-800 transition ${emp.isNew ? 'bg-blue-950/20' : ''}`}>
+                    <td className="py-2.5 text-gray-300 font-medium">
+                      {emp.name}
+                      {emp.isNew && <span className="ml-2 text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded">Nuevo</span>}
+                    </td>
+                    <td className="py-2.5">
+                      <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{emp.position}</span>
+                    </td>
+                    <td className="py-2.5 text-right text-gray-500 text-xs">
+                      {prevTotalHours !== null ? prevTotalHours.toFixed(1) + 'h' : '—'}
+                    </td>
+                    <td className="py-2.5 text-right text-gray-300 text-xs">{totalHours.toFixed(1)}h</td>
+                    <td className="py-2.5 text-right text-xs">
+                      {emp.hoursDiff !== null ? (
+                        <span className={emp.hoursDiff > 0 ? 'text-red-400' : emp.hoursDiff < 0 ? 'text-green-400' : 'text-gray-600'}>
+                          {emp.hoursDiff > 0 ? '+' : ''}{emp.hoursDiff.toFixed(1)}h
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td className="py-2.5 text-right text-gray-500 text-xs">
+                      {emp.prevEmp ? fmt(emp.prevEmp.total_pay) : '—'}
+                    </td>
+                    <td className="py-2.5 text-right text-white text-xs font-medium">{fmt(emp.total_pay)}</td>
+                    <td className="py-2.5 text-right text-xs">
+                      {emp.costDiff !== null ? (
+                        <span className={emp.costDiff > 0 ? 'text-red-400' : emp.costDiff < 0 ? 'text-green-400' : 'text-gray-600'}>
+                          {emp.costDiff > 0 ? '+' : ''}{fmt(emp.costDiff)}
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td className="py-2.5 text-right text-xs">
+                      {emp.otDiff !== null && emp.otDiff !== 0 ? (
+                        <span className={emp.otDiff > 0 ? 'text-amber-400' : 'text-green-400'}>
+                          {emp.otDiff > 0 ? '+' : ''}{emp.otDiff.toFixed(1)}h
+                        </span>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {leftEmps.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-gray-800">
+            <p className="text-gray-500 text-xs mb-2">No trabajaron esta semana ({leftEmps.length}):</p>
+            <div className="flex flex-wrap gap-2">
+              {leftEmps.map(e => (
+                <span key={e.name} className="text-xs bg-gray-800 text-gray-500 px-2.5 py-1 rounded-full">
+                  {e.name} · {e.position}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Top OT */}
+        {topOT.length > 0 && (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h2 className="text-white font-semibold mb-1">Top Overtime acumulado</h2>
+            <p className="text-gray-500 text-xs mb-4">Empleados con más horas extra en el período</p>
+            <div className="space-y-3">
+              {topOT.map(([name, hours], i) => (
+                <div key={name} className="flex items-center gap-3">
+                  <span className={`text-xs font-bold w-5 ${i === 0 ? 'text-amber-400' : 'text-gray-500'}`}>{i + 1}</span>
+                  <span className="text-gray-300 text-sm flex-1 truncate">{name}</span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-20 bg-gray-800 rounded-full h-1.5">
+                      <div className="bg-amber-500 h-1.5 rounded-full"
+                        style={{ width: `${Math.min((hours / topOT[0][1]) * 100, 100)}%` }} />
+                    </div>
+                    <span className="text-amber-400 text-xs font-medium w-12 text-right">{hours.toFixed(1)}h</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Cost per hour by position */}
+        {positionRates.length > 0 && (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h2 className="text-white font-semibold mb-1">Costo promedio por hora / puesto</h2>
+            <p className="text-gray-500 text-xs mb-4">Promedio acumulado del período seleccionado</p>
+            <div className="space-y-3">
+              {positionRates.map(({ pos, rate, totalPay }) => (
+                <div key={pos} className="flex items-center gap-3">
+                  <span className="text-gray-300 text-sm flex-1 truncate">{pos}</span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-20 bg-gray-800 rounded-full h-1.5">
+                      <div className="bg-purple-500 h-1.5 rounded-full"
+                        style={{ width: `${Math.min((rate / positionRates[0].rate) * 100, 100)}%` }} />
+                    </div>
+                    <span className="text-purple-400 text-xs font-medium w-16 text-right">
+                      ${rate.toFixed(2)}/h
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Weekly trend per position */}
+      {filtered[0]?.labor?.by_position && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h2 className="text-white font-semibold mb-4">Costo por puesto semana a semana</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800">
+                  <th className="text-left text-gray-500 text-xs pb-3 font-medium">Puesto</th>
+                  {filtered.map((w: any) => (
+                    <th key={w.report.week} className="text-right text-gray-500 text-xs pb-3 font-medium">
+                      {w.report.week.replace('2026-', '')}
+                    </th>
+                  ))}
+                  <th className="text-right text-gray-500 text-xs pb-3 font-medium">Tendencia</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...new Set(filtered.flatMap((w: any) => (w.labor?.by_position || []).map((p: any) => p.position)))].map((pos: any) => {
+                  const values = filtered.map((w: any) => {
+                    const p = (w.labor?.by_position || []).find((p: any) => p.position === pos)
+                    return p ? Number(p.total_pay) : null
+                  })
+                  const validValues = values.filter(v => v !== null) as number[]
+                  const trend = validValues.length >= 2
+                    ? validValues[validValues.length - 1] - validValues[validValues.length - 2]
+                    : null
+                  return (
+                    <tr key={pos} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                      <td className="py-2.5 text-gray-300 text-sm">{pos}</td>
+                      {values.map((val, i) => (
+                        <td key={i} className="py-2.5 text-right text-gray-400 text-xs">
+                          {val !== null ? fmt(val) : <span className="text-gray-700">—</span>}
+                        </td>
+                      ))}
+                      <td className="py-2.5 text-right">
+                        {trend !== null ? (
+                          <span className={`text-xs font-medium ${trend > 0 ? 'text-red-400' : trend < 0 ? 'text-green-400' : 'text-gray-600'}`}>
+                            {trend > 0 ? '▲' : '▼'} {fmt(Math.abs(trend))}
+                          </span>
+                        ) : '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
