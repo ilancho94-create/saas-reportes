@@ -117,7 +117,7 @@ export default function SettingsPage() {
           {[
             { key: 'categorias', label: 'Mapeo de Categorías' },
             { key: 'restaurante', label: 'Restaurante' },
-          { key: 'mapeo-items', label: '🗂 Mapeo de Items R365' },
+            { key: 'mapeo-items', label: '🗂 Mapeo de Items R365' },
           ].map(tab => (
             <button
               key={tab.key}
@@ -138,7 +138,6 @@ export default function SettingsPage() {
 
         {activeTab === 'categorias' && (
           <>
-            {/* Explicación */}
             <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
               <h2 className="text-blue-300 font-semibold mb-1">¿Para qué sirve esto?</h2>
               <p className="text-blue-400 text-sm">
@@ -152,7 +151,6 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            {/* Agregar nueva categoría */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Agregar categoría</h2>
               <div className="flex gap-3">
@@ -196,7 +194,6 @@ export default function SettingsPage() {
               )}
             </div>
 
-            {/* Mapeos actuales agrupados */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Mapeos actuales</h2>
               {mappings.length === 0 ? (
@@ -240,7 +237,6 @@ export default function SettingsPage() {
               )}
             </div>
 
-            {/* Preview del cálculo */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-3">Vista previa del mapeo</h2>
               <p className="text-gray-500 text-xs mb-4">
@@ -289,8 +285,6 @@ export default function SettingsPage() {
           </div>
         )}
 
-      )}
-
         {activeTab === 'mapeo-items' && (
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-white font-semibold mb-2">Mapeo de Items R365</h2>
@@ -298,7 +292,7 @@ export default function SettingsPage() {
               Asigna categoría (food, beverage, liquor...) a los items de Menu Item Analysis
               que no tienen match automático con Toast. Se aplican en todos los reportes futuros.
             </p>
-            
+            <a
               href="/dashboard/settings/mapeo-items"
               className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-xl transition"
             >
@@ -308,3 +302,6 @@ export default function SettingsPage() {
         )}
 
       </main>
+    </div>
+  )
+}
