@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 
 const STEPS = [
@@ -189,6 +189,7 @@ export default function UploadPage() {
   const [files, setFiles] = useState<Record<string, File>>({})
   const [uploading, setUploading] = useState(false)
   const [status, setStatus] = useState('')
+  const [dragOver, setDragOver] = useState(false)
 
   const isLastStep = currentStep === STEPS.length
   const step = STEPS[currentStep]
@@ -198,13 +199,25 @@ export default function UploadPage() {
     setFiles(prev => ({ ...prev, [step.id]: file }))
   }
 
-  function goNext() {
-    setCurrentStep(prev => prev + 1)
-  }
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) handleFile(file)
+  }, [step?.id])
 
-  function goBack() {
-    setCurrentStep(prev => prev - 1)
-  }
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+  }, [])
+
+  function goNext() { setCurrentStep(prev => prev + 1) }
+  function goBack() { setCurrentStep(prev => prev - 1) }
 
   async function handleProcess() {
     if (!week) return setStatus('Por favor selecciona la semana')
@@ -350,17 +363,34 @@ export default function UploadPage() {
                   </label>
                 </div>
               ) : (
-                <label className="cursor-pointer block border-2 border-dashed border-gray-700 hover:border-gray-500 rounded-xl p-8 text-center transition">
-                  <div className="text-4xl mb-3">📎</div>
-                  <p className="text-white font-medium mb-1">Seleccionar archivo</p>
-                  <p className="text-gray-500 text-sm">Excel, CSV o PDF</p>
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls,.csv,.pdf"
-                    className="hidden"
-                    onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
-                  />
-                </label>
+                <div
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  className={`relative rounded-xl border-2 border-dashed transition-all ${
+                    dragOver
+                      ? 'border-blue-400 bg-blue-950/30'
+                      : 'border-gray-700 hover:border-gray-500'
+                  }`}
+                >
+                  <label className="cursor-pointer block p-8 text-center">
+                    <div className="text-4xl mb-3">{dragOver ? '📂' : '📎'}</div>
+                    <p className="text-white font-medium mb-1">
+                      {dragOver ? 'Suelta el archivo aquí' : 'Arrastra tu archivo aquí'}
+                    </p>
+                    <p className="text-gray-500 text-sm mb-3">o</p>
+                    <span className="inline-block bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-4 py-2 rounded-lg transition">
+                      Buscar archivo
+                    </span>
+                    <p className="text-gray-600 text-xs mt-3">Excel, CSV o PDF</p>
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv,.pdf"
+                      className="hidden"
+                      onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
+                    />
+                  </label>
+                </div>
               )}
             </div>
 
@@ -374,10 +404,7 @@ export default function UploadPage() {
               </button>
               <div className="flex gap-3">
                 {!step.required && !files[step.id] && (
-                  <button
-                    onClick={goNext}
-                    className="text-gray-500 hover:text-gray-300 text-sm transition"
-                  >
+                  <button onClick={goNext} className="text-gray-500 hover:text-gray-300 text-sm transition">
                     Omitir →
                   </button>
                 )}
@@ -428,10 +455,7 @@ export default function UploadPage() {
                 </div>
               )}
               <div className="flex gap-3">
-                <button
-                  onClick={goBack}
-                  className="text-gray-400 hover:text-white text-sm transition"
-                >
+                <button onClick={goBack} className="text-gray-400 hover:text-white text-sm transition">
                   ← Regresar
                 </button>
                 <button

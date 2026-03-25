@@ -19,13 +19,18 @@ export default function SettingsPage() {
   const restaurantId = useRestaurantId()
   const { currentRestaurant, currentOrganization } = useAuth()
   const [loading, setLoading] = useState(true)
+  const [targets, setTargets] = useState<Record<string, number>>({
+    food: 28, na_beverage: 8, liquor: 20, beer: 20, wine: 20
+  })
+  const [savingTargets, setSavingTargets] = useState(false)
+  const [targetsStatus, setTargetsStatus] = useState('')
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [newCategory, setNewCategory] = useState('')
   const [newMappedTo, setNewMappedTo] = useState('food')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items'>('categorias')
+  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas'>('categorias')
 
   useEffect(() => {
     if (restaurantId) loadData()
@@ -45,6 +50,18 @@ export default function SettingsPage() {
       .eq('restaurant_id', restaurantId)
       .order('source_category')
     setMappings(maps || [])
+
+    // Load cost targets
+    const { data: tgts } = await supabase
+      .from('cost_targets')
+      .select('category, target_pct')
+      .eq('restaurant_id', restaurantId)
+    if (tgts && tgts.length > 0) {
+      const tgtsMap: Record<string, number> = {}
+      tgts.forEach((t: any) => { tgtsMap[t.category] = Number(t.target_pct) })
+      setTargets(prev => ({ ...prev, ...tgtsMap }))
+    }
+
     setLoading(false)
   }
 
@@ -84,6 +101,31 @@ export default function SettingsPage() {
     setTimeout(() => setStatus(''), 2000)
   }
 
+  async function saveTargets() {
+    if (!restaurantId) return
+    setSavingTargets(true)
+    setTargetsStatus('')
+
+    const upserts = Object.entries(targets).map(([category, target_pct]) => ({
+      restaurant_id: restaurantId,
+      category,
+      target_pct,
+      updated_at: new Date().toISOString(),
+    }))
+
+    const { error } = await supabase
+      .from('cost_targets')
+      .upsert(upserts, { onConflict: 'restaurant_id,category' })
+
+    setSavingTargets(false)
+    if (!error) {
+      setTargetsStatus('✅ Metas guardadas')
+      setTimeout(() => setTargetsStatus(''), 3000)
+    } else {
+      setTargetsStatus('❌ Error: ' + error.message)
+    }
+  }
+
   const groupedMappings = MAPPED_TO_OPTIONS.map(opt => ({
     ...opt,
     categories: mappings.filter(m => m.mapped_to === opt.value)
@@ -108,6 +150,7 @@ export default function SettingsPage() {
             { key: 'categorias', label: 'Mapeo de Categorías' },
             { key: 'restaurante', label: 'Restaurante' },
             { key: 'mapeo-items', label: '🗂 Mapeo de Items R365' },
+            { key: 'metas', label: '🎯 Metas de Costo' },
           ].map(tab => (
             <button key={tab.key} onClick={() => setActiveTab(tab.key as any)}
               className={`px-4 py-3 text-sm font-medium transition border-b-2 ${
@@ -258,7 +301,161 @@ export default function SettingsPage() {
           </div>
         )}
 
+
+        {activeTab === 'metas' && (
+          <MetasTab
+            targets={targets}
+            setTargets={setTargets}
+            saveTargets={saveTargets}
+            savingTargets={savingTargets}
+            targetsStatus={targetsStatus}
+          />
+        )}
+
       </main>
+    </div>
+  )
+}
+
+const COST_CATEGORIES = [
+  { key: 'food', label: 'Food', color: '#f97316', icon: '🍔', description: 'Costo de alimentos vs ventas de food' },
+  { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', icon: '🥤', description: 'Bebidas no alcohólicas vs ventas de beverage' },
+  { key: 'liquor', label: 'Licor', color: '#a855f7', icon: '🥃', description: 'Licor vs ventas de liquor' },
+  { key: 'beer', label: 'Cerveza', color: '#eab308', icon: '🍺', description: 'Cerveza vs ventas de beer' },
+  { key: 'wine', label: 'Vino', color: '#ec4899', icon: '🍷', description: 'Vino vs ventas de wine' },
+]
+
+function MetasTab({ targets, setTargets, saveTargets, savingTargets, targetsStatus }: any) {
+  return (
+    <div className="space-y-6">
+      <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
+        <h2 className="text-blue-300 font-semibold mb-1">🎯 ¿Qué son las metas de costo?</h2>
+        <p className="text-blue-400 text-sm">
+          Define el porcentaje máximo de costo que quieres alcanzar para cada categoría.
+          Estos objetivos se comparan contra el <strong>costo real</strong> (compras) y el <strong>costo teórico</strong> (según recetas y P.Mix)
+          para darte una visión completa de qué tan realistas son tus metas.
+        </p>
+        <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
+          <div className="bg-blue-900/50 rounded-lg p-2.5">
+            <p className="text-blue-300 font-medium">Meta configurada</p>
+            <p className="text-blue-400 mt-0.5">Lo que quieres lograr</p>
+          </div>
+          <div className="bg-blue-900/50 rounded-lg p-2.5">
+            <p className="text-blue-300 font-medium">Costo teórico</p>
+            <p className="text-blue-400 mt-0.5">Lo que debería costar según tus recetas</p>
+          </div>
+          <div className="bg-blue-900/50 rounded-lg p-2.5">
+            <p className="text-blue-300 font-medium">Costo real</p>
+            <p className="text-blue-400 mt-0.5">Lo que realmente gastaste</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h2 className="text-white font-semibold mb-6">Configurar metas por categoría</h2>
+        <div className="space-y-5">
+          {COST_CATEGORIES.map(cat => {
+            const value = targets[cat.key] ?? 0
+            const isAggressive = value < 15
+            const isRealistic = value >= 15 && value <= 35
+            const isLenient = value > 35
+            return (
+              <div key={cat.key} className="flex items-center gap-6">
+                <div className="w-40 shrink-0">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span>{cat.icon}</span>
+                    <span className="text-white text-sm font-medium">{cat.label}</span>
+                  </div>
+                  <p className="text-gray-600 text-xs">{cat.description}</p>
+                </div>
+                <div className="flex-1">
+                  <input
+                    type="range"
+                    min={0}
+                    max={60}
+                    step={0.5}
+                    value={value}
+                    onChange={e => setTargets((prev: any) => ({ ...prev, [cat.key]: Number(e.target.value) }))}
+                    className="w-full accent-blue-500"
+                  />
+                  <div className="flex justify-between text-xs text-gray-700 mt-0.5">
+                    <span>0%</span>
+                    <span>30%</span>
+                    <span>60%</span>
+                  </div>
+                </div>
+                <div className="w-24 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      max={60}
+                      step={0.5}
+                      value={value}
+                      onChange={e => setTargets((prev: any) => ({ ...prev, [cat.key]: Number(e.target.value) }))}
+                      className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-sm text-center focus:outline-none focus:border-blue-500"
+                    />
+                    <span className="text-gray-400 text-sm">%</span>
+                  </div>
+                  <p className={`text-xs mt-1 ${isAggressive ? 'text-red-400' : isRealistic ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {isAggressive ? '⚠️ Muy agresivo' : isRealistic ? '✓ Realista' : '○ Holgado'}
+                  </p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {targetsStatus && (
+          <p className={`mt-4 text-sm ${targetsStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
+            {targetsStatus}
+          </p>
+        )}
+
+        <div className="mt-6 pt-5 border-t border-gray-800 flex items-center justify-between">
+          <p className="text-gray-500 text-xs">Los cambios aplican inmediatamente en Food Cost y Costo de Uso</p>
+          <button
+            onClick={saveTargets}
+            disabled={savingTargets}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition"
+          >
+            {savingTargets ? 'Guardando...' : '💾 Guardar metas'}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h2 className="text-white font-semibold mb-4">Referencia de la industria</h2>
+        <div className="grid grid-cols-5 gap-3">
+          {COST_CATEGORIES.map(cat => {
+            const benchmarks: Record<string, { min: number; max: number; ideal: number }> = {
+              food: { min: 25, max: 35, ideal: 28 },
+              na_beverage: { min: 5, max: 15, ideal: 8 },
+              liquor: { min: 15, max: 25, ideal: 20 },
+              beer: { min: 20, max: 30, ideal: 25 },
+              wine: { min: 25, max: 40, ideal: 30 },
+            }
+            const bench = benchmarks[cat.key]
+            const userTarget = targets[cat.key] ?? 0
+            const diff = userTarget - bench.ideal
+            return (
+              <div key={cat.key} className="bg-gray-800 rounded-xl p-3 text-center">
+                <p className="text-lg mb-1">{cat.icon}</p>
+                <p className="text-gray-300 text-xs font-medium mb-2">{cat.label}</p>
+                <p className="text-white text-sm font-bold">{bench.ideal}%</p>
+                <p className="text-gray-500 text-xs">ideal</p>
+                <p className="text-gray-600 text-xs mt-1">{bench.min}%–{bench.max}%</p>
+                {userTarget > 0 && (
+                  <p className={`text-xs mt-2 font-medium ${Math.abs(diff) <= 3 ? 'text-green-400' : diff > 0 ? 'text-yellow-400' : 'text-blue-400'}`}>
+                    Tu meta: {userTarget}%
+                    {Math.abs(diff) <= 3 ? ' ✓' : diff > 0 ? ' ▲' : ' ▼'}
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
