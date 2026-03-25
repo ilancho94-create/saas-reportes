@@ -680,7 +680,7 @@ function ComparativaTab({ filtered, fmt, pct }: any) {
                   return (
                     <tr key={pos} className="border-b border-gray-800 hover:bg-gray-800 transition">
                       <td className="py-2.5 text-gray-300 text-sm">{pos}</td>
-                      {values.map((val, i) => (
+                      {values.map((val: any, i: number) => (
                         <td key={i} className="py-2.5 text-right text-gray-400 text-xs">
                           {val !== null ? fmt(val) : <span className="text-gray-700">—</span>}
                         </td>
