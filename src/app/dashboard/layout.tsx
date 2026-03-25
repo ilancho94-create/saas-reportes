@@ -53,53 +53,63 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between gap-2">
           {!collapsed && (
             <div className="min-w-0 flex-1">
-              <p className="text-white font-bold text-sm">Restaurant X-Ray 🔬</p>
+              <p className="text-white font-bold text-sm mb-2">Restaurant X-Ray 🔬</p>
 
               {/* Selector de organización */}
-              {organizations.length > 1 ? (
-                <div className="relative mt-0.5">
-                  <button
-                    onClick={() => setShowOrgMenu(!showOrgMenu)}
-                    className="w-full text-left text-gray-500 text-xs hover:text-gray-300 transition flex items-center gap-1 truncate">
-                    <span className="truncate">{currentOrganization?.name}</span>
-                    <span className="shrink-0">▾</span>
-                  </button>
-                  {showOrgMenu && (
-                    <div className="absolute top-full left-0 mt-1 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
-                      <p className="text-gray-500 text-xs px-3 py-2 border-b border-gray-700">Organizaciones</p>
-                      {organizations.map(org => (
-                        <button
-                          key={org.id}
-                          onClick={() => { switchOrganization(org.id); setShowOrgMenu(false) }}
-                          className={`w-full text-left px-3 py-2 text-xs transition ${
-                            currentOrganization?.id === org.id
-                              ? 'bg-blue-600 text-white'
-                              : 'text-gray-300 hover:bg-gray-700'
-                          }`}>
-                          {org.name}
-                          <span className="text-gray-500 ml-1">({org.restaurants.length})</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className="text-gray-600 text-xs truncate mt-0.5">{currentOrganization?.name}</p>
-              )}
+              <div className="relative">
+                <button
+                  onClick={() => setShowOrgMenu(!showOrgMenu)}
+                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition flex items-center justify-between gap-1 ${
+                    showOrgMenu
+                      ? 'bg-gray-700 border-gray-600'
+                      : 'bg-gray-800 border-gray-700 hover:border-gray-600 hover:bg-gray-750'
+                  }`}>
+                  <div className="min-w-0">
+                    <p className="text-gray-400 text-xs leading-none mb-0.5">Organización</p>
+                    <p className="text-white text-xs font-medium truncate">{currentOrganization?.name || '—'}</p>
+                  </div>
+                  <span className="text-gray-500 text-xs shrink-0">{showOrgMenu ? '▲' : '▼'}</span>
+                </button>
 
-              {/* Selector de restaurante dentro de la org */}
-              {currentOrganization && currentOrganization.restaurants.length > 1 ? (
-                <select
-                  value={restaurant?.id || ''}
-                  onChange={e => switchRestaurant(e.target.value)}
-                  className="mt-0.5 w-full bg-transparent text-gray-400 text-xs focus:outline-none cursor-pointer truncate">
-                  {currentOrganization.restaurants.map(r => (
-                    <option key={r.id} value={r.id} className="bg-gray-900">{r.name}</option>
-                  ))}
-                </select>
-              ) : (
-                <p className="text-gray-400 text-xs truncate mt-0.5">{restaurant?.name}</p>
-              )}
+                {showOrgMenu && organizations.length > 1 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                    {organizations.map(org => (
+                      <button
+                        key={org.id}
+                        onClick={() => { switchOrganization(org.id); setShowOrgMenu(false) }}
+                        className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between ${
+                          currentOrganization?.id === org.id
+                            ? 'bg-blue-600 text-white'
+                            : 'text-gray-300 hover:bg-gray-700'
+                        }`}>
+                        <span>{org.name}</span>
+                        <span className={`text-xs ${currentOrganization?.id === org.id ? 'text-blue-200' : 'text-gray-500'}`}>
+                          {org.restaurants.length} rest.
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Selector de restaurante */}
+              <div className="mt-1.5">
+                {currentOrganization && currentOrganization.restaurants.length > 1 ? (
+                  <select
+                    value={restaurant?.id || ''}
+                    onChange={e => switchRestaurant(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 hover:border-gray-600 rounded-lg px-2.5 py-2 text-white text-xs focus:outline-none focus:border-blue-500 cursor-pointer">
+                    {currentOrganization.restaurants.map(r => (
+                      <option key={r.id} value={r.id} className="bg-gray-900">{r.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                    <p className="text-gray-400 text-xs leading-none mb-0.5">Restaurante</p>
+                    <p className="text-white text-xs font-medium truncate">{restaurant?.name || '—'}</p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
