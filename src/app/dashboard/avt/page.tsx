@@ -21,8 +21,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   in_progress: { label: 'En proceso', color: 'text-blue-400' },
   resolved: { label: 'Resuelto', color: 'text-green-400' },
 }
-const CATEGORIES = ['Todas', 'BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
-
+const MAIN_CATEGORIES = ['BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
 type SortKey = 'variance_dollar' | 'name' | 'unit_cost' | 'variance_qty'
 type ViewMode = 'dollar' | 'qty'
 
@@ -81,52 +80,42 @@ export default function AvtPage() {
     setTracking(map)
   }
 
-  async function saveTracking(item: any, field: string, value: string) {
-    setSavingId(item.name + field)
+  async function saveTracking(item: any, updates: Record<string, any>) {
+    setSavingId(item.name)
     const existing = tracking[item.name] || {}
     const upsertData = {
       restaurant_id: restaurantId,
       item_name: item.name,
       category: item.category,
       week: selectedWeek,
-      variance_dollar: item.unexp_var_dollar,
-      variance_qty: item.unexp_var_qty,
+      variance_dollar: Math.abs(Number(item.variance_dollar || 0)),
+      variance_qty: Math.abs(Number(item.variance_qty || 0)),
       unit_cost: item.unit_cost,
       uom: item.uom,
-      type: item.unexp_var_dollar > 0 ? 'shortage' : 'overage',
+      type: Number(item.variance_dollar) > 0 ? 'shortage' : 'overage',
       ...existing,
-      [field]: value,
+      ...updates,
       updated_at: new Date().toISOString(),
     }
     await supabase.from('avt_tracking').upsert(upsertData, { onConflict: 'restaurant_id,item_name,week' })
-    setTracking(prev => ({ ...prev, [item.name]: { ...existing, [field]: value } }))
+    setTracking(prev => ({ ...prev, [item.name]: { ...existing, ...updates } }))
     setSavingId(null)
   }
 
   function fmt(n: any) {
     if (n === null || n === undefined) return '—'
-    const num = Number(n)
-    return '$' + Math.abs(num).toLocaleString('en-US', { maximumFractionDigits: 0 })
-  }
-  function fmtQty(n: any, uom: string) {
-    if (!n) return '—'
-    return Number(n).toFixed(2) + ' ' + (uom || '')
-  }
-  function fmtSigned(n: any) {
-    if (!n) return '—'
-    const num = Number(n)
-    if (num > 0) return '+' + fmt(num)
-    return '(' + fmt(num) + ')'
+    return '$' + Math.abs(Number(n)).toLocaleString('en-US', { maximumFractionDigits: 0 })
   }
 
   const selected = weeks.find(w => w.report.week === selectedWeek)
-  const rawData = selected?.avt?.raw_data || selected?.avt
+  const avt = selected?.avt
 
-  // Reconstruir items desde raw_data con estructura nueva
-  const allShortages: any[] = rawData?.shortages || selected?.avt?.shortages || []
-  const allOverages: any[] = rawData?.overages || selected?.avt?.overages || []
+  // Extraer shortages y overages del raw_data
+  const allShortages: any[] = avt?.shortages || []
+  const allOverages: any[] = avt?.overages || []
+  const byCategory: any[] = avt?.by_category || []
 
-  // Filtrar por categoría
+  // Filtrar por categoría seleccionada
   const filteredShortages = selectedCategory === 'Todas'
     ? allShortages
     : allShortages.filter((i: any) => i.category === selectedCategory)
@@ -134,42 +123,44 @@ export default function AvtPage() {
     ? allOverages
     : allOverages.filter((i: any) => i.category === selectedCategory)
 
-  // Ordenar
+  // Top 10 FIJO por $ sin importar filtros (para seguimiento)
+  const globalTop10Shortages = [...allShortages]
+    .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
+    .slice(0, 10)
+  const globalTop10Overages = [...allOverages]
+    .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
+    .slice(0, 10)
+  const top10Names = new Set([...globalTop10Shortages, ...globalTop10Overages].map(i => i.name))
+
+  // Ordenar items filtrados
   function sortItems(items: any[]) {
     return [...items].sort((a, b) => {
       if (sortKey === 'name') return a.name.localeCompare(b.name)
-      if (sortKey === 'unit_cost') return Number(b.unit_cost) - Number(a.unit_cost)
-      if (sortKey === 'variance_qty') return Math.abs(Number(b.unexp_var_qty || b.variance_qty)) - Math.abs(Number(a.unexp_var_qty || a.variance_qty))
-      return Math.abs(Number(b.unexp_var_dollar || b.variance_dollar)) - Math.abs(Number(a.unexp_var_dollar || a.variance_dollar))
+      if (sortKey === 'unit_cost') return Math.abs(Number(b.unit_cost)) - Math.abs(Number(a.unit_cost))
+      if (sortKey === 'variance_qty') return Math.abs(Number(b.variance_qty)) - Math.abs(Number(a.variance_qty))
+      return Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar))
     })
   }
 
   const sortedShortages = sortItems(filteredShortages)
   const sortedOverages = sortItems(filteredOverages)
-  const top10Shortages = sortedShortages.slice(0, 10)
-  const top10Overages = sortedOverages.slice(0, 10)
+  const displayShortages = showAllShortages ? sortedShortages : sortedShortages.slice(0, 10)
+  const displayOverages = showAllOverages ? sortedOverages : sortedOverages.slice(0, 10)
 
   // KPIs
-  const totalShortage = filteredShortages.reduce((a: number, b: any) => a + Math.abs(Number(b.unexp_var_dollar || b.variance_dollar || 0)), 0)
-  const totalOverage = filteredOverages.reduce((a: number, b: any) => a + Math.abs(Number(b.unexp_var_dollar || b.variance_dollar || 0)), 0)
+  const totalShortage = filteredShortages.reduce((a, b) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
+  const totalOverage = filteredOverages.reduce((a, b) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
   const netVariance = totalShortage - totalOverage
 
   // Tendencia semanal
   const trendData = [...weeks].reverse().map(w => ({
     week: w.report.week.replace('2026-', ''),
-    faltantes: Number(w.avt?.total_shortage_dollar || w.avt?.total_shortages || 0),
-    sobrantes: Number(w.avt?.total_overage_dollar || w.avt?.total_overages || 0),
-    neto: Number(w.avt?.net_variance_dollar || w.avt?.net_variance || 0),
+    faltantes: Number(w.avt?.total_shortage_dollar || 0),
+    sobrantes: Number(w.avt?.total_overage_dollar || 0),
+    neto: Number(w.avt?.net_variance_dollar || 0),
   }))
 
-  // Por categoría
-  const byCatData = rawData?.by_category || []
-
-  // Seguimiento pendiente
-  const pendingTracking = Object.values(tracking).filter((t: any) => t.status !== 'resolved')
-  const top10Names = new Set([...top10Shortages, ...top10Overages].map((i: any) => i.name))
-
-  // Detectar repeticiones (items que aparecen en múltiples semanas)
+  // Detectar items recurrentes entre semanas
   const repeatItems: Record<string, number> = {}
   weeks.forEach(w => {
     const s = w.avt?.shortages || []
@@ -179,6 +170,11 @@ export default function AvtPage() {
     })
   })
 
+  // Status counts para el resumen
+  const pendingCount = Object.values(tracking).filter((t: any) => t.status === 'pending' || !t.status).length
+  const inProgressCount = Object.values(tracking).filter((t: any) => t.status === 'in_progress').length
+  const resolvedCount = Object.values(tracking).filter((t: any) => t.status === 'resolved').length
+
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <p className="text-gray-400">Cargando AvT...</p>
@@ -187,34 +183,31 @@ export default function AvtPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 className="text-white font-bold text-lg">📊 Actual vs Teórico</h1>
           <p className="text-gray-500 text-xs mt-0.5">
-            {restaurant?.name} · Faltante = varianza inesperada positiva · Sobrante = negativa (entre paréntesis)
+            {restaurant?.name} · Faltante = varianza inesperada positiva (rojo) · Sobrante = negativa (entre paréntesis)
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
-            {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
-          </select>
-        </div>
+        <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
+          {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+        </select>
       </div>
 
       {/* Tabs */}
       <div className="border-b border-gray-800 bg-gray-900 px-6">
         <div className="flex gap-1">
-          {[
-            { key: 'dashboard', label: '📊 Dashboard' },
-            { key: 'seguimiento', label: `🔍 Seguimiento ${pendingTracking.length > 0 ? `(${pendingTracking.length})` : ''}` },
-          ].map(tab => (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key as any)}
-              className={`px-4 py-3 text-sm font-medium transition border-b-2 ${activeTab === tab.key ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-              {tab.label}
-            </button>
-          ))}
+          <button onClick={() => setActiveTab('dashboard')}
+            className={`px-4 py-3 text-sm font-medium transition border-b-2 ${activeTab === 'dashboard' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+            📊 Dashboard
+          </button>
+          <button onClick={() => setActiveTab('seguimiento')}
+            className={`px-4 py-3 text-sm font-medium transition border-b-2 ${activeTab === 'seguimiento' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+            🔍 Seguimiento
+            {pendingCount > 0 && <span className="ml-1.5 bg-yellow-500 text-black text-xs px-1.5 py-0.5 rounded-full font-bold">{pendingCount}</span>}
+          </button>
         </div>
       </div>
 
@@ -236,8 +229,8 @@ export default function AvtPage() {
             <div className="flex items-center gap-4 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-gray-500 text-xs">Categoría:</span>
-                <div className="flex gap-1">
-                  {CATEGORIES.map(cat => (
+                <div className="flex gap-1 flex-wrap">
+                  {['Todas', ...MAIN_CATEGORIES].map(cat => (
                     <button key={cat} onClick={() => setSelectedCategory(cat)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${selectedCategory === cat ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400 hover:text-white'}`}>
                       {cat}
@@ -253,15 +246,13 @@ export default function AvtPage() {
                 </button>
                 <button onClick={() => setViewMode('qty')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${viewMode === 'qty' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400 hover:text-white'}`}>
-                  Qty Cantidad
+                  Qty
                 </button>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-gray-500 text-xs">Ordenar:</span>
+                <span className="text-gray-500 text-xs ml-2">Ordenar:</span>
                 {(['variance_dollar', 'variance_qty', 'unit_cost', 'name'] as SortKey[]).map(key => (
                   <button key={key} onClick={() => setSortKey(key)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${sortKey === key ? 'bg-gray-700 border-gray-600 text-white' : 'border-gray-700 text-gray-500 hover:text-white'}`}>
-                    {key === 'variance_dollar' ? '$ Varianza' : key === 'variance_qty' ? 'Qty' : key === 'unit_cost' ? 'Costo' : 'A-Z'}
+                    {key === 'variance_dollar' ? '$ Var' : key === 'variance_qty' ? 'Qty' : key === 'unit_cost' ? 'Costo' : 'A-Z'}
                   </button>
                 ))}
               </div>
@@ -286,11 +277,13 @@ export default function AvtPage() {
                 </p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-xs mb-1">Items recurrentes</p>
-                <p className="text-2xl font-bold text-orange-400">
-                  {Object.values(repeatItems).filter(c => c > 1).length}
-                </p>
-                <p className="text-gray-600 text-xs mt-1">aparecen 2+ semanas</p>
+                <p className="text-gray-500 text-xs mb-1">Seguimiento Top 10</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-yellow-400 text-sm font-bold">{pendingCount} pend.</span>
+                  <span className="text-blue-400 text-sm font-bold">{inProgressCount} proc.</span>
+                  <span className="text-green-400 text-sm font-bold">{resolvedCount} res.</span>
+                </div>
+                <button onClick={() => setActiveTab('seguimiento')} className="text-blue-400 text-xs mt-1 hover:text-blue-300">Ver seguimiento →</button>
               </div>
             </div>
 
@@ -317,46 +310,47 @@ export default function AvtPage() {
                 <h2 className="text-white font-semibold mb-1">Por categoría</h2>
                 <p className="text-gray-500 text-xs mb-4">Varianza neta {selectedWeek}</p>
                 <ResponsiveContainer width="100%" height={180}>
-                  <BarChart data={byCatData.map((c: any) => ({ ...c, neto: (c.total_shortage_dollar || 0) - (c.total_overage_dollar || 0) }))} layout="vertical">
+                  <BarChart data={byCategory.map((c: any) => ({
+                    category: c.category,
+                    neto: (c.total_shortage_dollar || 0) - (c.total_overage_dollar || 0)
+                  }))} layout="vertical">
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + Math.abs(v)} />
                     <YAxis type="category" dataKey="category" tick={{ fill: '#9ca3af', fontSize: 10 }} axisLine={false} tickLine={false} width={80} />
                     <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Varianza neta']} />
                     <Bar dataKey="neto" radius={[0, 4, 4, 0]}>
-                      {byCatData.map((_: any, i: number) => (
-                        <Cell key={i} fill="#ef4444" />
-                      ))}
+                      {byCategory.map((_: any, i: number) => <Cell key={i} fill="#ef4444" />)}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
 
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                <h2 className="text-white font-semibold mb-1">Top faltantes</h2>
-                <p className="text-gray-500 text-xs mb-4">{selectedWeek}</p>
+                <h2 className="text-white font-semibold mb-1">Top 5 faltantes</h2>
+                <p className="text-gray-500 text-xs mb-4">{selectedWeek} · {selectedCategory}</p>
                 <ResponsiveContainer width="100%" height={180}>
-                  <BarChart data={top10Shortages.slice(0, 5).map((i: any) => ({
+                  <BarChart data={sortedShortages.slice(0, 5).map((i: any) => ({
                     name: i.name?.length > 15 ? i.name.substring(0, 15) + '...' : i.name,
                     fullName: i.name,
-                    valor: viewMode === 'dollar' ? Math.abs(Number(i.unexp_var_dollar || i.variance_dollar || 0)) : Math.abs(Number(i.unexp_var_qty || i.variance_qty || 0)),
+                    valor: viewMode === 'dollar' ? Math.abs(Number(i.variance_dollar || 0)) : Math.abs(Number(i.variance_qty || 0)),
                   }))} layout="vertical">
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                    <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => viewMode === 'dollar' ? '$' + v : v + ''} />
+                    <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => viewMode === 'dollar' ? '$' + v : String(v)} />
                     <YAxis type="category" dataKey="name" tick={{ fill: '#9ca3af', fontSize: 10 }} axisLine={false} tickLine={false} width={110} />
                     <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any, _: any, props: any) => [viewMode === 'dollar' ? fmt(v) : v.toFixed(2), props.payload.fullName]} />
+                      formatter={(v: any, _: any, props: any) => [viewMode === 'dollar' ? fmt(v) : v.toFixed(3), props.payload.fullName]} />
                     <Bar dataKey="valor" fill="#ef4444" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
-            {/* Top 10 Faltantes */}
+            {/* Tabla Faltantes */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-white font-semibold">
-                  🔴 Top 10 Faltantes — {selectedWeek}
-                  <span className="text-red-400 font-normal text-sm ml-2">({filteredShortages.length} total · {fmt(totalShortage)})</span>
+                  🔴 Faltantes — {selectedWeek}
+                  <span className="text-red-400 font-normal text-sm ml-2">({filteredShortages.length} items · {fmt(totalShortage)})</span>
                 </h2>
                 {filteredShortages.length > 10 && (
                   <button onClick={() => setShowAllShortages(!showAllShortages)}
@@ -365,27 +359,15 @@ export default function AvtPage() {
                   </button>
                 )}
               </div>
-              <ItemTable
-                items={showAllShortages ? sortedShortages : top10Shortages}
-                type="shortage"
-                viewMode={viewMode}
-                tracking={tracking}
-                savingId={savingId}
-                repeatItems={repeatItems}
-                top10Names={top10Names}
-                onSave={saveTracking}
-                fmt={fmt}
-                fmtQty={fmtQty}
-                showTracking={true}
-              />
+              <SimpleTable items={displayShortages} type="shortage" viewMode={viewMode} repeatItems={repeatItems} fmt={fmt} />
             </div>
 
-            {/* Top 10 Sobrantes */}
+            {/* Tabla Sobrantes */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-white font-semibold">
-                  🟢 Top 10 Sobrantes — {selectedWeek}
-                  <span className="text-green-400 font-normal text-sm ml-2">({filteredOverages.length} total · ({fmt(totalOverage)}))</span>
+                  🟢 Sobrantes — {selectedWeek}
+                  <span className="text-green-400 font-normal text-sm ml-2">({filteredOverages.length} items · ({fmt(totalOverage)}))</span>
                 </h2>
                 {filteredOverages.length > 10 && (
                   <button onClick={() => setShowAllOverages(!showAllOverages)}
@@ -394,26 +376,20 @@ export default function AvtPage() {
                   </button>
                 )}
               </div>
-              <ItemTable
-                items={showAllOverages ? sortedOverages : top10Overages}
-                type="overage"
-                viewMode={viewMode}
-                tracking={tracking}
-                savingId={savingId}
-                repeatItems={repeatItems}
-                top10Names={top10Names}
-                onSave={saveTracking}
-                fmt={fmt}
-                fmtQty={fmtQty}
-                showTracking={true}
-              />
+              <SimpleTable items={displayOverages} type="overage" viewMode={viewMode} repeatItems={repeatItems} fmt={fmt} />
             </div>
           </>
         ) : (
-          /* TAB SEGUIMIENTO */
           <SeguimientoTab
             weeks={weeks}
+            selectedWeek={selectedWeek}
+            allShortages={allShortages}
+            allOverages={allOverages}
+            tracking={tracking}
+            savingId={savingId}
             restaurantId={restaurantId}
+            repeatItems={repeatItems}
+            onSave={saveTracking}
             fmt={fmt}
           />
         )}
@@ -422,149 +398,149 @@ export default function AvtPage() {
   )
 }
 
-function ItemTable({ items, type, viewMode, tracking, savingId, repeatItems, top10Names, onSave, fmt, fmtQty, showTracking }: any) {
+function SimpleTable({ items, type, viewMode, repeatItems, fmt }: any) {
   const isShortage = type === 'shortage'
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-800">
+            <th className="text-left text-gray-500 text-xs pb-3 font-medium">#</th>
             <th className="text-left text-gray-500 text-xs pb-3 font-medium">Item</th>
-            <th className="text-left text-gray-500 text-xs pb-3 font-medium">Cat.</th>
+            <th className="text-left text-gray-500 text-xs pb-3 font-medium">Categoría</th>
             <th className="text-right text-gray-500 text-xs pb-3 font-medium">UOM</th>
             <th className="text-right text-gray-500 text-xs pb-3 font-medium">Costo Unit.</th>
-            {viewMode === 'dollar' ? (
-              <th className="text-right text-gray-500 text-xs pb-3 font-medium">Varianza $</th>
-            ) : (
-              <th className="text-right text-gray-500 text-xs pb-3 font-medium">Varianza Qty</th>
-            )}
-            {showTracking && (
-              <>
-                <th className="text-left text-gray-500 text-xs pb-3 font-medium w-36">Razón</th>
-                <th className="text-left text-gray-500 text-xs pb-3 font-medium w-36">Acción</th>
-                <th className="text-left text-gray-500 text-xs pb-3 font-medium w-24">Responsable</th>
-                <th className="text-left text-gray-500 text-xs pb-3 font-medium w-24">Estado</th>
-                <th className="text-left text-gray-500 text-xs pb-3 font-medium">Nota</th>
-              </>
-            )}
+            <th className="text-right text-gray-500 text-xs pb-3 font-medium">
+              {viewMode === 'dollar' ? 'Varianza $' : 'Varianza Qty'}
+            </th>
           </tr>
         </thead>
         <tbody>
           {items.map((item: any, i: number) => {
-            const varDollar = Math.abs(Number(item.unexp_var_dollar || item.variance_dollar || 0))
-            const varQty = Math.abs(Number(item.unexp_var_qty || item.variance_qty || 0))
-            const t = tracking[item.name] || {}
+            const varDollar = Math.abs(Number(item.variance_dollar || 0))
+            const varQty = Math.abs(Number(item.variance_qty || 0))
             const isRepeat = (repeatItems[item.name] || 0) > 1
-            const isTop10 = top10Names.has(item.name)
             return (
               <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
+                <td className="py-2.5 text-gray-600 text-xs">{i + 1}</td>
                 <td className="py-2.5">
                   <div className="flex items-center gap-2">
                     <span className={`text-sm font-medium ${isShortage ? 'text-red-300' : 'text-green-300'}`}>
                       {item.name}
                     </span>
-                    {isRepeat && <span className="text-orange-400 text-xs bg-orange-950 px-1.5 py-0.5 rounded" title="Aparece en múltiples semanas">⚠️ recurrente</span>}
+                    {isRepeat && (
+                      <span className="text-orange-400 text-xs bg-orange-950 px-1.5 py-0.5 rounded">⚠️ recurrente</span>
+                    )}
                   </div>
                 </td>
                 <td className="py-2.5 text-gray-500 text-xs">{item.category || '—'}</td>
                 <td className="py-2.5 text-right text-gray-500 text-xs">{item.uom}</td>
                 <td className="py-2.5 text-right text-gray-400 text-xs">{fmt(item.unit_cost)}</td>
-                {viewMode === 'dollar' ? (
-                  <td className="py-2.5 text-right font-bold">
+                <td className="py-2.5 text-right font-bold">
+                  {viewMode === 'dollar' ? (
                     <span className={isShortage ? 'text-red-400' : 'text-green-400'}>
                       {isShortage ? fmt(varDollar) : '(' + fmt(varDollar) + ')'}
                     </span>
-                  </td>
-                ) : (
-                  <td className="py-2.5 text-right font-bold">
+                  ) : (
                     <span className={isShortage ? 'text-red-400' : 'text-green-400'}>
                       {isShortage ? '+' : '(-'}{varQty.toFixed(3)}{isShortage ? '' : ')'} {item.uom}
                     </span>
-                  </td>
-                )}
-                {showTracking && isTop10 && (
-                  <>
-                    <td className="py-2.5 pr-2">
-                      <select value={t.reason || ''} onChange={e => onSave(item, 'reason', e.target.value)}
-                        className={`w-full bg-gray-800 border rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-blue-500 ${t.reason ? 'border-gray-600 text-white' : 'border-gray-700 text-gray-500'}`}>
-                        <option value="">Sin razón</option>
-                        {REASONS.map(r => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <select value={t.action_required || ''} onChange={e => onSave(item, 'action_required', e.target.value)}
-                        className={`w-full bg-gray-800 border rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-blue-500 ${t.action_required ? 'border-gray-600 text-white' : 'border-gray-700 text-gray-500'}`}>
-                        <option value="">Sin acción</option>
-                        {ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}
-                      </select>
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <input type="text" value={t.responsible || ''} placeholder="Nombre..."
-                        onChange={e => onSave(item, 'responsible', e.target.value)}
-                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <select value={t.status || 'pending'} onChange={e => onSave(item, 'status', e.target.value)}
-                        className={`w-full bg-gray-800 border rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-blue-500 ${STATUS_LABELS[t.status || 'pending'].color} border-gray-700`}>
-                        {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-                      </select>
-                    </td>
-                    <td className="py-2.5">
-                      <input type="text" value={t.note || ''} placeholder="Agregar nota..."
-                        onChange={e => onSave(item, 'note', e.target.value)}
-                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
-                    </td>
-                  </>
-                )}
-                {showTracking && !isTop10 && <td colSpan={5} />}
+                  )}
+                </td>
               </tr>
             )
           })}
+          {items.length === 0 && (
+            <tr><td colSpan={6} className="py-6 text-center text-gray-600 text-sm">Sin datos para esta categoría</td></tr>
+          )}
         </tbody>
       </table>
     </div>
   )
 }
 
-function SeguimientoTab({ weeks, restaurantId, fmt }: any) {
-  const [trackingAll, setTrackingAll] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracking, savingId, restaurantId, repeatItems, onSave, fmt }: any) {
+  const [trackingHistory, setTrackingHistory] = useState<any[]>([])
+  const [loadingHistory, setLoadingHistory] = useState(true)
   const [filterStatus, setFilterStatus] = useState('all')
 
-  useEffect(() => {
-    loadAll()
-  }, [])
+  useEffect(() => { loadHistory() }, [])
 
-  async function loadAll() {
+  async function loadHistory() {
     const { data } = await supabase.from('avt_tracking')
       .select('*').eq('restaurant_id', restaurantId)
       .order('updated_at', { ascending: false })
-    setTrackingAll(data || [])
-    setLoading(false)
+    setTrackingHistory(data || [])
+    setLoadingHistory(false)
   }
 
-  async function updateStatus(id: string, status: string) {
+  async function updateHistoryStatus(id: string, status: string) {
     await supabase.from('avt_tracking').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
-    setTrackingAll(prev => prev.map(t => t.id === id ? { ...t, status } : t))
+    setTrackingHistory(prev => prev.map(t => t.id === id ? { ...t, status } : t))
   }
 
-  const filtered = filterStatus === 'all' ? trackingAll : trackingAll.filter(t => t.status === filterStatus)
+  // Top 10 por categoría (faltantes y sobrantes separados)
+  const top10ByCat = MAIN_CATEGORIES.map(cat => {
+    const catShortages = [...allShortages.filter((i: any) => i.category === cat)]
+      .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
+      .slice(0, 10)
+    const catOverages = [...allOverages.filter((i: any) => i.category === cat)]
+      .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
+      .slice(0, 10)
+    return { cat, shortages: catShortages, overages: catOverages }
+  }).filter(c => c.shortages.length > 0 || c.overages.length > 0)
 
-  // Detectar recurrentes
+  // Status summary
+  const statusCounts = { pending: 0, in_progress: 0, resolved: 0 }
+  Object.values(tracking).forEach((t: any) => {
+    const s = t.status || 'pending'
+    if (s in statusCounts) statusCounts[s as keyof typeof statusCounts]++
+  })
+
+  // Recurrentes
   const itemWeekCount: Record<string, number> = {}
-  trackingAll.forEach(t => { itemWeekCount[t.item_name] = (itemWeekCount[t.item_name] || 0) + 1 })
+  weeks.forEach((w: any) => {
+    const s = w.avt?.shortages || []
+    const o = w.avt?.overages || []
+    ;[...s, ...o].forEach((item: any) => {
+      itemWeekCount[item.name] = (itemWeekCount[item.name] || 0) + 1
+    })
+  })
   const recurrentes = Object.entries(itemWeekCount).filter(([_, c]) => c > 1).sort((a, b) => b[1] - a[1])
 
-  if (loading) return <div className="text-gray-400 text-sm py-8 text-center">Cargando seguimiento...</div>
+  const filteredHistory = filterStatus === 'all'
+    ? trackingHistory
+    : trackingHistory.filter(t => t.status === filterStatus)
 
   return (
     <div className="space-y-6">
-      {/* Recurrentes alert */}
+
+      {/* Resumen de status */}
+      <div className="grid grid-cols-4 gap-4">
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <p className="text-gray-500 text-xs mb-1">Semana actual</p>
+          <p className="text-white font-bold text-lg">{selectedWeek}</p>
+        </div>
+        <div className="bg-yellow-950 border border-yellow-800 rounded-xl p-5">
+          <p className="text-yellow-500 text-xs mb-1">Pendientes</p>
+          <p className="text-yellow-400 text-2xl font-bold">{statusCounts.pending}</p>
+        </div>
+        <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
+          <p className="text-blue-500 text-xs mb-1">En proceso</p>
+          <p className="text-blue-400 text-2xl font-bold">{statusCounts.in_progress}</p>
+        </div>
+        <div className="bg-green-950 border border-green-800 rounded-xl p-5">
+          <p className="text-green-500 text-xs mb-1">Resueltos</p>
+          <p className="text-green-400 text-2xl font-bold">{statusCounts.resolved}</p>
+        </div>
+      </div>
+
+      {/* Items recurrentes */}
       {recurrentes.length > 0 && (
         <div className="bg-orange-950 border border-orange-800 rounded-xl p-5">
-          <h3 className="text-orange-300 font-semibold mb-3">⚠️ Items recurrentes ({recurrentes.length})</h3>
+          <h3 className="text-orange-300 font-semibold mb-3">⚠️ Items recurrentes ({recurrentes.length}) — aparecen en múltiples semanas</h3>
           <div className="flex flex-wrap gap-2">
-            {recurrentes.map(([name, count]) => (
+            {recurrentes.slice(0, 20).map(([name, count]) => (
               <span key={name} className="bg-orange-900 text-orange-300 text-xs px-3 py-1 rounded-full">
                 {name} · {count} semanas
               </span>
@@ -573,81 +549,179 @@ function SeguimientoTab({ weeks, restaurantId, fmt }: any) {
         </div>
       )}
 
-      {/* Filtros status */}
-      <div className="flex items-center gap-2">
-        {[
-          { key: 'all', label: 'Todos' },
-          { key: 'pending', label: 'Pendientes' },
-          { key: 'in_progress', label: 'En proceso' },
-          { key: 'resolved', label: 'Resueltos' },
-        ].map(f => (
-          <button key={f.key} onClick={() => setFilterStatus(f.key)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${filterStatus === f.key ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400 hover:text-white'}`}>
-            {f.label} ({f.key === 'all' ? trackingAll.length : trackingAll.filter(t => t.status === f.key).length})
-          </button>
-        ))}
-      </div>
-
-      {/* Tabla seguimiento */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-800">
-                <th className="text-left text-gray-500 text-xs pb-3">Semana</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Item</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Cat.</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Tipo</th>
-                <th className="text-right text-gray-500 text-xs pb-3">Varianza $</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Razón</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Acción</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Responsable</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Estado</th>
-                <th className="text-left text-gray-500 text-xs pb-3">Nota</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((t: any) => (
-                <tr key={t.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
-                  <td className="py-2.5 text-gray-400 text-xs">{t.week}</td>
-                  <td className="py-2.5">
-                    <div className="flex items-center gap-1">
-                      <span className="text-white text-xs font-medium">{t.item_name}</span>
-                      {(itemWeekCount[t.item_name] || 0) > 1 && (
-                        <span className="text-orange-400 text-xs">⚠️</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="py-2.5 text-gray-500 text-xs">{t.category}</td>
-                  <td className="py-2.5">
-                    <span className={`text-xs font-medium ${t.type === 'shortage' ? 'text-red-400' : 'text-green-400'}`}>
-                      {t.type === 'shortage' ? 'Faltante' : 'Sobrante'}
-                    </span>
-                  </td>
-                  <td className="py-2.5 text-right">
-                    <span className={`text-xs font-bold ${t.type === 'shortage' ? 'text-red-400' : 'text-green-400'}`}>
-                      {t.type === 'shortage' ? fmt(t.variance_dollar) : '(' + fmt(t.variance_dollar) + ')'}
-                    </span>
-                  </td>
-                  <td className="py-2.5 text-gray-400 text-xs">{t.reason || '—'}</td>
-                  <td className="py-2.5 text-gray-400 text-xs">{t.action_required || '—'}</td>
-                  <td className="py-2.5 text-gray-400 text-xs">{t.responsible || '—'}</td>
-                  <td className="py-2.5">
-                    <select value={t.status} onChange={e => updateStatus(t.id, e.target.value)}
-                      className={`bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs focus:outline-none ${STATUS_LABELS[t.status]?.color}`}>
-                      {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-                    </select>
-                  </td>
-                  <td className="py-2.5 text-gray-500 text-xs">{t.note || '—'}</td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr><td colSpan={10} className="py-8 text-center text-gray-600 text-sm">No hay registros</td></tr>
-              )}
-            </tbody>
-          </table>
+      {/* Top 10 por categoría con seguimiento */}
+      {top10ByCat.map(({ cat, shortages, overages }) => (
+        <div key={cat} className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h2 className="text-white font-bold text-base mb-4">
+            {cat}
+            <span className="text-gray-500 font-normal text-sm ml-2">
+              Top 10 faltantes + sobrantes de mayor impacto
+            </span>
+          </h2>
+          <div className="space-y-4">
+            {shortages.length > 0 && (
+              <div>
+                <p className="text-red-400 text-xs font-semibold uppercase tracking-wider mb-2">🔴 Faltantes</p>
+                <TrackingTable items={shortages} type="shortage" tracking={tracking} onSave={onSave} repeatItems={repeatItems} fmt={fmt} savingId={savingId} />
+              </div>
+            )}
+            {overages.length > 0 && (
+              <div>
+                <p className="text-green-400 text-xs font-semibold uppercase tracking-wider mb-2 mt-4">🟢 Sobrantes</p>
+                <TrackingTable items={overages} type="overage" tracking={tracking} onSave={onSave} repeatItems={repeatItems} fmt={fmt} savingId={savingId} />
+              </div>
+            )}
+          </div>
         </div>
+      ))}
+
+      {/* Historial de seguimiento */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h2 className="text-white font-semibold mb-4">Historial de seguimiento — todas las semanas</h2>
+        <div className="flex gap-2 mb-4">
+          {[
+            { key: 'all', label: 'Todos' },
+            { key: 'pending', label: 'Pendientes' },
+            { key: 'in_progress', label: 'En proceso' },
+            { key: 'resolved', label: 'Resueltos' },
+          ].map(f => (
+            <button key={f.key} onClick={() => setFilterStatus(f.key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${filterStatus === f.key ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400 hover:text-white'}`}>
+              {f.label} ({f.key === 'all' ? trackingHistory.length : trackingHistory.filter(t => t.status === f.key).length})
+            </button>
+          ))}
+        </div>
+        {loadingHistory ? <p className="text-gray-500 text-sm">Cargando...</p> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800">
+                  <th className="text-left text-gray-500 text-xs pb-3">Semana</th>
+                  <th className="text-left text-gray-500 text-xs pb-3">Item</th>
+                  <th className="text-left text-gray-500 text-xs pb-3">Cat.</th>
+                  <th className="text-left text-gray-500 text-xs pb-3">Tipo</th>
+                  <th className="text-right text-gray-500 text-xs pb-3">Varianza $</th>
+                  <th className="text-left text-gray-500 text-xs pb-3">Razón</th>
+                  <th className="text-left text-gray-500 text-xs pb-3">Acción</th>
+                  <th className="text-left text-gray-500 text-xs pb-3">Responsable</th>
+                  <th className="text-left text-gray-500 text-xs pb-3">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredHistory.map((t: any) => (
+                  <tr key={t.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
+                    <td className="py-2 text-gray-400 text-xs">{t.week}</td>
+                    <td className="py-2">
+                      <div className="flex items-center gap-1">
+                        <span className="text-white text-xs">{t.item_name}</span>
+                        {(itemWeekCount[t.item_name] || 0) > 1 && <span className="text-orange-400 text-xs">⚠️</span>}
+                      </div>
+                    </td>
+                    <td className="py-2 text-gray-500 text-xs">{t.category}</td>
+                    <td className="py-2">
+                      <span className={`text-xs font-medium ${t.type === 'shortage' ? 'text-red-400' : 'text-green-400'}`}>
+                        {t.type === 'shortage' ? 'Faltante' : 'Sobrante'}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right">
+                      <span className={`text-xs font-bold ${t.type === 'shortage' ? 'text-red-400' : 'text-green-400'}`}>
+                        {t.type === 'shortage' ? fmt(t.variance_dollar) : '(' + fmt(t.variance_dollar) + ')'}
+                      </span>
+                    </td>
+                    <td className="py-2 text-gray-400 text-xs">{t.reason || '—'}</td>
+                    <td className="py-2 text-gray-400 text-xs">{t.action_required || '—'}</td>
+                    <td className="py-2 text-gray-400 text-xs">{t.responsible || '—'}</td>
+                    <td className="py-2">
+                      <select value={t.status || 'pending'} onChange={e => updateHistoryStatus(t.id, e.target.value)}
+                        className={`bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-xs focus:outline-none ${STATUS_LABELS[t.status || 'pending']?.color}`}>
+                        {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+                {filteredHistory.length === 0 && (
+                  <tr><td colSpan={9} className="py-8 text-center text-gray-600 text-sm">No hay registros</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
+    </div>
+  )
+}
+
+function TrackingTable({ items, type, tracking, onSave, repeatItems, fmt, savingId }: any) {
+  const isShortage = type === 'shortage'
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-800">
+            <th className="text-left text-gray-500 text-xs pb-2 font-medium">Item</th>
+            <th className="text-right text-gray-500 text-xs pb-2 font-medium">Varianza $</th>
+            <th className="text-left text-gray-500 text-xs pb-2 font-medium w-36">Razón</th>
+            <th className="text-left text-gray-500 text-xs pb-2 font-medium w-36">Acción</th>
+            <th className="text-left text-gray-500 text-xs pb-2 font-medium w-28">Responsable</th>
+            <th className="text-left text-gray-500 text-xs pb-2 font-medium w-28">Estado</th>
+            <th className="text-left text-gray-500 text-xs pb-2 font-medium">Nota</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item: any, i: number) => {
+            const varDollar = Math.abs(Number(item.variance_dollar || 0))
+            const t = tracking[item.name] || {}
+            const isRepeat = (repeatItems[item.name] || 0) > 1
+            const isSaving = savingId === item.name
+            return (
+              <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30 transition">
+                <td className="py-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-medium ${isShortage ? 'text-red-300' : 'text-green-300'}`}>{item.name}</span>
+                    {isRepeat && <span className="text-orange-400 text-xs bg-orange-950 px-1.5 py-0.5 rounded">⚠️</span>}
+                    {isSaving && <span className="text-gray-600 text-xs">💾</span>}
+                  </div>
+                </td>
+                <td className="py-2.5 text-right">
+                  <span className={`font-bold text-sm ${isShortage ? 'text-red-400' : 'text-green-400'}`}>
+                    {isShortage ? fmt(varDollar) : '(' + fmt(varDollar) + ')'}
+                  </span>
+                </td>
+                <td className="py-2.5 pr-2">
+                  <select value={t.reason || ''} onChange={e => onSave(item, { reason: e.target.value })}
+                    className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 ${t.reason ? 'border-gray-600 text-white' : 'border-gray-700 text-gray-500'}`}>
+                    <option value="">Sin razón</option>
+                    {REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </td>
+                <td className="py-2.5 pr-2">
+                  <select value={t.action_required || ''} onChange={e => onSave(item, { action_required: e.target.value })}
+                    className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 ${t.action_required ? 'border-gray-600 text-white' : 'border-gray-700 text-gray-500'}`}>
+                    <option value="">Sin acción</option>
+                    {ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>
+                </td>
+                <td className="py-2.5 pr-2">
+                  <input type="text" value={t.responsible || ''} placeholder="Nombre..."
+                    onChange={e => onSave(item, { responsible: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+                </td>
+                <td className="py-2.5 pr-2">
+                  <select value={t.status || 'pending'} onChange={e => onSave(item, { status: e.target.value })}
+                    className={`w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none ${STATUS_LABELS[t.status || 'pending']?.color}`}>
+                    {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                </td>
+                <td className="py-2.5">
+                  <input type="text" value={t.note || ''} placeholder="Nota..."
+                    onChange={e => onSave(item, { note: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500" />
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
