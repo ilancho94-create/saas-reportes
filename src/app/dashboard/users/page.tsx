@@ -602,6 +602,13 @@ export default function UsersPage() {
               </div>
             </div>
 
+            {/* Gestionar accesos de un usuario */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-1">Gestionar accesos de un usuario</h2>
+              <p className="text-gray-500 text-xs mb-4">Busca un usuario y ve/modifica todos sus accesos en la plataforma</p>
+              <ManageUserAccess allOrgs={allOrgs} onStatus={(msg) => setStatus(msg)} />
+            </div>
+
             {/* Vista de todas las orgs */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Todas las organizaciones</h2>
@@ -847,6 +854,169 @@ function CreateUserForm({ allOrgs, onSuccess }: { allOrgs: any[], onSuccess: (ms
         className="bg-green-600 hover:bg-green-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2 rounded-lg text-sm font-medium transition">
         {creating ? 'Creando usuario...' : '+ Crear usuario'}
       </button>
+    </div>
+  )
+}
+
+function ManageUserAccess({ allOrgs, onStatus }: { allOrgs: any[], onStatus: (msg: string) => void }) {
+  const [searchEmail, setSearchEmail] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [userData, setUserData] = useState<any>(null)
+  const [userAccess, setUserAccess] = useState<any[]>([])
+
+  const ROLES = [
+    { value: 'owner', label: 'Owner / Dueño' },
+    { value: 'gm', label: 'General Manager' },
+    { value: 'manager', label: 'Manager' },
+    { value: 'chef', label: 'Chef / Jefe de Cocina' },
+    { value: 'supervisor', label: 'Supervisor' },
+  ]
+
+  async function searchUser() {
+    if (!searchEmail) return
+    setSearching(true)
+    setUserData(null)
+    setUserAccess([])
+
+    // Find user via RPC
+    const { data: found } = await supabase
+      .rpc('find_user_by_email', { p_email: searchEmail })
+      .single()
+
+    if (!found) {
+      // Try searching across restaurants
+      for (const org of allOrgs) {
+        const { data: rests } = await supabase.from('restaurants').select('id').eq('organization_id', org.id)
+        for (const rest of rests || []) {
+          const { data: users } = await supabase.rpc('get_users_with_email', { p_restaurant_id: rest.id })
+          const match = (users || []).find((u: any) => u.email === searchEmail)
+          if (match) {
+            await loadUserAccess(match.user_id, match.email)
+            setSearching(false)
+            return
+          }
+        }
+      }
+      setSearching(false)
+      return
+    }
+
+    await loadUserAccess(found.user_id, found.email)
+    setSearching(false)
+  }
+
+  async function loadUserAccess(userId: string, email: string) {
+    setUserData({ user_id: userId, email })
+
+    // Get all user_restaurants for this user
+    const { data: access } = await supabase
+      .from('user_restaurants')
+      .select('id, role, active, restaurant_id, organization_id')
+      .eq('user_id', userId)
+
+    // Enrich with org/restaurant names
+    const enriched = await Promise.all((access || []).map(async (ur: any) => {
+      const { data: rest } = await supabase.from('restaurants').select('name').eq('id', ur.restaurant_id).single()
+      const org = allOrgs.find(o => o.id === ur.organization_id)
+      return {
+        ...ur,
+        restaurant_name: rest?.name || ur.restaurant_id,
+        org_name: org?.name || ur.organization_id,
+      }
+    }))
+
+    setUserAccess(enriched)
+  }
+
+  async function toggleAccess(urId: string, active: boolean) {
+    await supabase.from('user_restaurants').update({ active: !active }).eq('id', urId)
+    setUserAccess(prev => prev.map(ur => ur.id === urId ? { ...ur, active: !active } : ur))
+    onStatus(active ? '✅ Acceso desactivado' : '✅ Acceso activado')
+    setTimeout(() => onStatus(''), 2000)
+  }
+
+  async function removeAccess(urId: string) {
+    if (!confirm('¿Eliminar completamente este acceso? El usuario perderá acceso a ese restaurante.')) return
+    await supabase.from('user_restaurants').delete().eq('id', urId)
+    setUserAccess(prev => prev.filter(ur => ur.id !== urId))
+    onStatus('✅ Acceso eliminado')
+    setTimeout(() => onStatus(''), 2000)
+  }
+
+  async function updateRole(urId: string, newRole: string) {
+    await supabase.from('user_restaurants').update({ role: newRole }).eq('id', urId)
+    setUserAccess(prev => prev.map(ur => ur.id === urId ? { ...ur, role: newRole } : ur))
+    onStatus('✅ Rol actualizado')
+    setTimeout(() => onStatus(''), 2000)
+  }
+
+  // Group by org
+  const byOrg: Record<string, any[]> = {}
+  userAccess.forEach(ur => {
+    const key = ur.org_name
+    if (!byOrg[key]) byOrg[key] = []
+    byOrg[key].push(ur)
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <input type="email" value={searchEmail} onChange={e => setSearchEmail(e.target.value)}
+          placeholder="email@ejemplo.com"
+          onKeyDown={e => e.key === 'Enter' && searchUser()}
+          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500" />
+        <button onClick={searchUser} disabled={searching || !searchEmail}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 text-white px-4 py-2 rounded-lg text-sm transition">
+          {searching ? 'Buscando...' : 'Buscar'}
+        </button>
+      </div>
+
+      {userData && userAccess.length === 0 && (
+        <p className="text-gray-500 text-sm">Este usuario no tiene acceso a ningún restaurante.</p>
+      )}
+
+      {userData && userAccess.length > 0 && (
+        <div className="space-y-4">
+          <p className="text-white text-sm font-medium">
+            {userData.email} — <span className="text-gray-400 font-normal">{userAccess.length} acceso{userAccess.length !== 1 ? 's' : ''}</span>
+          </p>
+          {Object.entries(byOrg).map(([orgName, accesses]) => (
+            <div key={orgName} className="bg-gray-800 rounded-xl p-4">
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">🏢 {orgName}</p>
+              <div className="space-y-2">
+                {accesses.map((ur: any) => (
+                  <div key={ur.id} className={`flex items-center justify-between p-3 rounded-lg border ${ur.active ? 'border-gray-700 bg-gray-750' : 'border-gray-800 bg-gray-900 opacity-60'}`}>
+                    <div className="flex items-center gap-3">
+                      <span className={`w-2 h-2 rounded-full ${ur.active ? 'bg-green-400' : 'bg-gray-600'}`} />
+                      <div>
+                        <p className="text-white text-sm">{ur.restaurant_name}</p>
+                        <select value={ur.role} onChange={e => updateRole(ur.id, e.target.value)}
+                          className="mt-0.5 bg-gray-700 border border-gray-600 rounded px-2 py-0.5 text-xs text-gray-300 focus:outline-none">
+                          {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => toggleAccess(ur.id, ur.active)}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border transition ${ur.active ? 'border-yellow-800 text-yellow-400 hover:bg-yellow-950' : 'border-green-800 text-green-400 hover:bg-green-950'}`}>
+                        {ur.active ? 'Desactivar' : 'Activar'}
+                      </button>
+                      <button onClick={() => removeAccess(ur.id)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-red-900 text-red-400 hover:bg-red-950 transition">
+                        Eliminar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {searchEmail && !userData && !searching && (
+        <p className="text-gray-500 text-sm">No se encontró ningún usuario con ese email.</p>
+      )}
     </div>
   )
 }
