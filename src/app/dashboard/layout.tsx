@@ -20,7 +20,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       { label: 'Labor', icon: '👥', href: '/dashboard/labor' },
       { label: 'Food Cost', icon: '🛒', href: '/dashboard/food-cost' },
       { label: 'Costo de Uso', icon: '📦', href: '/dashboard/costo-uso' },
-      { label: 'Waste y AvT', icon: '📊', href: '/dashboard/waste' },
+      { label: 'Waste', icon: '🗑️', href: '/dashboard/waste' },
+      { label: 'Actual vs Teórico', icon: '📊', href: '/dashboard/avt' },
     ]},
     { section: 'REPORTES', items: [
       { label: 'Historial', icon: '📅', href: '/dashboard/history' },
