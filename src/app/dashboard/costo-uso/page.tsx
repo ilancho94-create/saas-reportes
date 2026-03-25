@@ -17,12 +17,12 @@ const ACCOUNT_MAP: Record<string, string> = {
   'Wine Inventory': 'wine',
 }
 
-const CATEGORIES = [
-  { key: 'food', label: 'Food', color: '#f97316', meta: 28 },
-  { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', meta: 8 },
-  { key: 'liquor', label: 'Liquor', color: '#a855f7', meta: 20 },
-  { key: 'beer', label: 'Beer', color: '#eab308', meta: 20 },
-  { key: 'wine', label: 'Wine', color: '#ec4899', meta: 20 },
+const CATEGORIES_BASE = [
+  { key: 'food', label: 'Food', color: '#f97316', defaultMeta: 28 },
+  { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', defaultMeta: 8 },
+  { key: 'liquor', label: 'Liquor', color: '#a855f7', defaultMeta: 20 },
+  { key: 'beer', label: 'Beer', color: '#eab308', defaultMeta: 20 },
+  { key: 'wine', label: 'Wine', color: '#ec4899', defaultMeta: 20 },
 ]
 
 export default function CostoUsoPage() {
@@ -35,6 +35,13 @@ export default function CostoUsoPage() {
   const [rangeStart, setRangeStart] = useState(0)
   const [rangeEnd, setRangeEnd] = useState(99)
   const [operatingDays, setOperatingDays] = useState(6)
+  const [costTargets, setCostTargets] = useState<Record<string, number>>({})
+
+  // Merge default metas with custom targets
+  const CATEGORIES = CATEGORIES_BASE.map(cat => ({
+    ...cat,
+    meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
+  }))
 
   useEffect(() => {
     if (restaurantId) loadData()
@@ -53,6 +60,15 @@ export default function CostoUsoPage() {
     const { data: maps } = await supabase
       .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
     setMappings(maps || [])
+
+    // Load cost targets
+    const { data: tgts } = await supabase
+      .from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
+    if (tgts?.length) {
+      const tgtsMap: Record<string, number> = {}
+      tgts.forEach((t: any) => { tgtsMap[t.category] = Number(t.target_pct) })
+      setCostTargets(tgtsMap)
+    }
 
     const { data: reports } = await supabase
       .from('reports').select('*')

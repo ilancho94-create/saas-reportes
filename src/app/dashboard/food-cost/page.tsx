@@ -5,16 +5,16 @@ import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Legend
+  ResponsiveContainer, CartesianGrid, Legend, ReferenceLine
 } from 'recharts'
 
-const CATEGORIES = [
-  { key: 'food', label: 'Food', color: '#f97316', meta: 28 },
-  { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', meta: 8 },
-  { key: 'liquor', label: 'Liquor', color: '#a855f7', meta: 20 },
-  { key: 'beer', label: 'Beer', color: '#eab308', meta: 20 },
-  { key: 'wine', label: 'Wine', color: '#ec4899', meta: 20 },
-  { key: 'general', label: 'General', color: '#6b7280', meta: null },
+const CATEGORIES_BASE = [
+  { key: 'food', label: 'Food', color: '#f97316', defaultMeta: 28 },
+  { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', defaultMeta: 8 },
+  { key: 'liquor', label: 'Liquor', color: '#a855f7', defaultMeta: 20 },
+  { key: 'beer', label: 'Beer', color: '#eab308', defaultMeta: 20 },
+  { key: 'wine', label: 'Wine', color: '#ec4899', defaultMeta: 20 },
+  { key: 'general', label: 'General', color: '#6b7280', defaultMeta: null },
 ]
 
 type ViewMode = 'range' | 'compare'
@@ -25,6 +25,7 @@ export default function FoodCostPage() {
   const [weeks, setWeeks] = useState<any[]>([])
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
+  const [costTargets, setCostTargets] = useState<Record<string, number>>({})
   const [activeCategory, setActiveCategory] = useState('food')
   const [viewMode, setViewMode] = useState<ViewMode>('range')
   const [rangeStart, setRangeStart] = useState(0)
@@ -32,6 +33,12 @@ export default function FoodCostPage() {
   const [compareA, setCompareA] = useState<string>('')
   const [compareB, setCompareB] = useState<string>('')
   const [hiddenLines, setHiddenLines] = useState<string[]>([])
+
+  // Merge default metas with custom targets
+  const CATEGORIES = CATEGORIES_BASE.map(cat => ({
+    ...cat,
+    meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
+  }))
 
   useEffect(() => {
     if (restaurantId) loadData()
@@ -49,6 +56,15 @@ export default function FoodCostPage() {
     const { data: maps } = await supabase
       .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
     setMappings(maps || [])
+
+    // Load cost targets
+    const { data: tgts } = await supabase
+      .from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
+    if (tgts?.length) {
+      const tgtsMap: Record<string, number> = {}
+      tgts.forEach((t: any) => { tgtsMap[t.category] = Number(t.target_pct) })
+      setCostTargets(tgtsMap)
+    }
 
     const { data: reports } = await supabase
       .from('reports').select('*')
@@ -144,6 +160,22 @@ export default function FoodCostPage() {
     setHiddenLines(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
   }
 
+  function getSemaforoColor(val: number | null, meta: number | null) {
+    if (!val || !meta) return 'text-gray-400'
+    const diff = val - meta
+    if (diff <= 0) return 'text-green-400'
+    if (diff <= 3) return 'text-yellow-400'
+    return 'text-red-400'
+  }
+
+  function getSemaforoLabel(val: number | null, meta: number | null) {
+    if (!val || !meta) return ''
+    const diff = val - meta
+    if (diff <= 0) return `✓ ${Math.abs(diff).toFixed(1)}pts bajo meta`
+    if (diff <= 3) return `⚠ ${diff.toFixed(1)}pts sobre meta`
+    return `▲ ${diff.toFixed(1)}pts sobre meta`
+  }
+
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <p className="text-gray-400">Cargando...</p>
@@ -210,6 +242,9 @@ export default function FoodCostPage() {
             <p className="text-orange-300 text-sm font-medium">Costo de Compra</p>
             <p className="text-orange-400 text-xs mt-0.5">
               Este reporte muestra lo que se <strong>compró a proveedores</strong> vs las ventas del período.
+              {Object.keys(costTargets).length > 0
+                ? ' · Metas configuradas en Settings.'
+                : ' · Configura tus metas en Settings → Metas de Costo.'}
             </p>
           </div>
         </div>
@@ -241,22 +276,27 @@ export default function FoodCostPage() {
                   <p className="text-gray-600 text-xs mt-1">vs ventas netas</p>
                 </div>
               </div>
+
+              {/* Category cards with semaforo */}
               <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                 {CATEGORIES.map(cat => {
                   const catSales = ({ food: latestData.foodSales, beer: latestData.beerSales, liquor: latestData.liquorSales, na_beverage: latestData.naBevSales, wine: latestData.wineSales, general: latestData.netSales } as any)[cat.key] || latestData.netSales
                   const val = pct(latestData.cat[cat.key], catSales)
-                  const overMeta = cat.meta && val && val > cat.meta
+                  const meta = cat.meta
+                  const semaforoColor = getSemaforoColor(val, meta)
+                  const semaforoLabel = getSemaforoLabel(val, meta)
                   return (
                     <button key={cat.key} onClick={() => setActiveCategory(cat.key)}
                       className={`rounded-xl p-4 text-left transition border ${activeCategory === cat.key ? 'border-2 bg-gray-800' : 'border-gray-800 bg-gray-900 hover:bg-gray-800'}`}
                       style={{ borderColor: activeCategory === cat.key ? cat.color : undefined }}>
                       <p className="text-gray-500 text-xs mb-1">{cat.label}</p>
                       <p className="text-lg font-bold" style={{ color: cat.color }}>{val ? val + '%' : '—'}</p>
+                      {meta !== null && (
+                        <p className="text-gray-600 text-xs">Meta: {meta}%</p>
+                      )}
                       <p className="text-gray-600 text-xs">{fmt(latestData.cat[cat.key])}</p>
-                      {cat.meta && val && (
-                        <p className={`text-xs mt-1 ${overMeta ? 'text-red-400' : 'text-green-400'}`}>
-                          {overMeta ? '▲ sobre meta' : '✓ en meta'}
-                        </p>
+                      {meta && val && (
+                        <p className={`text-xs mt-1 font-medium ${semaforoColor}`}>{semaforoLabel}</p>
                       )}
                     </button>
                   )
@@ -276,13 +316,29 @@ export default function FoodCostPage() {
             </div>
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-1">% {activeCat?.label} — Costo de Compra</h2>
-              <p className="text-gray-500 text-xs mb-4">{activeCat?.meta ? `Meta recomendada: ${activeCat.meta}%` : 'Tendencia histórica'}</p>
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="text-white font-semibold">% {activeCat?.label} — Costo de Compra</h2>
+                {activeCat?.meta !== null && (
+                  <span className="text-xs text-gray-500">
+                    Meta: <span className="text-white font-medium">{activeCat?.meta}%</span>
+                    {Object.keys(costTargets).length === 0 && (
+                      <a href="/dashboard/settings" className="ml-2 text-blue-400 hover:text-blue-300">Configurar →</a>
+                    )}
+                  </span>
+                )}
+              </div>
+              <p className="text-gray-500 text-xs mb-4">
+                {activeCat?.meta ? `Línea roja = meta ${activeCat.meta}%` : 'Sin meta configurada'}
+              </p>
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                   <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
+                  {activeCat?.meta !== null && (
+                    <ReferenceLine y={activeCat?.meta} stroke="#ef4444" strokeDasharray="4 4"
+                      label={{ value: `Meta ${activeCat?.meta}%`, fill: '#ef4444', fontSize: 10, position: 'right' }} />
+                  )}
                   <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [v + '%', activeCat?.label]} />
                   <Line type="monotone" dataKey={activeCategory} stroke={activeCat?.color} strokeWidth={2} dot={{ fill: activeCat?.color, r: 4 }} hide={hiddenLines.includes(activeCategory)} />
                 </LineChart>
@@ -297,6 +353,9 @@ export default function FoodCostPage() {
                   <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
                   <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                  {CATEGORIES.filter(c => c.meta !== null).map(cat => (
+                    <ReferenceLine key={cat.key + '_ref'} y={cat.meta!} stroke={cat.color} strokeDasharray="3 3" strokeOpacity={0.4} />
+                  ))}
                   {CATEGORIES.map(cat => (
                     <Line key={cat.key} type="monotone" dataKey={cat.key} name={cat.label} stroke={cat.color} strokeWidth={2} dot={false} hide={hiddenLines.includes(cat.key)} />
                   ))}
@@ -327,10 +386,11 @@ export default function FoodCostPage() {
                   <thead>
                     <tr className="border-b border-gray-800">
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">Semana</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Food %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Liquor %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Beer %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">NA Bev %</th>
+                      {CATEGORIES.filter(c => c.key !== 'general').map(cat => (
+                        <th key={cat.key} className="text-right text-gray-500 text-xs pb-3 font-medium">
+                          {cat.label} {cat.meta ? <span className="text-gray-700">({cat.meta}%)</span> : ''}
+                        </th>
+                      ))}
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total A&B %</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total $</th>
                     </tr>
@@ -341,10 +401,16 @@ export default function FoodCostPage() {
                       return (
                         <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
                           <td className="py-3 text-gray-300">{w.report.week}</td>
-                          <td className="py-3 text-right text-orange-400">{d.food ? d.food + '%' : '—'}</td>
-                          <td className="py-3 text-right text-purple-400">{d.liquor ? d.liquor + '%' : '—'}</td>
-                          <td className="py-3 text-right text-yellow-400">{d.beer ? d.beer + '%' : '—'}</td>
-                          <td className="py-3 text-right text-cyan-400">{d.na_beverage ? d.na_beverage + '%' : '—'}</td>
+                          {CATEGORIES.filter(c => c.key !== 'general').map(cat => {
+                            const val = d[cat.key as keyof typeof d] as number
+                            const meta = cat.meta
+                            const color = getSemaforoColor(val, meta)
+                            return (
+                              <td key={cat.key} className="py-3 text-right">
+                                <span className={`font-medium ${color}`}>{val ? val + '%' : '—'}</span>
+                              </td>
+                            )
+                          })}
                           <td className="py-3 text-right">
                             <span className={`font-medium ${d.totalAB > 35 ? 'text-red-400' : 'text-green-400'}`}>
                               {d.totalAB ? d.totalAB + '%' : '—'}
@@ -372,7 +438,8 @@ export default function FoodCostPage() {
                     {CATEGORIES.map(cat => {
                       const catSales = ({ food: data.foodSales, beer: data.beerSales, liquor: data.liquorSales, na_beverage: data.naBevSales, wine: data.wineSales, general: data.netSales } as any)[cat.key] || data.netSales
                       const val = pct(data.cat[cat.key], catSales)
-                      const overMeta = cat.meta && val && val > cat.meta
+                      const meta = cat.meta
+                      const semaforoColor = getSemaforoColor(val, meta)
                       return (
                         <div key={cat.key} className="flex items-center gap-3">
                           <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
@@ -380,11 +447,11 @@ export default function FoodCostPage() {
                           <div className="flex-1 bg-gray-800 rounded-full h-2">
                             <div className="h-2 rounded-full" style={{ width: `${Math.min(val || 0, 100)}%`, backgroundColor: cat.color }} />
                           </div>
-                          <span className="font-medium text-sm w-14 text-right" style={{ color: cat.color }}>{val ? val + '%' : '—'}</span>
+                          <span className={`font-medium text-sm w-14 text-right ${semaforoColor}`}>{val ? val + '%' : '—'}</span>
                           <span className="text-gray-600 text-xs w-16 text-right">{fmt(data.cat[cat.key])}</span>
-                          {cat.meta && val && (
-                            <span className={`text-xs w-20 ${overMeta ? 'text-red-400' : 'text-green-400'}`}>
-                              {overMeta ? '▲ sobre meta' : '✓ en meta'}
+                          {meta && val && (
+                            <span className={`text-xs w-20 ${semaforoColor}`}>
+                              {getSemaforoLabel(val, meta)}
                             </span>
                           )}
                         </div>
@@ -418,11 +485,12 @@ export default function FoodCostPage() {
                       <div className="flex items-center gap-2">
                         <div className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color }} />
                         <span className="text-gray-300 text-sm">{cat.label}</span>
+                        {cat.meta && <span className="text-gray-600 text-xs">meta: {cat.meta}%</span>}
                       </div>
                       <div className="flex items-center gap-6">
-                        <span className="text-gray-500 text-sm">{valA ? valA + '%' : '—'}</span>
+                        <span className={`text-sm ${getSemaforoColor(valA, cat.meta)}`}>{valA ? valA + '%' : '—'}</span>
                         <span className="text-gray-600">→</span>
-                        <span className="text-gray-300 text-sm">{valB ? valB + '%' : '—'}</span>
+                        <span className={`text-sm ${getSemaforoColor(valB, cat.meta)}`}>{valB ? valB + '%' : '—'}</span>
                         {diff !== null && (
                           <span className={`text-sm font-medium w-16 text-right ${diff > 0 ? 'text-red-400' : diff < 0 ? 'text-green-400' : 'text-gray-500'}`}>
                             {diff > 0 ? '+' : ''}{diff}%
