@@ -119,7 +119,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-950">
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-xl font-bold text-white">SaaS Reportes 🚀</span>
+          <span className="text-xl font-bold text-white">Restaurant X-Ray 🔬</span>
           {restaurant && (
             <>
               <span className="text-gray-600">·</span>
