@@ -21,6 +21,8 @@ export default function ComprasPage() {
   const [activeTab, setActiveTab] = useState<'impacto' | 'tendencia' | 'proveedores' | 'tabla'>('impacto')
   const [selectedCategory, setSelectedCategory] = useState('Todas')
   const [searchQuery, setSearchQuery] = useState('')
+  const [showAllTendencia, setShowAllTendencia] = useState(false)
+  const [showAllProveedores, setShowAllProveedores] = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -313,26 +315,71 @@ export default function ComprasPage() {
           </>
         ) : activeTab === 'tendencia' ? (
           <div className="space-y-6">
+            {/* Buscador */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Buscar item</h2>
+              <div className="flex items-center gap-3 mb-4">
+                <h2 className="text-white font-semibold flex-1">Tendencia por item</h2>
+              </div>
               <input
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Escribe el nombre del item..."
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                placeholder="Escribe para filtrar items..."
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 mb-4"
               />
+              {(() => {
+                const allSorted = [...new Set(currentItems.map(i => i.item_name))]
+                  .map(name => {
+                    const item = currentItems.find(i => i.item_name === name)
+                    return { name, total_cost: item?.total_cost || 0, uom: item?.uom || '', category: item?.category }
+                  })
+                  .filter(i => !searchQuery || i.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                  .sort((a, b) => b.total_cost - a.total_cost)
+                const top = showAllTendencia ? allSorted : allSorted.slice(0, 10)
+                return (
+                  <div>
+                    <p className="text-gray-500 text-xs mb-2">
+                      {searchQuery ? `${allSorted.length} resultados` : 'Top 10 por mayor gasto — click para ver detalle'}
+                    </p>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {top.map(item => (
+                        <button key={item.name}
+                          onClick={() => setSearchQuery(item.name)}
+                          className={`px-3 py-1.5 rounded-lg text-xs border transition text-left ${
+                            searchQuery === item.name
+                              ? 'bg-blue-600 border-blue-500 text-white'
+                              : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white'
+                          }`}>
+                          <span className="font-medium">{item.name}</span>
+                          <span className="text-gray-500 ml-1">· {fmt(item.total_cost)}</span>
+                          <span className="text-gray-600 ml-1 text-xs">· {item.uom}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {!searchQuery && allSorted.length > 10 && (
+                      <button onClick={() => setShowAllTendencia(!showAllTendencia)}
+                        className="text-blue-400 text-xs hover:text-blue-300 transition">
+                        {showAllTendencia ? 'Ver menos' : `Cargar más (${allSorted.length - 10} items más)`}
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
 
+            {/* Detalle del item seleccionado */}
             {searchQuery && (() => {
-              const matches = [...new Set(allData.map(r => r.item_name))]
-                .filter(name => name.toLowerCase().includes(searchQuery.toLowerCase()))
-                .slice(0, 5)
+              const exactMatch = currentItems.find(i => i.item_name === searchQuery)
+              const matches = exactMatch
+                ? [searchQuery]
+                : [...new Set(allData.map((r: any) => r.item_name))]
+                    .filter(name => name.toLowerCase().includes(searchQuery.toLowerCase()))
+                    .slice(0, 5)
 
               return matches.map(itemName => {
                 const history = itemHistory(itemName)
                 const vendors = vendorAnalysis(itemName)
-                const latestItem = allData.find(r => r.item_name === itemName && r.week === weeks[0])
+                const latestItem = allData.find((r: any) => r.item_name === itemName && r.week === weeks[0])
 
                 return (
                   <div key={itemName} className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -346,12 +393,18 @@ export default function ComprasPage() {
                       <div className="text-right">
                         <p className="text-white font-bold">{fmt(latestItem?.unit_cost)}</p>
                         <p className="text-gray-500 text-xs">costo actual</p>
+                        {prevMap[itemName] && (
+                          <p className={`text-xs ${latestItem?.unit_cost > prevMap[itemName].unit_cost ? 'text-red-400' : 'text-green-400'}`}>
+                            {latestItem?.unit_cost > prevMap[itemName].unit_cost ? '▲' : '▼'}
+                            {' '}{Math.abs(((latestItem?.unit_cost - prevMap[itemName].unit_cost) / prevMap[itemName].unit_cost) * 100).toFixed(1)}% vs sem. ant.
+                          </p>
+                        )}
                       </div>
                     </div>
 
-                    {history.length > 1 && (
+                    {history.length > 1 ? (
                       <>
-                        <p className="text-gray-500 text-xs mb-3">Historial de precio unitario</p>
+                        <p className="text-gray-500 text-xs mb-3">Historial de precio unitario ({history.length} semanas)</p>
                         <ResponsiveContainer width="100%" height={160}>
                           <LineChart data={history}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -363,9 +416,11 @@ export default function ComprasPage() {
                           </LineChart>
                         </ResponsiveContainer>
                       </>
+                    ) : (
+                      <p className="text-gray-600 text-xs mb-3">Solo aparece en 1 semana — sube más reportes para ver tendencia</p>
                     )}
 
-                    {vendors.length > 1 && (
+                    {vendors.length > 0 && (
                       <div className="mt-4">
                         <p className="text-gray-500 text-xs mb-2">Proveedores históricos</p>
                         <div className="space-y-2">
@@ -373,11 +428,11 @@ export default function ComprasPage() {
                             <div key={i} className={`flex items-center justify-between p-2 rounded-lg border ${i === 0 ? 'bg-green-950 border-green-800' : 'bg-gray-800 border-gray-700'}`}>
                               <div>
                                 <p className="text-white text-xs font-medium">{v.vendor}</p>
-                                <p className="text-gray-500 text-xs">{v.weeks} semanas comprado</p>
+                                <p className="text-gray-500 text-xs">{v.weeks} sem. · {i === 0 ? '⭐ más barato' : ''}</p>
                               </div>
                               <div className="text-right">
                                 <p className={`text-sm font-bold ${i === 0 ? 'text-green-400' : 'text-gray-300'}`}>{fmt(v.avg_cost)}</p>
-                                <p className="text-gray-600 text-xs">prom. · min {fmt(v.min_cost)} · max {fmt(v.max_cost)}</p>
+                                <p className="text-gray-600 text-xs">min {fmt(v.min_cost)} · max {fmt(v.max_cost)}</p>
                               </div>
                             </div>
                           ))}
@@ -388,12 +443,6 @@ export default function ComprasPage() {
                 )
               })
             })()}
-
-            {!searchQuery && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
-                <p className="text-gray-500">Escribe el nombre de un insumo para ver su tendencia de precio e historial de proveedores.</p>
-              </div>
-            )}
           </div>
         ) : activeTab === 'proveedores' ? (
           <div className="space-y-6">
@@ -403,50 +452,75 @@ export default function ComprasPage() {
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Buscar item para comparar proveedores..."
+                placeholder="Filtrar items..."
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 mb-4"
               />
 
-              {searchQuery ? (() => {
-                const matches = [...new Set(allData.map(r => r.item_name))]
-                  .filter(name => name.toLowerCase().includes(searchQuery.toLowerCase()))
-                  .slice(0, 8)
+              {(() => {
+                const allItemNames = [...new Set(allData.map((r: any) => r.item_name))]
+                const allWithMultiple = allItemNames
+                  .filter(name => {
+                    const vendors = vendorAnalysis(name)
+                    return vendors.length >= 2 &&
+                      (!searchQuery || name.toLowerCase().includes(searchQuery.toLowerCase()))
+                  })
+                  .map(name => {
+                    const item = currentItems.find(i => i.item_name === name)
+                    const vendors = vendorAnalysis(name)
+                    const savings = vendors[vendors.length - 1].avg_cost - vendors[0].avg_cost
+                    return { name, total_cost: item?.total_cost || 0, uom: item?.uom || allData.find((r: any) => r.item_name === name)?.uom, vendors, savings }
+                  })
+                  .sort((a, b) => b.total_cost - a.total_cost)
+                const withMultipleVendors = showAllProveedores ? allWithMultiple : allWithMultiple.slice(0, 10)
+
+                if (withMultipleVendors.length === 0) return (
+                  <p className="text-gray-500 text-sm text-center py-4">
+                    {searchQuery ? 'No se encontraron items con múltiples proveedores' : 'Sube más semanas para ver comparativa de proveedores'}
+                  </p>
+                )
 
                 return (
                   <div className="space-y-4">
-                    {matches.map(itemName => {
-                      const vendors = vendorAnalysis(itemName)
-                      if (vendors.length < 2) return null
-                      const savings = vendors[vendors.length - 1].avg_cost - vendors[0].avg_cost
-                      return (
-                        <div key={itemName} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-                          <div className="flex items-center justify-between mb-3">
-                            <p className="text-white font-medium">{itemName}</p>
-                            <span className="text-green-400 text-xs bg-green-950 px-2 py-1 rounded">
-                              Ahorro potencial: {fmt(savings)}/unidad
-                            </span>
+                    <p className="text-gray-500 text-xs mb-2">
+                      {searchQuery ? `${allWithMultiple.length} resultados` : `Top 10 items con mayor gasto que tienen múltiples proveedores históricos`}
+                    </p>
+                    {withMultipleVendors.map(({ name, total_cost, uom, vendors, savings }) => (
+                      <div key={name} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <p className="text-white font-medium">{name}</p>
+                            <p className="text-gray-500 text-xs">{uom} · Gasto esta semana: {fmt(total_cost)}</p>
                           </div>
-                          <div className="space-y-2">
-                            {vendors.map((v, i) => (
-                              <div key={i} className={`flex items-center justify-between p-2 rounded-lg ${i === 0 ? 'bg-green-950 border border-green-800' : 'bg-gray-700'}`}>
-                                <div className="flex items-center gap-2">
-                                  {i === 0 && <span className="text-green-400 text-xs">⭐ Más barato</span>}
-                                  <p className="text-white text-xs">{v.vendor}</p>
-                                  <span className="text-gray-500 text-xs">· {v.weeks} sem.</span>
-                                </div>
-                                <p className={`text-sm font-bold ${i === 0 ? 'text-green-400' : 'text-gray-300'}`}>{fmt(v.avg_cost)}</p>
-                              </div>
-                            ))}
-                          </div>
+                          <span className="text-green-400 text-xs bg-green-950 px-2 py-1 rounded">
+                            Ahorro potencial: {fmt(savings)}/{uom}
+                          </span>
                         </div>
-                      )
-                    }).filter(Boolean)}
-                    {matches.length === 0 && <p className="text-gray-500 text-sm text-center py-4">No se encontraron items</p>}
+                        <div className="space-y-2">
+                          {vendors.map((v: any, i: number) => (
+                            <div key={i} className={`flex items-center justify-between p-2 rounded-lg ${i === 0 ? 'bg-green-950 border border-green-800' : 'bg-gray-700'}`}>
+                              <div className="flex items-center gap-2">
+                                {i === 0 && <span className="text-green-400 text-xs">⭐ Más barato</span>}
+                                <p className="text-white text-xs">{v.vendor}</p>
+                                <span className="text-gray-500 text-xs">· {v.weeks} sem.</span>
+                              </div>
+                              <div className="text-right">
+                                <p className={`text-sm font-bold ${i === 0 ? 'text-green-400' : 'text-gray-300'}`}>{fmt(v.avg_cost)}<span className="text-xs font-normal text-gray-500">/{uom}</span></p>
+                                <p className="text-gray-600 text-xs">min {fmt(v.min_cost)} · max {fmt(v.max_cost)}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {!searchQuery && allWithMultiple.length > 10 && (
+                      <button onClick={() => setShowAllProveedores(!showAllProveedores)}
+                        className="text-blue-400 text-xs hover:text-blue-300 transition w-full text-center py-2">
+                        {showAllProveedores ? 'Ver menos' : `Cargar más (${allWithMultiple.length - 10} items más)`}
+                      </button>
+                    )}
                   </div>
                 )
-              })() : (
-                <p className="text-gray-500 text-sm text-center py-4">Busca un item para ver comparativa de proveedores</p>
-              )}
+              })()}
             </div>
           </div>
         ) : (
