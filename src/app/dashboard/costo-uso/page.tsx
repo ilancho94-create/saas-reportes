@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend
@@ -25,9 +26,10 @@ const CATEGORIES = [
 ]
 
 export default function CostoUsoPage() {
+  const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [alerts, setAlerts] = useState<string[]>([])
   const [rangeStart, setRangeStart] = useState(0)
@@ -35,32 +37,26 @@ export default function CostoUsoPage() {
   const [operatingDays, setOperatingDays] = useState(6)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [])
+    if (restaurantId) loadData()
+  }, [restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles').select('restaurant_id').eq('id', user.id).single()
-    if (!profile?.restaurant_id) { setLoading(false); return }
+    if (!restaurantId) return
+    setLoading(true)
+    setWeeks([])
 
     const { data: rest } = await supabase
-      .from('restaurants').select('*, organizations(name)').eq('id', profile.restaurant_id).single()
-    setRestaurant(rest)
+      .from('restaurants').select('name, operating_days').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
     setOperatingDays(rest?.operating_days || 6)
 
     const { data: maps } = await supabase
-      .from('category_mappings').select('*').eq('restaurant_id', profile.restaurant_id)
+      .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
     setMappings(maps || [])
 
     const { data: reports } = await supabase
       .from('reports').select('*')
-      .eq('restaurant_id', profile.restaurant_id)
+      .eq('restaurant_id', restaurantId)
       .order('created_at', { ascending: false })
       .limit(12)
 
@@ -81,20 +77,14 @@ export default function CostoUsoPage() {
     setRangeStart(0)
     setRangeEnd(sorted.length - 1)
 
-    // Detectar alertas de ajuste de inventario
     const newAlerts: string[] = []
     for (let i = 1; i < sorted.length; i++) {
       const prev = sorted[i - 1]
       const curr = sorted[i]
       if (prev.inventory && curr.inventory) {
-        const diff = Math.abs(
-          Number(prev.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous)
-        )
+        const diff = Math.abs(Number(prev.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous))
         if (diff > 10) {
-          newAlerts.push(
-            `⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: ` +
-            `diferencia de $${diff.toFixed(0)} en inventario`
-          )
+          newAlerts.push(`⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: diferencia de $${diff.toFixed(0)} en inventario`)
         }
       }
     }
@@ -121,9 +111,7 @@ export default function CostoUsoPage() {
     if (!categories || !mappings.length) return 0
     return categories
       .filter((cat: any) => {
-        const mapping = mappings.find(m =>
-          m.source_category.toLowerCase() === cat.name.toLowerCase()
-        )
+        const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
         return mapping?.mapped_to === targetType
       })
       .reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
@@ -131,9 +119,7 @@ export default function CostoUsoPage() {
 
   function getInventoryByCategory(invAccounts: any[], categoryKey: string) {
     if (!invAccounts) return { current: 0, previous: 0 }
-    const accounts = Object.entries(ACCOUNT_MAP)
-      .filter(([_, cat]) => cat === categoryKey)
-      .map(([acc]) => acc)
+    const accounts = Object.entries(ACCOUNT_MAP).filter(([_, cat]) => cat === categoryKey).map(([acc]) => acc)
     return {
       current: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.current_value || 0), 0),
       previous: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.previous_value || 0), 0),
@@ -147,17 +133,8 @@ export default function CostoUsoPage() {
     const salesCategories = w.sales?.categories || []
     const theoCostByCat = w.productMix?.theo_cost_by_category || {}
     const hasInventory = invAccounts.length > 0
-
-    const result: any = {
-      week: w.report.week.replace('2026-', ''),
-      netSales,
-      hasInventory,
-      hasProductMix: !!w.productMix,
-    }
-
-    let totalUsoCost = 0
-    let totalTheoCost = 0
-    let totalABSales = 0
+    const result: any = { week: w.report.week.replace('2026-', ''), netSales, hasInventory, hasProductMix: !!w.productMix }
+    let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
 
     CATEGORIES.forEach(cat => {
       const inv = getInventoryByCategory(invAccounts, cat.key)
@@ -165,18 +142,11 @@ export default function CostoUsoPage() {
       const uso = hasInventory ? Math.max((inv.previous + purchases - inv.current), 0) : 0
       const catSales = getMappedSales(salesCategories, cat.key) || 0
       const theoCost = theoCostByCat[cat.key] || 0
-
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
       const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2))
-        : null
-
-      // Días de inventario = ((Inv Final + Inv Inicial) / 2) / Uso * días operación
-      const diasInv = uso > 0
-        ? parseFloat((((inv.current + inv.previous) / 2) / uso * operatingDays).toFixed(1))
-        : null
-
+        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
+      const diasInv = uso > 0 ? parseFloat((((inv.current + inv.previous) / 2) / uso * operatingDays).toFixed(1)) : null
       result[cat.key + '_uso'] = uso
       result[cat.key + '_uso_pct'] = realPct || 0
       result[cat.key + '_theo_pct'] = mixPct || 0
@@ -186,7 +156,6 @@ export default function CostoUsoPage() {
       result[cat.key + '_inv_previous'] = inv.previous
       result[cat.key + '_purchases'] = purchases
       result[cat.key + '_sales'] = catSales
-
       if (uso > 0) totalUsoCost += uso
       if (theoCost > 0) totalTheoCost += theoCost
       if (catSales > 0) totalABSales += catSales
@@ -198,9 +167,7 @@ export default function CostoUsoPage() {
     result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
     result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
     result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2))
-      : null
-
+      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
     return result
   }
 
@@ -218,64 +185,44 @@ export default function CostoUsoPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-white font-bold text-lg">📦 Costo de Uso</h1>
-            <span className="bg-blue-900 text-blue-400 text-xs px-2 py-0.5 rounded-full font-medium">
-              Inventario Real
-            </span>
-            <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">
-              {operatingDays} días/semana
-            </span>
+            <span className="bg-blue-900 text-blue-400 text-xs px-2 py-0.5 rounded-full font-medium">Inventario Real</span>
+            <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">{operatingDays} días/semana</span>
           </div>
-          <p className="text-gray-500 text-xs mt-0.5">
-            {restaurant?.name} · (Inv. Anterior + Compras − Inv. Actual) / Ventas
-          </p>
+          <p className="text-gray-500 text-xs mt-0.5">{restaurantName} · (Inv. Anterior + Compras − Inv. Actual) / Ventas</p>
         </div>
         <div className="flex items-center gap-4">
           <span className="text-gray-500 text-xs">Desde:</span>
-          <select
-            value={rangeStart}
-            onChange={e => setRangeStart(Number(e.target.value))}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500"
-          >
-            {weeks.map((w, i) => (
-              <option key={w.report.week} value={i}>{w.report.week}</option>
-            ))}
+          <select value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+            {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
           </select>
           <span className="text-gray-500 text-xs">Hasta:</span>
-          <select
-            value={rangeEnd}
-            onChange={e => setRangeEnd(Number(e.target.value))}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500"
-          >
-            {weeks.map((w, i) => (
-              <option key={w.report.week} value={i}>{w.report.week}</option>
-            ))}
+          <select value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+            {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
           </select>
         </div>
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-
-        {/* Explicación */}
         <div className="bg-blue-950 border border-blue-900 rounded-xl px-5 py-3 flex items-start gap-3">
           <span className="text-blue-400 text-lg">ℹ️</span>
           <div>
             <p className="text-blue-300 text-sm font-medium">Costo de Uso de Inventario</p>
             <p className="text-blue-400 text-xs mt-0.5">
               <strong>% Real</strong> = (Inv. Anterior + Compras − Inv. Actual) / Ventas ·
-              <strong> % P.Mix</strong> = Costo teórico según lo vendido (Menu Item Analysis) ·
+              <strong> % P.Mix</strong> = Costo teórico según lo vendido ·
               <strong> Variación $</strong> = (% Real − % P.Mix) × Ventas ·
               <strong> Días Inv</strong> = ((Inv. Final + Inv. Inicial) / 2) / Uso × {operatingDays} días
             </p>
           </div>
         </div>
 
-        {/* Alertas */}
-        {alerts.length > 0 && alerts.map((alert, i) => (
+        {alerts.map((alert, i) => (
           <div key={i} className="bg-yellow-950 border border-yellow-800 rounded-xl px-5 py-3 flex items-start gap-3">
             <span className="text-yellow-400 shrink-0">⚠️</span>
             <p className="text-yellow-300 text-sm">{alert}</p>
@@ -286,39 +233,28 @@ export default function CostoUsoPage() {
           <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">
             <div className="text-5xl mb-4">📦</div>
             <h2 className="text-white font-semibold text-lg mb-2">No hay datos de inventario</h2>
-            <p className="text-gray-500 mb-6">
-              Sube el <strong>Inventory Count Review</strong> de R365 para ver el costo de uso real.
-            </p>
-            <button
-              onClick={() => window.location.href = '/upload'}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg"
-            >
+            <p className="text-gray-500 mb-6">Sube el <strong>Inventory Count Review</strong> de R365 para ver el costo de uso real.</p>
+            <button onClick={() => window.location.href = '/upload'}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg">
               Subir reporte
             </button>
           </div>
         ) : (
           <>
-            {/* KPIs semana más reciente */}
             {latestData && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
                   Semana más reciente — {latest?.report?.week}
                 </p>
-
-                {/* Resumen Total A&B */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">% Costo Real A&B</p>
-                    <p className="text-3xl font-bold text-blue-400">
-                      {fmtPct(latestData.totalRealPct)}
-                    </p>
+                    <p className="text-3xl font-bold text-blue-400">{fmtPct(latestData.totalRealPct)}</p>
                     <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalUsoCost)} uso real</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">% Costo P.Mix</p>
-                    <p className="text-3xl font-bold text-green-400">
-                      {fmtPct(latestData.totalMixPct)}
-                    </p>
+                    <p className="text-3xl font-bold text-green-400">{fmtPct(latestData.totalMixPct)}</p>
                     <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalTheoCost)} teórico</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -332,14 +268,11 @@ export default function CostoUsoPage() {
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
-                    <p className="text-2xl font-bold text-white">
-                      {fmt(latest?.inventory?.grand_total_current)}
-                    </p>
+                    <p className="text-2xl font-bold text-white">{fmt(latest?.inventory?.grand_total_current)}</p>
                     <p className="text-gray-600 text-xs mt-1">cierre de semana</p>
                   </div>
                 </div>
 
-                {/* Tabla detalle por categoría */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-4">Detalle por categoría — {latest?.report?.week}</h2>
                   <div className="overflow-x-auto">
@@ -379,13 +312,9 @@ export default function CostoUsoPage() {
                               <td className="py-3 text-right text-white text-sm font-medium">{fmt(latestData[cat.key + '_uso'])}</td>
                               <td className="py-3 text-right text-gray-400 text-sm">{fmt(latestData[cat.key + '_sales'])}</td>
                               <td className="py-3 text-right">
-                                <span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>
-                                  {fmtPct(realPct)}
-                                </span>
+                                <span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</span>
                               </td>
-                              <td className="py-3 text-right text-blue-400 text-sm">
-                                {fmtPct(mixPct)}
-                              </td>
+                              <td className="py-3 text-right text-blue-400 text-sm">{fmtPct(mixPct)}</td>
                               <td className="py-3 text-right">
                                 {variacion !== null ? (
                                   <span className={`text-sm font-medium ${variacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
@@ -393,13 +322,10 @@ export default function CostoUsoPage() {
                                   </span>
                                 ) : <span className="text-gray-600">—</span>}
                               </td>
-                              <td className="py-3 text-right text-gray-400 text-sm">
-                                {dias !== null ? dias + 'd' : '—'}
-                              </td>
+                              <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>
                             </tr>
                           )
                         })}
-                        {/* Total row */}
                         <tr className="border-t-2 border-gray-700">
                           <td className="py-3 text-white font-bold">Total A&B</td>
                           <td colSpan={3} />
@@ -427,7 +353,6 @@ export default function CostoUsoPage() {
               </div>
             )}
 
-            {/* Gráficas tendencia */}
             {chartData.filter(d => d.hasInventory).length > 1 && (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -446,7 +371,6 @@ export default function CostoUsoPage() {
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
-
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                     <h2 className="text-white font-semibold mb-1">Variación $ por semana</h2>
                     <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno)</p>
@@ -456,15 +380,11 @@ export default function CostoUsoPage() {
                         <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
                         <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
-                        <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]}
-                          fill="#ef4444"
-                        />
+                        <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
-
-                {/* Gráfica % Real por categoría */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
                   <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
@@ -476,15 +396,7 @@ export default function CostoUsoPage() {
                       <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
                       <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
                       {CATEGORIES.map(cat => (
-                        <Line
-                          key={cat.key}
-                          type="monotone"
-                          dataKey={cat.key + '_uso_pct'}
-                          name={cat.label}
-                          stroke={cat.color}
-                          strokeWidth={2}
-                          dot={{ fill: cat.color, r: 3 }}
-                        />
+                        <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label} stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
@@ -492,7 +404,6 @@ export default function CostoUsoPage() {
               </>
             )}
 
-            {/* Tabla histórica */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Histórico por semana</h2>
               <div className="overflow-x-auto">
@@ -530,18 +441,8 @@ export default function CostoUsoPage() {
                           </td>
                           <td className="py-3 text-right text-white">{fmt(d.totalUsoCost)}</td>
                           <td className="py-3 text-right text-gray-400">{fmt(d.totalABSales)}</td>
-                          <td className="py-3 text-right">
-                            {d.hasInventory
-                              ? <span className="text-green-400 text-xs">✓</span>
-                              : <span className="text-gray-600 text-xs">—</span>
-                            }
-                          </td>
-                          <td className="py-3 text-right">
-                            {d.hasProductMix
-                              ? <span className="text-green-400 text-xs">✓</span>
-                              : <span className="text-gray-600 text-xs">—</span>
-                            }
-                          </td>
+                          <td className="py-3 text-right">{d.hasInventory ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
+                          <td className="py-3 text-right">{d.hasProductMix ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
                         </tr>
                       )
                     })}
