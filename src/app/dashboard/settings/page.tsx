@@ -35,8 +35,9 @@ export default function SettingsPage() {
   // Restaurant operational config
   const [restConfig, setRestConfig] = useState({
     operating_days: 6,
-    week_start_day: 1, // 0=Sun, 1=Mon, 2=Tue...
-    closed_days: [] as number[], // days of week that are closed
+    week_start_day: 1,
+    closed_days: [] as number[],
+    fiscal_year_start: '', // YYYY-MM-DD
   })
   const [savingConfig, setSavingConfig] = useState(false)
   const [configStatus, setConfigStatus] = useState('')
@@ -51,7 +52,7 @@ export default function SettingsPage() {
 
     const { data: rest } = await supabase
       .from('restaurants')
-      .select('name, operating_days, week_start_day, closed_days')
+      .select('name, operating_days, week_start_day, closed_days, fiscal_year_start')
       .eq('id', restaurantId).single()
     setRestaurantName(rest?.name || '')
     if (rest) {
@@ -59,6 +60,7 @@ export default function SettingsPage() {
         operating_days: rest.operating_days || 6,
         week_start_day: rest.week_start_day ?? 1,
         closed_days: rest.closed_days || [],
+        fiscal_year_start: rest.fiscal_year_start || '',
       })
     }
 
@@ -129,6 +131,7 @@ export default function SettingsPage() {
         operating_days: restConfig.operating_days,
         week_start_day: restConfig.week_start_day,
         closed_days: restConfig.closed_days,
+        fiscal_year_start: restConfig.fiscal_year_start || null,
       })
       .eq('id', restaurantId)
     setSavingConfig(false)
@@ -396,6 +399,36 @@ export default function SettingsPage() {
                   />
                   <span className="text-gray-400 text-sm">días por semana</span>
                 </div>
+              </div>
+
+              {/* Año fiscal */}
+              <div className="mb-6">
+                <label className="text-gray-300 text-sm font-medium block mb-1">Inicio del año fiscal (Semana 1)</label>
+                <p className="text-gray-500 text-xs mb-3">
+                  Define la fecha exacta en que empieza la Semana 1 de tu año fiscal.
+                  Debe coincidir con cómo R365 y Toast numeran sus semanas.
+                </p>
+                <div className="flex items-center gap-4">
+                  <input
+                    type="date"
+                    value={restConfig.fiscal_year_start}
+                    onChange={e => setRestConfig(prev => ({ ...prev, fiscal_year_start: e.target.value }))}
+                    className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                  />
+                  {restConfig.fiscal_year_start && (
+                    <div className="text-xs text-gray-400">
+                      <p>Semana 1 empieza: <span className="text-white">{restConfig.fiscal_year_start}</span></p>
+                      <p className="mt-0.5 text-gray-600">
+                        Semana 2: {new Date(new Date(restConfig.fiscal_year_start).getTime() + 7*24*60*60*1000).toISOString().split('T')[0]}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {!restConfig.fiscal_year_start && (
+                  <p className="text-yellow-500 text-xs mt-2">
+                    ⚠️ Sin configurar — el sistema usa la numeración ISO estándar
+                  </p>
+                )}
               </div>
 
               {configStatus && (
