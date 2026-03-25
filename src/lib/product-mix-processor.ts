@@ -292,3 +292,97 @@ export function parseAvtExcel(buffer: Buffer): any {
     date_warning: null,
   }
 }
+
+export function parseAvtCsv(csvContent: string): any {
+  const lines = csvContent.split('\n')
+  
+  // Header está en línea 3 (índice 3)
+  const headerLine = lines[3]
+  if (!headerLine) throw new Error('CSV de AvT sin header')
+  
+  const parseRow = (line: string): string[] => {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '"') {
+        inQuotes = !inQuotes
+      } else if (line[i] === ',' && !inQuotes) {
+        result.push(current.trim())
+        current = ''
+      } else {
+        current += line[i]
+      }
+    }
+    result.push(current.trim())
+    return result
+  }
+
+  const headers = parseRow(headerLine)
+
+  const idx = (name: string) => headers.indexOf(name)
+  const cat1Idx = idx('ItemCategory1Name')
+  const nameIdx = idx('ItemName')
+  const uomIdx = idx('UofMName')
+  const costIdx = idx('Cost')
+  const unexpQtyIdx = idx('UnexplainedVarianceQty')
+  const unexpAmtIdx = idx('UnexplainedVarianceAmt')
+
+  if (nameIdx === -1 || unexpAmtIdx === -1) {
+    throw new Error('CSV de AvT no tiene las columnas esperadas')
+  }
+
+  const cleanDollar = (val: string): number => {
+    val = val.trim().replace(/\$/g, '').replace(/,/g, '')
+    if (val.startsWith('(') && val.endsWith(')')) {
+      val = '-' + val.slice(1, -1)
+    }
+    return parseFloat(val) || 0
+  }
+
+  const shortages: any[] = []
+  const overages: any[] = []
+  const byCategoryMap: Record<string, { shortage: number; overage: number }> = {}
+
+  for (const line of lines.slice(4)) {
+    if (!line.trim()) continue
+    const row = parseRow(line)
+    if (row.length <= unexpAmtIdx) continue
+
+    const name = row[nameIdx]?.trim()
+    if (!name || name.includes('Total') || name.includes('TOTAL')) continue
+
+    const cat = row[cat1Idx]?.trim() || 'OTHER'
+    const uom = row[uomIdx]?.trim() || ''
+    const unitCost = cleanDollar(row[costIdx] || '0')
+    const unexpQty = cleanDollar(row[unexpQtyIdx] || '0')
+    const unexpAmt = cleanDollar(row[unexpAmtIdx] || '0')
+
+    if (unexpAmt === 0) continue
+
+    if (!byCategoryMap[cat]) byCategoryMap[cat] = { shortage: 0, overage: 0 }
+
+    const item = { name, category: cat, uom, unit_cost: unitCost, variance_qty: unexpQty, variance_dollar: unexpAmt }
+
+    if (unexpAmt > 0) {
+      shortages.push(item)
+      byCategoryMap[cat].shortage += unexpAmt
+    } else {
+      overages.push(item)
+      byCategoryMap[cat].overage += Math.abs(unexpAmt)
+    }
+  }
+
+  const by_category = Object.entries(byCategoryMap).map(([category, vals]) => ({
+    category,
+    total_shortage_dollar: parseFloat(vals.shortage.toFixed(2)),
+    total_overage_dollar: parseFloat(vals.overage.toFixed(2)),
+    net_dollar: parseFloat((vals.shortage - vals.overage).toFixed(2)),
+  }))
+
+  const total_shortage_dollar = parseFloat(shortages.reduce((a, b) => a + b.variance_dollar, 0).toFixed(2))
+  const total_overage_dollar = parseFloat(Math.abs(overages.reduce((a, b) => a + b.variance_dollar, 0)).toFixed(2))
+  const net_variance_dollar = parseFloat((total_shortage_dollar - total_overage_dollar).toFixed(2))
+
+  return { shortages, overages, by_category, total_shortage_dollar, total_overage_dollar, net_variance_dollar, date_warning: null }
+}

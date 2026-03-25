@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvtExcel } from '@/lib/product-mix-processor'
+import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvtExcel, parseAvtCsv } from '@/lib/product-mix-processor'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const supabase = createClient(
@@ -65,8 +65,11 @@ export async function POST(request: NextRequest) {
     const avtFile = formData.get('avt') as File | null
     if (avtFile && avtFile.size > 0) {
       try {
-        const buffer = Buffer.from(await avtFile.arrayBuffer())
-        const avtData = parseAvtExcel(buffer)
+const buffer = Buffer.from(await avtFile.arrayBuffer())
+const isCsv = avtFile.name.endsWith('.csv')
+const avtData = isCsv
+  ? parseAvtCsv(buffer.toString('utf-8'))
+  : parseAvtExcel(buffer)
         results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
         console.log(`AvT: ${avtData.shortages.length} faltantes, ${avtData.overages.length} sobrantes`)
         await saveToDatabase(report.id, 'avt', avtData)
