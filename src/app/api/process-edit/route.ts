@@ -1,6 +1,8 @@
+// src/app/api/process-edit/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
+import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine } from '@/lib/product-mix-processor'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const supabase = createClient(
@@ -30,64 +32,105 @@ export async function POST(request: NextRequest) {
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
-    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'product_mix', 'menu_analysis', 'avt']
+    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'avt']
 
-    let productMixData: any = null
-    let menuAnalysisData: any = null
-
+    // Procesar archivos estándar con Claude
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
       if (!file || file.size === 0) continue
-
       console.log(`Processing ${fileType}: ${file.name} (${file.size} bytes)`)
       try {
         const extracted = await extractWithClaude(file, fileType, week)
         results[fileType] = extracted
         if (extracted.date_warning) warnings[fileType] = extracted.date_warning
-
-        if (fileType === 'product_mix') {
-          productMixData = extracted
-          console.log('product_mix by_item count:', extracted?.by_item?.length)
-        } else if (fileType === 'menu_analysis') {
-          menuAnalysisData = extracted
-          console.log('menu_analysis by_item count:', extracted?.by_item?.length)
-          console.log('menu_analysis total_theo_cost:', extracted?.total_theo_cost)
-        } else {
-          const table = TABLE_MAP[fileType]
-          if (table) {
-            await supabase.from(table).delete().eq('report_id', reportId)
-            await saveToDatabase(reportId, fileType, extracted)
-          }
-        }
+        await supabase.from(TABLE_MAP[fileType]).delete().eq('report_id', reportId)
+        await saveToDatabase(reportId, fileType, extracted)
       } catch (err) {
         console.error(`Error processing ${fileType}:`, err)
         results[fileType] = { error: 'No se pudo procesar' }
       }
     }
 
-    if (productMixData || menuAnalysisData) {
-      // Si solo viene uno, recuperar el otro de raw_data en Supabase
-      if (!productMixData || !menuAnalysisData) {
-        const { data: existing } = await supabase
-          .from('product_mix_data')
-          .select('raw_data')
-          .eq('report_id', reportId)
-          .single()
+    // Procesar Product Mix + Menu Analysis directamente del Excel
+    const productMixFile = formData.get('product_mix') as File | null
+    const menuAnalysisFile = formData.get('menu_analysis') as File | null
 
-        if (existing?.raw_data) {
-          if (!productMixData && existing.raw_data.product_mix) {
-            productMixData = existing.raw_data.product_mix
-            console.log('product_mix recuperado de Supabase raw_data')
-          }
-          if (!menuAnalysisData && existing.raw_data.menu_analysis) {
-            menuAnalysisData = existing.raw_data.menu_analysis
-            console.log('menu_analysis recuperado de Supabase raw_data')
+    if (productMixFile || menuAnalysisFile) {
+      try {
+        // Obtener restaurant_id del reporte
+        const { data: report } = await supabase
+          .from('reports').select('restaurant_id').eq('id', reportId).single()
+        const restaurantId = report?.restaurant_id || '00000000-0000-0000-0000-000000000001'
+
+        let productMix: any = null
+        let menuAnalysis: any = null
+
+        if (productMixFile && productMixFile.size > 0) {
+          const buffer = Buffer.from(await productMixFile.arrayBuffer())
+          productMix = parseProductMixExcel(buffer)
+          results['product_mix'] = { items: productMix.by_item?.length }
+          console.log(`Product Mix: ${productMix.by_item?.length} items`)
+        }
+
+        if (menuAnalysisFile && menuAnalysisFile.size > 0) {
+          const buffer = Buffer.from(await menuAnalysisFile.arrayBuffer())
+          menuAnalysis = parseMenuAnalysisExcel(buffer)
+          results['menu_analysis'] = { items: menuAnalysis.by_item?.length, total_theo_cost: menuAnalysis.total_theo_cost }
+          console.log(`Menu Analysis: ${menuAnalysis.by_item?.length} items, theo_cost: ${menuAnalysis.total_theo_cost}`)
+        }
+
+        // Si solo viene uno, recuperar el otro del raw_data existente en Supabase
+        if (!productMix || !menuAnalysis) {
+          const { data: existing } = await supabase
+            .from('product_mix_data').select('raw_data').eq('report_id', reportId).single()
+          if (existing?.raw_data) {
+            if (!productMix && existing.raw_data.product_mix) {
+              productMix = existing.raw_data.product_mix
+              console.log('product_mix recuperado de Supabase')
+            }
+            if (!menuAnalysis && existing.raw_data.menu_analysis) {
+              menuAnalysis = existing.raw_data.menu_analysis
+              console.log('menu_analysis recuperado de Supabase')
+            }
           }
         }
-      }
 
-      await supabase.from('product_mix_data').delete().eq('report_id', reportId)
-      await saveProductMixCombined(reportId, productMixData, menuAnalysisData)
+        // Cargar category_mappings
+        const { data: savedMappings } = await supabase
+          .from('category_mappings')
+          .select('source_category, mapped_to')
+          .eq('restaurant_id', restaurantId)
+          .eq('source_system', 'r365_item')
+
+        const combined = matchAndCombine(
+          productMix || { by_item: [], by_menu: [], by_category: {}, total_net_sales: 0, total_qty: 0, date_warning: null },
+          menuAnalysis || { by_item: [], total_theo_cost: 0, total_sales: 0, date_warning: null },
+          savedMappings || []
+        )
+
+        console.log(`Match: total_theo_cost=${combined.total_theo_cost}, unmatched=${combined.unmatched_items.length}`)
+
+        if (combined.unmatched_items.length > 0) {
+          warnings['product_mix'] = `${combined.unmatched_items.length} items sin categoría — ve a Settings → Mapeo de Items`
+        }
+
+        // Borrar y reinserta
+        await supabase.from('product_mix_data').delete().eq('report_id', reportId)
+        const { error } = await supabase.from('product_mix_data').insert({
+          report_id: reportId,
+          raw_data: { ...combined.raw_data, unmatched_items: combined.unmatched_items },
+          by_menu: combined.by_menu,
+          by_category: combined.by_category,
+          theo_cost_by_category: combined.theo_cost_by_category,
+          total_theo_cost: combined.total_theo_cost,
+        })
+        if (error) console.error('Error saving product_mix_data:', error)
+        else console.log('product_mix_data saved OK. total_theo_cost:', combined.total_theo_cost)
+
+      } catch (err) {
+        console.error('Error processing product mix:', err)
+        results['product_mix'] = { error: 'No se pudo procesar' }
+      }
     }
 
     return NextResponse.json({
@@ -114,34 +157,11 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
     const XLSX = require('xlsx')
     const workbook = XLSX.read(buffer, { type: 'buffer' })
     const sheets: string[] = []
-    if (fileType === 'product_mix') {
-      const targetSheets = ['All levels', 'Menus']
-      workbook.SheetNames.forEach((name: string) => {
-        if (targetSheets.includes(name)) {
-          const sheet = workbook.Sheets[name]
-          sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
-        }
-      })
-      if (sheets.length === 0) {
-        console.log('product_mix: sheets disponibles:', workbook.SheetNames)
-        workbook.SheetNames.forEach((name: string) => {
-          const sheet = workbook.Sheets[name]
-          sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
-        })
-      }
-    } else {
-      workbook.SheetNames.forEach((name: string) => {
-        const sheet = workbook.Sheets[name]
-        sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
-      })
-    }
+    workbook.SheetNames.forEach((name: string) => {
+      const sheet = workbook.Sheets[name]
+      sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
+    })
     fileContent = sheets.join('\n\n')
-  } else {
-    fileContent = buffer.toString('utf-8')
-  }
-
-  if (!fileContent || fileContent.trim().length === 0) {
-    throw new Error(`Archivo vacío o formato no reconocido para ${fileType}`)
   }
 
   const weekStart = getWeekStart(week)
@@ -153,68 +173,32 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"net_sales":número,"gross_sales":número,"discounts":número,"refunds":número,"orders":número,"guests":número,"avg_per_guest":número,"avg_per_order":número,"gratuity":número,"tax":número,"tips":número,"categories":[{"name":string,"items":número,"gross":número,"discount":número,"net":número,"pct":número}],"revenue_centers":[{"name":string,"net":número,"pct":número}],"lunch":{"orders":número,"net":número,"discounts":número},"dinner":{"orders":número,"net":número,"discounts":número},"date_warning":string|null}`,
-
     labor: `Analiza este reporte de labor/payroll de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 Solo incluye empleados con Hourly Rate > 0.
 ${dateInstruction}
 {"total_regular_hours":número,"total_ot_hours":número,"total_pay":número,"by_position":[{"position":string,"regular_hours":número,"ot_hours":número,"total_pay":número}],"by_employee":[{"name":string,"position":string,"hourly_rate":número,"regular_hours":número,"ot_hours":número,"total_pay":número}],"date_warning":string|null}`,
-
     cogs: `Analiza este reporte COGS Analysis by Vendor de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"total":número,"by_category":{"food":número,"na_beverage":número,"liquor":número,"beer":número,"wine":número,"general":número},"by_vendor":[{"name":string,"food":número,"na_beverage":número,"liquor":número,"beer":número,"general":número,"total":número}],"date_warning":string|null}`,
-
     voids: `Analiza este reporte de voids de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"total":número,"total_items":número,"by_reason":[{"reason":string,"count":número,"total":número}],"items":[{"item_name":string,"server":string,"reason":string,"quantity":número,"price":número}],"date_warning":string|null}`,
-
     discounts: `Analiza este reporte de descuentos de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"total":número,"total_applications":número,"total_orders":número,"items":[{"name":string,"applications":número,"orders":número,"amount":número,"pct":número}],"date_warning":string|null}`,
-
     waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"total_cost":número,"total_qty":número,"items":[{"name":string,"uom":string,"qty":número,"unit_cost":número,"total":número,"category":string,"comment":string}],"date_warning":string|null}`,
-
     inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 Busca la sección "Total by Inventory Account" con columnas Current Value y Previous Value.
 ${dateInstruction}
 {"count_date":"YYYY-MM-DD","by_account":[{"account":string,"current_value":número,"previous_value":número,"adjustment":número}],"grand_total_current":número,"grand_total_previous":número,"date_warning":string|null}`,
-
-    product_mix: `Analiza este reporte Product Mix de Toast POS.
-Usa pestaña "Menus" para ventas por menú y pestaña "All levels" para detalle por item.
-Solo incluye filas donde Type = "menuItem" (no modifiers ni specialRequests).
-
-CATEGORIZACIÓN:
-- FOOD MENU, FOOD MENU TOGO, KID'S MENU, AYCE TACOS, AYCE TACOS W → "food"
-- NON/ALC BEVERAGES → "na_beverage"
-- BEER → "beer"
-- LIQUOR → "liquor"
-- WINE → "wine"
-- Cualquier otro → "general"
-
-Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-${dateInstruction}
-{"by_menu":[{"menu":string,"qty":número,"net_sales":número,"gross_sales":número}],"by_category":{"food":número,"na_beverage":número,"liquor":número,"beer":número,"wine":número,"general":número},"by_item":[{"item":string,"menu":string,"menu_category":string,"qty":número,"net_sales":número}],"total_net_sales":número,"total_qty":número,"date_warning":string|null}`,
-
-    menu_analysis: `Analiza este reporte Menu Item Analysis de Restaurant365.
-Columnas: Item, Price, Cost, Margin, Cost%, Qty, Sales, Sls%, Theo Cost, Profit, Category.
-
-IMPORTANTE:
-- El campo "Category" (Star/Dog/Plow Horse/Puzzle) es clasificación de rentabilidad, NO es categoría de menú.
-- "Theo Cost" = costo teórico total del item (unit_cost × qty vendida). Si está vacío o es 0, calcula: Cost × Qty.
-- Extrae TODOS los items con Theo Cost > 0.
-- NO intentes categorizar por menú, solo extrae item, qty, sales y theo_cost.
-
-Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-${dateInstruction}
-{"by_item":[{"item":string,"qty":número,"sales":número,"unit_cost":número,"theo_cost":número}],"total_theo_cost":número,"total_sales":número,"date_warning":string|null}`,
-
     avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365 y extrae datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 FALTANTE = varianza POSITIVA. SOBRANTE = varianza NEGATIVA.
@@ -233,128 +217,45 @@ ${dateInstruction}
 
   const text = response.content[0].type === 'text' ? response.content[0].text : ''
   const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-
   try {
     return JSON.parse(clean)
   } catch {
-    console.error(`Parse error for ${fileType}. Raw:`, clean.substring(0, 300))
     throw new Error(`No se pudo parsear la respuesta de Claude para ${fileType}`)
   }
-}
-
-async function saveProductMixCombined(reportId: string, productMix: any, menuAnalysis: any) {
-  console.log('saveProductMixCombined - productMix:', !!productMix, '| menuAnalysis:', !!menuAnalysis)
-
-  // Columnas existentes en product_mix_data:
-  // id, report_id, by_category, by_menu, theo_cost_by_category, total_theo_cost, raw_data
-  const insertData: Record<string, any> = {
-    report_id: reportId,
-    raw_data: { product_mix: productMix, menu_analysis: menuAnalysis },
-  }
-
-  if (productMix) {
-    insertData.by_menu = productMix.by_menu
-    insertData.by_category = productMix.by_category || buildCategoryFromMenus(productMix.by_menu)
-  }
-
-  if (productMix?.by_item && menuAnalysis?.by_item && menuAnalysis.by_item.length > 0) {
-    // Caso completo: match por nombre entre Toast y R365
-    const theoCostByCategory: Record<string, number> = {
-      food: 0, na_beverage: 0, liquor: 0, beer: 0, wine: 0, general: 0
-    }
-    let matchCount = 0
-    productMix.by_item.forEach((toastItem: any) => {
-      const r365Item = menuAnalysis.by_item.find((r: any) =>
-        r.item?.toLowerCase().trim() === toastItem.item?.toLowerCase().trim()
-      )
-      if (r365Item && Number(r365Item.theo_cost) > 0) {
-        const cat = toastItem.menu_category || 'general'
-        theoCostByCategory[cat] = (theoCostByCategory[cat] || 0) + Number(r365Item.theo_cost)
-        matchCount++
-      }
-    })
-    console.log(`Match: ${matchCount} de ${productMix.by_item.length} items`)
-    insertData.theo_cost_by_category = theoCostByCategory
-    insertData.total_theo_cost = Object.values(theoCostByCategory)
-      .reduce((a: number, b: number) => a + b, 0)
-    console.log('total_theo_cost calculado:', insertData.total_theo_cost)
-
-  } else if (menuAnalysis?.total_theo_cost && Number(menuAnalysis.total_theo_cost) > 0) {
-    // Caso parcial: usar total directo de R365
-    insertData.total_theo_cost = menuAnalysis.total_theo_cost
-    console.log('total_theo_cost directo de R365:', insertData.total_theo_cost)
-  }
-
-  const { error } = await supabase.from('product_mix_data').insert(insertData)
-  if (error) {
-    console.error('Error saving product_mix_data:', error)
-  } else {
-    console.log('product_mix_data guardado OK. total_theo_cost:', insertData.total_theo_cost)
-  }
-}
-
-function buildCategoryFromMenus(byMenu: any[]) {
-  if (!byMenu) return {}
-  const map: Record<string, number> = {}
-  const menuToCat: Record<string, string> = {
-    'FOOD MENU': 'food', 'FOOD MENU TOGO': 'food',
-    "KID'S MENU": 'food', 'AYCE TACOS': 'food', 'AYCE TACOS W': 'food',
-    'NON/ALC BEVERAGES': 'na_beverage', 'BEER': 'beer',
-    'LIQUOR': 'liquor', 'WINE': 'wine',
-  }
-  byMenu.forEach((m: any) => {
-    const cat = menuToCat[m.menu?.toUpperCase()] || 'general'
-    map[cat] = (map[cat] || 0) + (m.net_sales || 0)
-  })
-  return map
 }
 
 async function saveToDatabase(reportId: string, fileType: string, data: any) {
   const table = TABLE_MAP[fileType]
   if (!table) return
   const insertData: Record<string, any> = { report_id: reportId, raw_data: data }
-
   if (fileType === 'sales') {
-    insertData.net_sales = data.net_sales
-    insertData.gross_sales = data.gross_sales
-    insertData.discounts = data.discounts
-    insertData.orders = data.orders
-    insertData.guests = data.guests
-    insertData.avg_per_guest = data.avg_per_guest
-    insertData.avg_per_order = data.avg_per_order
-    insertData.categories = data.categories
+    insertData.net_sales = data.net_sales; insertData.gross_sales = data.gross_sales
+    insertData.discounts = data.discounts; insertData.orders = data.orders
+    insertData.guests = data.guests; insertData.avg_per_guest = data.avg_per_guest
+    insertData.avg_per_order = data.avg_per_order; insertData.categories = data.categories
     insertData.revenue_centers = data.revenue_centers
     insertData.lunch_dinner = { lunch: data.lunch, dinner: data.dinner }
   } else if (fileType === 'labor') {
-    insertData.total_hours = data.total_regular_hours
-    insertData.total_ot_hours = data.total_ot_hours
-    insertData.total_pay = data.total_pay
-    insertData.by_position = data.by_position
+    insertData.total_hours = data.total_regular_hours; insertData.total_ot_hours = data.total_ot_hours
+    insertData.total_pay = data.total_pay; insertData.by_position = data.by_position
     insertData.by_employee = data.by_employee
   } else if (fileType === 'cogs') {
-    insertData.total = data.total
-    insertData.by_vendor = data.by_vendor
+    insertData.total = data.total; insertData.by_vendor = data.by_vendor
     insertData.by_category = data.by_category
   } else if (fileType === 'waste') {
-    insertData.total_cost = data.total_cost
-    insertData.items = data.items
+    insertData.total_cost = data.total_cost; insertData.items = data.items
   } else if (fileType === 'voids') {
-    insertData.total = data.total
-    insertData.items = data.items
+    insertData.total = data.total; insertData.items = data.items
   } else if (fileType === 'discounts') {
-    insertData.total = data.total
-    insertData.items = data.items
+    insertData.total = data.total; insertData.items = data.items
   } else if (fileType === 'inventory') {
-    insertData.count_date = data.count_date
-    insertData.by_account = data.by_account
+    insertData.count_date = data.count_date; insertData.by_account = data.by_account
     insertData.grand_total_current = data.grand_total_current
     insertData.grand_total_previous = data.grand_total_previous
   } else if (fileType === 'avt') {
-    insertData.net_variance = data.net_variance
-    insertData.shortages = data.shortages
+    insertData.net_variance = data.net_variance; insertData.shortages = data.shortages
     insertData.overages = data.overages
   }
-
   const { error } = await supabase.from(table).insert(insertData)
   if (error) console.error(`Error saving ${fileType}:`, error)
 }

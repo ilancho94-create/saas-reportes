@@ -1,11 +1,10 @@
+// src/app/api/process/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
+import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine } from '@/lib/product-mix-processor'
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-})
-
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -26,74 +25,137 @@ export async function POST(request: NextRequest) {
     )
 
     let restaurant_id = '00000000-0000-0000-0000-000000000001'
-
     if (user) {
       const { data: profile } = await supabase
-        .from('profiles')
-        .select('restaurant_id')
-        .eq('id', user.id)
-        .single()
-
-      if (profile?.restaurant_id) {
-        restaurant_id = profile.restaurant_id
-      }
+        .from('profiles').select('restaurant_id').eq('id', user.id).single()
+      if (profile?.restaurant_id) restaurant_id = profile.restaurant_id
     }
 
     const { data: report, error: reportError } = await supabase
       .from('reports')
-      .insert({
-        restaurant_id,
-        week,
-        week_start: getWeekStart(week),
-        week_end: getWeekEnd(week),
-      })
-      .select()
-      .single()
+      .insert({ restaurant_id, week, week_start: getWeekStart(week), week_end: getWeekEnd(week) })
+      .select().single()
 
     if (reportError) {
-      console.error('Error creating report:', reportError)
       return NextResponse.json({ success: false, error: reportError.message })
     }
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
-
     const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'avt']
 
+    // Procesar archivos estándar con Claude
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
       if (!file) continue
-
       console.log(`Processing ${fileType}...`)
-
       try {
         const extracted = await extractWithClaude(file, fileType, week)
         results[fileType] = extracted
-
-        if (extracted.date_warning) {
-          warnings[fileType] = extracted.date_warning
-        }
-
+        if (extracted.date_warning) warnings[fileType] = extracted.date_warning
         await saveToDatabase(report.id, fileType, extracted)
-
       } catch (err) {
         console.error(`Error processing ${fileType}:`, err)
         results[fileType] = { error: 'No se pudo procesar' }
       }
     }
 
+    // Procesar Product Mix + Menu Analysis directamente del Excel
+    const productMixFile = formData.get('product_mix') as File | null
+    const menuAnalysisFile = formData.get('menu_analysis') as File | null
+
+    if (productMixFile || menuAnalysisFile) {
+      try {
+        await processProductMixDirect(
+          report.id,
+          restaurant_id,
+          productMixFile,
+          menuAnalysisFile,
+          results,
+          warnings
+        )
+      } catch (err) {
+        console.error('Error processing product mix:', err)
+        results['product_mix'] = { error: 'No se pudo procesar' }
+      }
+    }
+
     return NextResponse.json({
-      success: true,
-      report_id: report.id,
-      week,
-      processed: Object.keys(results),
-      warnings,
+      success: true, report_id: report.id, week,
+      processed: Object.keys(results), warnings,
     })
 
   } catch (error: any) {
     console.error('API Error:', error)
     return NextResponse.json({ success: false, error: error.message })
   }
+}
+
+async function processProductMixDirect(
+  reportId: string,
+  restaurantId: string,
+  productMixFile: File | null,
+  menuAnalysisFile: File | null,
+  results: Record<string, any>,
+  warnings: Record<string, string>
+) {
+  let productMix: any = null
+  let menuAnalysis: any = null
+
+  if (productMixFile && productMixFile.size > 0) {
+    const buffer = Buffer.from(await productMixFile.arrayBuffer())
+    productMix = parseProductMixExcel(buffer)
+    results['product_mix'] = { items: productMix.by_item?.length, menus: productMix.by_menu?.length }
+    console.log(`Product Mix: ${productMix.by_item?.length} items, ${productMix.by_menu?.length} menus`)
+  }
+
+  if (menuAnalysisFile && menuAnalysisFile.size > 0) {
+    const buffer = Buffer.from(await menuAnalysisFile.arrayBuffer())
+    menuAnalysis = parseMenuAnalysisExcel(buffer)
+    results['menu_analysis'] = { items: menuAnalysis.by_item?.length, total_theo_cost: menuAnalysis.total_theo_cost }
+    console.log(`Menu Analysis: ${menuAnalysis.by_item?.length} items, total_theo_cost: ${menuAnalysis.total_theo_cost}`)
+  }
+
+  if (!productMix && !menuAnalysis) return
+
+  // Cargar category_mappings guardados para este restaurante
+  const { data: savedMappings } = await supabase
+    .from('category_mappings')
+    .select('source_category, mapped_to')
+    .eq('restaurant_id', restaurantId)
+    .eq('source_system', 'r365_item')
+
+  const combined = matchAndCombine(
+    productMix || { by_item: [], by_menu: [], by_category: {}, total_net_sales: 0, total_qty: 0, date_warning: null },
+    menuAnalysis || { by_item: [], total_theo_cost: 0, total_sales: 0, date_warning: null },
+    savedMappings || []
+  )
+
+  console.log(`Match result: total_theo_cost=${combined.total_theo_cost}, unmatched=${combined.unmatched_items.length}`)
+
+  if (combined.unmatched_items.length > 0) {
+    warnings['product_mix'] = `${combined.unmatched_items.length} items sin categoría — ve a Settings → Mapeo de Items para asignarlos`
+  }
+
+  // Guardar en product_mix_data
+  const insertData: Record<string, any> = {
+    report_id: reportId,
+    raw_data: combined.raw_data,
+    by_menu: combined.by_menu,
+    by_category: combined.by_category,
+    theo_cost_by_category: combined.theo_cost_by_category,
+    total_theo_cost: combined.total_theo_cost,
+  }
+
+  // Guardar unmatched items en raw_data para poder mapearlos después
+  insertData.raw_data = {
+    ...combined.raw_data,
+    unmatched_items: combined.unmatched_items,
+  }
+
+  const { error } = await supabase.from('product_mix_data').insert(insertData)
+  if (error) console.error('Error saving product_mix_data:', error)
+  else console.log('product_mix_data saved OK')
 }
 
 async function extractWithClaude(file: File, fileType: string, week: string): Promise<any> {
@@ -103,7 +165,6 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
   const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
 
   let fileContent = ''
-
   if (isCSV) {
     fileContent = buffer.toString('utf-8')
   } else if (isExcel) {
@@ -112,128 +173,58 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
     const sheets: string[] = []
     workbook.SheetNames.forEach((name: string) => {
       const sheet = workbook.Sheets[name]
-      const csv = XLSX.utils.sheet_to_csv(sheet)
-      sheets.push(`=== Sheet: ${name} ===\n${csv}`)
+      sheets.push(`=== Sheet: ${name} ===\n${XLSX.utils.sheet_to_csv(sheet)}`)
     })
     fileContent = sheets.join('\n\n')
   }
 
   const weekStart = getWeekStart(week)
   const weekEnd = getWeekEnd(week)
-
-  const dateInstruction = `
-Semana seleccionada por el usuario: ${week}
-Fecha inicio esperada: ${weekStart}
-Fecha fin esperada: ${weekEnd}
-
-IMPORTANTE: Además de extraer los datos, agrega un campo "date_warning" al JSON.
-Si encuentras fechas en el archivo que NO coinciden con la semana ${week} (${weekStart} al ${weekEnd}), 
-pon "date_warning" con un mensaje descriptivo en español explicando qué fechas encontraste.
-Si las fechas coinciden o no hay fechas visibles, pon "date_warning": null.
-`
+  const dateInstruction = `Semana: ${week} (${weekStart} al ${weekEnd}). Si fechas no coinciden agrega "date_warning" con mensaje. Si coinciden pon "date_warning": null.`
 
   const prompts: Record<string, string> = {
     sales: `Analiza este reporte de ventas de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{
-  "net_sales": número,
-  "gross_sales": número,
-  "discounts": número,
-  "refunds": número,
-  "orders": número,
-  "guests": número,
-  "avg_per_guest": número,
-  "avg_per_order": número,
-  "gratuity": número,
-  "tax": número,
-  "tips": número,
-  "categories": [{"name": string, "items": número, "gross": número, "discount": número, "net": número, "pct": número}],
-  "revenue_centers": [{"name": string, "net": número, "pct": número}],
-  "lunch": {"orders": número, "net": número, "discounts": número},
-  "dinner": {"orders": número, "net": número, "discounts": número},
-  "date_warning": string | null
-}`,
+{"net_sales":número,"gross_sales":número,"discounts":número,"refunds":número,"orders":número,"guests":número,"avg_per_guest":número,"avg_per_order":número,"gratuity":número,"tax":número,"tips":número,"categories":[{"name":string,"items":número,"gross":número,"discount":número,"net":número,"pct":número}],"revenue_centers":[{"name":string,"net":número,"pct":número}],"lunch":{"orders":número,"net":número,"discounts":número},"dinner":{"orders":número,"net":número,"discounts":número},"date_warning":string|null}`,
 
     labor: `Analiza este reporte de labor/payroll de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-REGLA IMPORTANTE: Solo incluye empleados que tengan un Hourly Rate numérico mayor a 0.
+Solo incluye empleados con Hourly Rate > 0.
 ${dateInstruction}
-{
-  "total_regular_hours": número,
-  "total_ot_hours": número,
-  "total_pay": número,
-  "by_position": [{"position": string, "regular_hours": número, "ot_hours": número, "total_pay": número}],
-  "by_employee": [{"name": string, "position": string, "hourly_rate": número, "regular_hours": número, "ot_hours": número, "total_pay": número}],
-  "date_warning": string | null
-}`,
+{"total_regular_hours":número,"total_ot_hours":número,"total_pay":número,"by_position":[{"position":string,"regular_hours":número,"ot_hours":número,"total_pay":número}],"by_employee":[{"name":string,"position":string,"hourly_rate":número,"regular_hours":número,"ot_hours":número,"total_pay":número}],"date_warning":string|null}`,
 
     cogs: `Analiza este reporte COGS Analysis by Vendor de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{
-  "total": número,
-  "by_category": {"food": número, "na_beverage": número, "liquor": número, "beer": número, "general": número},
-  "by_vendor": [{"name": string, "food": número, "na_beverage": número, "liquor": número, "beer": número, "general": número, "total": número}],
-  "date_warning": string | null
-}`,
+{"total":número,"by_category":{"food":número,"na_beverage":número,"liquor":número,"beer":número,"wine":número,"general":número},"by_vendor":[{"name":string,"food":número,"na_beverage":número,"liquor":número,"beer":número,"general":número,"total":número}],"date_warning":string|null}`,
 
     voids: `Analiza este reporte de voids de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{
-  "total": número,
-  "total_items": número,
-  "by_reason": [{"reason": string, "count": número, "total": número}],
-  "items": [{"item_name": string, "server": string, "reason": string, "quantity": número, "price": número}],
-  "date_warning": string | null
-}`,
+{"total":número,"total_items":número,"by_reason":[{"reason":string,"count":número,"total":número}],"items":[{"item_name":string,"server":string,"reason":string,"quantity":número,"price":número}],"date_warning":string|null}`,
 
     discounts: `Analiza este reporte de descuentos de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{
-  "total": número,
-  "total_applications": número,
-  "total_orders": número,
-  "items": [{"name": string, "applications": número, "orders": número, "amount": número, "pct": número}],
-  "date_warning": string | null
-}`,
+{"total":número,"total_applications":número,"total_orders":número,"items":[{"name":string,"applications":número,"orders":número,"amount":número,"pct":número}],"date_warning":string|null}`,
 
     waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
-{
-  "total_cost": número,
-  "total_qty": número,
-  "items": [{"name": string, "uom": string, "qty": número, "unit_cost": número, "total": número, "category": string, "comment": string}],
-  "date_warning": string | null
-}`,
-inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
+{"total_cost":número,"total_qty":número,"items":[{"name":string,"uom":string,"qty":número,"unit_cost":número,"total":número,"category":string,"comment":string}],"date_warning":string|null}`,
+
+    inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-El reporte tiene una sección "Total by Inventory Account" con Current Value y Previous Value.
+Busca la sección "Total by Inventory Account" con columnas Current Value y Previous Value.
 ${dateInstruction}
-{
-  "count_date": "YYYY-MM-DD",
-  "by_account": [
-    {"account": string, "current_value": número, "previous_value": número, "adjustment": número}
-  ],
-  "grand_total_current": número,
-  "grand_total_previous": número,
-  "date_warning": string | null
-}`,
+{"count_date":"YYYY-MM-DD","by_account":[{"account":string,"current_value":número,"previous_value":número,"adjustment":número}],"grand_total_current":número,"grand_total_previous":número,"date_warning":string|null}`,
+
     avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365 y extrae datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 FALTANTE = varianza POSITIVA. SOBRANTE = varianza NEGATIVA.
 ${dateInstruction}
-{
-  "total_shortages": número,
-  "total_overages": número,
-  "net_variance": número,
-  "shortages": [{"name": string, "uom": string, "unit_cost": número, "variance_qty": número, "variance_dollar": número}],
-  "overages": [{"name": string, "uom": string, "unit_cost": número, "variance_qty": número, "variance_dollar": número}],
-  "date_warning": string | null
-}`,
+{"total_shortages":número,"total_overages":número,"net_variance":número,"shortages":[{"name":string,"uom":string,"unit_cost":número,"variance_qty":número,"variance_dollar":número}],"overages":[{"name":string,"uom":string,"unit_cost":número,"variance_qty":número,"variance_dollar":número}],"date_warning":string|null}`,
   }
 
   const response = await anthropic.messages.create({
@@ -251,23 +242,16 @@ ${dateInstruction}
   try {
     return JSON.parse(clean)
   } catch {
-    console.error('JSON parse error for', fileType, ':', clean.substring(0, 200))
     throw new Error(`No se pudo parsear la respuesta de Claude para ${fileType}`)
   }
 }
 
 async function saveToDatabase(reportId: string, fileType: string, data: any) {
   const tableMap: Record<string, string> = {
-    sales: 'sales_data',
-    labor: 'labor_data',
-    cogs: 'cogs_data',
-    voids: 'voids_data',
-    discounts: 'discounts_data',
-    waste: 'waste_data',
-    inventory: 'inventory_data',
-    avt: 'avt_data',
+    sales: 'sales_data', labor: 'labor_data', cogs: 'cogs_data',
+    voids: 'voids_data', discounts: 'discounts_data', waste: 'waste_data',
+    inventory: 'inventory_data', avt: 'avt_data',
   }
-
   const table = tableMap[fileType]
   if (!table) return
 
@@ -297,17 +281,17 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
   } else if (fileType === 'waste') {
     insertData.total_cost = data.total_cost
     insertData.items = data.items
-  } else if (fileType === 'inventory') {
-    insertData.count_date = data.count_date
-    insertData.by_account = data.by_account
-    insertData.grand_total_current = data.grand_total_current
-    insertData.grand_total_previous = data.grand_total_previous
   } else if (fileType === 'voids') {
     insertData.total = data.total
     insertData.items = data.items
   } else if (fileType === 'discounts') {
     insertData.total = data.total
     insertData.items = data.items
+  } else if (fileType === 'inventory') {
+    insertData.count_date = data.count_date
+    insertData.by_account = data.by_account
+    insertData.grand_total_current = data.grand_total_current
+    insertData.grand_total_previous = data.grand_total_previous
   } else if (fileType === 'avt') {
     insertData.net_variance = data.net_variance
     insertData.shortages = data.shortages
