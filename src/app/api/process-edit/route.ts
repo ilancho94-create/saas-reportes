@@ -68,6 +68,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Cruzar product_mix + menu_analysis y guardar
     if (productMixData || menuAnalysisData) {
       await supabase.from('product_mix_data').delete().eq('report_id', reportId)
       await saveProductMixCombined(reportId, productMixData, menuAnalysisData)
@@ -121,7 +122,8 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
   const weekEnd = getWeekEnd(week)
   const dateInstruction = `
 Semana seleccionada: ${week} (${weekStart} al ${weekEnd})
-Si las fechas no coinciden, agrega "date_warning" con el mensaje. Si coinciden o no hay fechas, pon "date_warning": null.
+Si las fechas del archivo no coinciden, agrega "date_warning" con el mensaje.
+Si coinciden o no hay fechas visibles, pon "date_warning": null.
 `
 
   const prompts: Record<string, string> = {
@@ -162,14 +164,14 @@ ${dateInstruction}
 {"count_date":"YYYY-MM-DD","by_account":[{"account":string,"current_value":número,"previous_value":número,"adjustment":número}],"grand_total_current":número,"grand_total_previous":número,"date_warning":string|null}`,
 
     product_mix: `Analiza este reporte Product Mix de Toast POS.
-Usa la pestaña "All levels" para ventas por item con su menú padre.
+Usa la pestaña "All levels" para extraer ventas por item con su menú padre.
 Usa la pestaña "Menus" para el resumen por menú.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"by_menu":[{"menu":string,"qty":número,"net_sales":número,"gross_sales":número}],"by_item":[{"item":string,"menu":string,"menu_group":string,"qty":número,"net_sales":número,"gross_sales":número}],"total_net_sales":número,"total_qty":número,"date_warning":string|null}`,
 
     menu_analysis: `Analiza este reporte Menu Item Analysis de Restaurant365.
-Extrae el costo teórico (Theo Cost) por item y agrúpalo por categoría de menú de Toast.
+Extrae el costo teórico (Theo Cost) por item y agrúpalo por categoría.
 Las categorías son: FOOD MENU, NON/ALC BEVERAGES, BEER, LIQUOR, AYCE TACOS, WINE.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
@@ -205,17 +207,14 @@ async function saveProductMixCombined(reportId: string, productMix: any, menuAna
     report_id: reportId,
     raw_data: { product_mix: productMix, menu_analysis: menuAnalysis },
   }
-
   if (productMix) {
     insertData.by_menu = productMix.by_menu
     insertData.by_category = buildCategoryFromMenus(productMix.by_menu)
   }
-
   if (menuAnalysis) {
     insertData.theo_cost_by_category = menuAnalysis.theo_cost_by_category
     insertData.total_theo_cost = menuAnalysis.total_theo_cost
   }
-
   const { error } = await supabase.from('product_mix_data').insert(insertData)
   if (error) console.error('Error saving product_mix_data:', error)
 }
@@ -224,15 +223,10 @@ function buildCategoryFromMenus(byMenu: any[]) {
   if (!byMenu) return {}
   const map: Record<string, number> = {}
   const menuToCat: Record<string, string> = {
-    'FOOD MENU': 'food',
-    'FOOD MENU TOGO': 'food',
-    "KID'S MENU": 'food',
-    'AYCE TACOS': 'food',
-    'AYCE TACOS W': 'food',
-    'NON/ALC BEVERAGES': 'na_beverage',
-    'BEER': 'beer',
-    'LIQUOR': 'liquor',
-    'WINE': 'wine',
+    'FOOD MENU': 'food', 'FOOD MENU TOGO': 'food',
+    "KID'S MENU": 'food', 'AYCE TACOS': 'food', 'AYCE TACOS W': 'food',
+    'NON/ALC BEVERAGES': 'na_beverage', 'BEER': 'beer',
+    'LIQUOR': 'liquor', 'WINE': 'wine',
   }
   byMenu.forEach((m: any) => {
     const cat = menuToCat[m.menu?.toUpperCase()] || 'general'
@@ -242,20 +236,8 @@ function buildCategoryFromMenus(byMenu: any[]) {
 }
 
 async function saveToDatabase(reportId: string, fileType: string, data: any) {
-  const tableMap: Record<string, string> = {
-    sales: 'sales_data',
-    labor: 'labor_data',
-    cogs: 'cogs_data',
-    voids: 'voids_data',
-    discounts: 'discounts_data',
-    waste: 'waste_data',
-    inventory: 'inventory_data',
-    avt: 'avt_data',
-  }
-
-  const table = tableMap[fileType]
+  const table = TABLE_MAP[fileType]
   if (!table) return
-
   const insertData: Record<string, any> = { report_id: reportId, raw_data: data }
 
   if (fileType === 'sales') {
