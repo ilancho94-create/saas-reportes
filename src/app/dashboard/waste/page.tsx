@@ -14,10 +14,17 @@ export default function WastePage() {
   const [weeks, setWeeks] = useState<any[]>([])
   const [selectedWeek, setSelectedWeek] = useState<string>('')
   const [restaurantName, setRestaurantName] = useState('')
+  const [reasons, setReasons] = useState<string[]>([])
+  const [notes, setNotes] = useState<Record<string, { reason: string; note: string }>>({})
+  const [savingItem, setSavingItem] = useState<string | null>(null)
 
   useEffect(() => {
     if (restaurantId) loadData()
   }, [restaurantId])
+
+  useEffect(() => {
+    if (selectedWeek && restaurantId) loadNotes(selectedWeek)
+  }, [selectedWeek, restaurantId])
 
   async function loadData() {
     if (!restaurantId) return
@@ -27,6 +34,19 @@ export default function WastePage() {
     const { data: rest } = await supabase
       .from('restaurants').select('name').eq('id', restaurantId).single()
     setRestaurantName(rest?.name || '')
+
+    // Cargar razones configurables
+    const { data: reasonsData } = await supabase
+      .from('waste_reasons')
+      .select('reason')
+      .eq('restaurant_id', restaurantId)
+      .eq('active', true)
+      .order('sort_order')
+    if (reasonsData?.length) {
+      setReasons(reasonsData.map((r: any) => r.reason))
+    } else {
+      setReasons(['Tiempo de vida', 'Prep error', 'Spoilage / dañado', 'Sobreproducción', 'Error de porción', 'Otro'])
+    }
 
     const { data: reports } = await supabase
       .from('reports').select('*')
@@ -46,6 +66,39 @@ export default function WastePage() {
     setWeeks(withWaste)
     if (withWaste.length > 0) setSelectedWeek(withWaste[0].report.week)
     setLoading(false)
+  }
+
+  async function loadNotes(week: string) {
+    if (!restaurantId) return
+    const { data } = await supabase
+      .from('waste_notes')
+      .select('item_name, note, reason')
+      .eq('restaurant_id', restaurantId)
+      .eq('week', week)
+    const map: Record<string, { reason: string; note: string }> = {}
+    for (const row of data || []) {
+      map[row.item_name] = { reason: row.reason || '', note: row.note || '' }
+    }
+    setNotes(map)
+  }
+
+  async function saveNote(itemName: string, field: 'reason' | 'note', value: string) {
+    if (!restaurantId) return
+    setSavingItem(itemName)
+    const current = notes[itemName] || { reason: '', note: '' }
+    const updated = { ...current, [field]: value }
+    setNotes(prev => ({ ...prev, [itemName]: updated }))
+
+    await supabase.from('waste_notes').upsert({
+      restaurant_id: restaurantId,
+      week: selectedWeek,
+      item_name: itemName,
+      reason: updated.reason,
+      note: updated.note,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'restaurant_id,week,item_name' })
+
+    setSavingItem(null)
   }
 
   function fmt(n: any) {
@@ -74,6 +127,9 @@ export default function WastePage() {
     week: w.report.week.replace('2026-', ''),
     total: Number(w.waste?.total_cost || 0),
   }))
+
+  const itemsWithReason = Object.values(notes).filter(n => n.reason).length
+  const itemsWithNote = Object.values(notes).filter(n => n.note).length
 
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -107,6 +163,7 @@ export default function WastePage() {
           </div>
         ) : (
           <>
+            {/* KPIs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-xs mb-1">Total merma</p>
@@ -128,6 +185,7 @@ export default function WastePage() {
               </div>
             </div>
 
+            {/* Gráficas */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Tendencia semanal</h2>
@@ -160,8 +218,17 @@ export default function WastePage() {
               </div>
             </div>
 
+            {/* Tabla con tracking de razón + nota */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Items más costosos — {selectedWeek}</h2>
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-white font-semibold">Seguimiento de items — {selectedWeek}</h2>
+                  <p className="text-gray-500 text-xs mt-0.5">
+                    {itemsWithReason} de {items.length} con razón asignada
+                    {itemsWithNote > 0 && ` · ${itemsWithNote} con nota`}
+                  </p>
+                </div>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -169,65 +236,100 @@ export default function WastePage() {
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">#</th>
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">Item</th>
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">Categoría</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Cantidad</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Qty</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Costo Unit.</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total</th>
-                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Comentario</th>
+                      <th className="text-left text-gray-500 text-xs pb-3 font-medium w-36">Razón</th>
+                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Nota</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {topItems.map((item: any, i: number) => (
-                      <tr key={i} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                        <td className="py-3 text-gray-600 text-xs">{i + 1}</td>
-                        <td className="py-3 text-white font-medium">{item.name}</td>
-                        <td className="py-3 text-gray-400 text-xs">{item.category || '—'}</td>
-                        <td className="py-3 text-right text-gray-400">{Number(item.qty || 0).toFixed(2)} {item.uom}</td>
-                        <td className="py-3 text-right text-gray-400">{fmt(item.unit_cost)}</td>
-                        <td className="py-3 text-right font-bold text-red-400">{fmt(item.total)}</td>
-                        <td className="py-3 text-gray-500 text-xs">{item.comment || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Todos los items — {selectedWeek}</h2>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-800">
-                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Item</th>
-                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Categoría</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Cantidad</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Costo Unit.</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total</th>
-                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Comentario</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...items].sort((a, b) => Number(b.total || 0) - Number(a.total || 0)).map((item: any, i: number) => (
-                      <tr key={i} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                        <td className="py-2.5 text-white text-sm">{item.name}</td>
-                        <td className="py-2.5 text-gray-400 text-xs">{item.category || '—'}</td>
-                        <td className="py-2.5 text-right text-gray-400 text-xs">{Number(item.qty || 0).toFixed(2)} {item.uom}</td>
-                        <td className="py-2.5 text-right text-gray-400 text-xs">{fmt(item.unit_cost)}</td>
-                        <td className="py-2.5 text-right font-medium text-red-400">{fmt(item.total)}</td>
-                        <td className="py-2.5 text-gray-500 text-xs">{item.comment || '—'}</td>
-                      </tr>
-                    ))}
+                    {[...items]
+                      .sort((a, b) => Number(b.total || 0) - Number(a.total || 0))
+                      .map((item: any, i: number) => {
+                        const tracking = notes[item.name] || { reason: '', note: '' }
+                        const isSaving = savingItem === item.name
+                        return (
+                          <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
+                            <td className="py-3 text-gray-600 text-xs">{i + 1}</td>
+                            <td className="py-3">
+                              <p className="text-white font-medium text-sm">{item.name}</p>
+                              {isSaving && <p className="text-gray-600 text-xs">Guardando...</p>}
+                            </td>
+                            <td className="py-3 text-gray-400 text-xs">{item.category || '—'}</td>
+                            <td className="py-3 text-right text-gray-400 text-xs">
+                              {Number(item.qty || 0).toFixed(2)} {item.uom}
+                            </td>
+                            <td className="py-3 text-right text-gray-400 text-xs">{fmt(item.unit_cost)}</td>
+                            <td className="py-3 text-right font-bold text-red-400">{fmt(item.total)}</td>
+                            <td className="py-3 pr-2">
+                              <select
+                                value={tracking.reason}
+                                onChange={e => saveNote(item.name, 'reason', e.target.value)}
+                                className={`w-full bg-gray-800 border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500 transition ${
+                                  tracking.reason ? 'border-gray-600 text-white' : 'border-gray-700 text-gray-500'
+                                }`}>
+                                <option value="">Sin razón...</option>
+                                {reasons.map(r => <option key={r} value={r}>{r}</option>)}
+                              </select>
+                            </td>
+                            <td className="py-3">
+                              <input
+                                type="text"
+                                value={tracking.note}
+                                placeholder="Agregar nota..."
+                                onChange={e => saveNote(item.name, 'note', e.target.value)}
+                                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                              />
+                            </td>
+                          </tr>
+                        )
+                      })}
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-gray-700">
-                      <td colSpan={4} className="py-3 text-white font-bold">Total</td>
+                      <td colSpan={5} className="py-3 text-white font-bold">Total</td>
                       <td className="py-3 text-right font-bold text-red-400">{fmt(totalCost)}</td>
-                      <td />
+                      <td colSpan={2} />
                     </tr>
                   </tfoot>
                 </table>
               </div>
             </div>
+
+            {/* Resumen de razones */}
+            {itemsWithReason > 0 && (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                <h2 className="text-white font-semibold mb-4">Resumen por razón — {selectedWeek}</h2>
+                <div className="space-y-2">
+                  {(() => {
+                    const byReason: Record<string, { count: number; total: number }> = {}
+                    items.forEach(item => {
+                      const reason = notes[item.name]?.reason
+                      if (!reason) return
+                      if (!byReason[reason]) byReason[reason] = { count: 0, total: 0 }
+                      byReason[reason].count++
+                      byReason[reason].total += Number(item.total || 0)
+                    })
+                    return Object.entries(byReason)
+                      .sort((a, b) => b[1].total - a[1].total)
+                      .map(([reason, data]) => (
+                        <div key={reason} className="flex items-center gap-3">
+                          <span className="text-gray-300 text-sm w-48 truncate">{reason}</span>
+                          <div className="flex-1 bg-gray-800 rounded-full h-2">
+                            <div className="h-2 rounded-full bg-red-500"
+                              style={{ width: `${Math.min((data.total / totalCost) * 100, 100)}%` }} />
+                          </div>
+                          <span className="text-red-400 font-medium text-sm w-16 text-right">{fmt(data.total)}</span>
+                          <span className="text-gray-600 text-xs w-16 text-right">
+                            {(data.total / totalCost * 100).toFixed(1)}% · {data.count} items
+                          </span>
+                        </div>
+                      ))
+                  })()}
+                </div>
+              </div>
+            )}
           </>
         )}
       </main>
