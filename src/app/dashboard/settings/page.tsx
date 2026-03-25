@@ -32,6 +32,15 @@ export default function SettingsPage() {
   const [status, setStatus] = useState('')
   const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas'>('categorias')
 
+  // Restaurant operational config
+  const [restConfig, setRestConfig] = useState({
+    operating_days: 6,
+    week_start_day: 1, // 0=Sun, 1=Mon, 2=Tue...
+    closed_days: [] as number[], // days of week that are closed
+  })
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [configStatus, setConfigStatus] = useState('')
+
   useEffect(() => {
     if (restaurantId) loadData()
   }, [restaurantId])
@@ -41,8 +50,17 @@ export default function SettingsPage() {
     setLoading(true)
 
     const { data: rest } = await supabase
-      .from('restaurants').select('name').eq('id', restaurantId).single()
+      .from('restaurants')
+      .select('name, operating_days, week_start_day, closed_days')
+      .eq('id', restaurantId).single()
     setRestaurantName(rest?.name || '')
+    if (rest) {
+      setRestConfig({
+        operating_days: rest.operating_days || 6,
+        week_start_day: rest.week_start_day ?? 1,
+        closed_days: rest.closed_days || [],
+      })
+    }
 
     const { data: maps } = await supabase
       .from('category_mappings')
@@ -99,6 +117,27 @@ export default function SettingsPage() {
     await loadData()
     setStatus('✅ Eliminado')
     setTimeout(() => setStatus(''), 2000)
+  }
+
+  async function saveRestConfig() {
+    if (!restaurantId) return
+    setSavingConfig(true)
+    setConfigStatus('')
+    const { error } = await supabase
+      .from('restaurants')
+      .update({
+        operating_days: restConfig.operating_days,
+        week_start_day: restConfig.week_start_day,
+        closed_days: restConfig.closed_days,
+      })
+      .eq('id', restaurantId)
+    setSavingConfig(false)
+    if (!error) {
+      setConfigStatus('✅ Configuración guardada')
+      setTimeout(() => setConfigStatus(''), 3000)
+    } else {
+      setConfigStatus('❌ Error: ' + error.message)
+    }
   }
 
   async function saveTargets() {
@@ -264,25 +303,111 @@ export default function SettingsPage() {
         )}
 
         {activeTab === 'restaurante' && (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-white font-semibold mb-4">Información del restaurante</h2>
-            <div className="space-y-3">
-              <div className="flex justify-between py-3 border-b border-gray-800">
-                <span className="text-gray-500 text-sm">Nombre</span>
-                <span className="text-white text-sm font-medium">{restaurantName}</span>
+          <div className="space-y-6">
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-4">Información del restaurante</h2>
+              <div className="space-y-3">
+                <div className="flex justify-between py-3 border-b border-gray-800">
+                  <span className="text-gray-500 text-sm">Nombre</span>
+                  <span className="text-white text-sm font-medium">{restaurantName}</span>
+                </div>
+                <div className="flex justify-between py-3 border-b border-gray-800">
+                  <span className="text-gray-500 text-sm">Organización</span>
+                  <span className="text-white text-sm font-medium">{currentOrganization?.name}</span>
+                </div>
+                <div className="flex justify-between py-3 border-b border-gray-800">
+                  <span className="text-gray-500 text-sm">ID Restaurante</span>
+                  <span className="text-gray-500 text-xs font-mono">{restaurantId}</span>
+                </div>
+                <div className="flex justify-between py-3 border-b border-gray-800">
+                  <span className="text-gray-500 text-sm">Rol</span>
+                  <span className="text-white text-sm font-medium capitalize">{currentRestaurant?.role}</span>
+                </div>
               </div>
-              <div className="flex justify-between py-3 border-b border-gray-800">
-                <span className="text-gray-500 text-sm">Organización</span>
-                <span className="text-white text-sm font-medium">{currentOrganization?.name}</span>
+            </div>
+
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-1">Configuración operacional</h2>
+              <p className="text-gray-500 text-xs mb-6">Define los días de operación para calcular correctamente días de inventario y promedios diarios</p>
+
+              {/* Días de inicio de semana */}
+              <div className="mb-6">
+                <label className="text-gray-300 text-sm font-medium block mb-3">Inicio de semana</label>
+                <div className="flex gap-2">
+                  {['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map((day, i) => (
+                    <button key={i} onClick={() => setRestConfig(prev => ({ ...prev, week_start_day: i }))}
+                      className={`px-3 py-2 rounded-lg text-xs font-medium transition border ${
+                        restConfig.week_start_day === i
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
+                      }`}>
+                      {day}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="flex justify-between py-3 border-b border-gray-800">
-                <span className="text-gray-500 text-sm">ID Restaurante</span>
-                <span className="text-gray-500 text-xs font-mono">{restaurantId}</span>
+
+              {/* Días que cierra */}
+              <div className="mb-6">
+                <label className="text-gray-300 text-sm font-medium block mb-1">Días que cierra el restaurante</label>
+                <p className="text-gray-500 text-xs mb-3">Selecciona los días en que NO opera (afecta el cálculo de días de inventario)</p>
+                <div className="flex gap-2">
+                  {['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map((day, i) => {
+                    const isClosed = restConfig.closed_days.includes(i)
+                    return (
+                      <button key={i} onClick={() => setRestConfig(prev => ({
+                        ...prev,
+                        closed_days: isClosed
+                          ? prev.closed_days.filter(d => d !== i)
+                          : [...prev.closed_days, i],
+                        operating_days: isClosed
+                          ? prev.operating_days + 1
+                          : prev.operating_days - 1,
+                      }))}
+                        className={`px-3 py-2 rounded-lg text-xs font-medium transition border ${
+                          isClosed
+                            ? 'bg-red-950 border-red-800 text-red-400'
+                            : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
+                        }`}>
+                        {day}
+                      </button>
+                    )
+                  })}
+                </div>
+                <p className="text-gray-500 text-xs mt-2">
+                  Días de operación: <span className="text-white font-medium">{restConfig.operating_days} días/semana</span>
+                  {restConfig.closed_days.length > 0 && (
+                    <span className="text-gray-600 ml-2">
+                      · Cerrado: {restConfig.closed_days.map(d => ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'][d]).join(', ')}
+                    </span>
+                  )}
+                </p>
               </div>
-              <div className="flex justify-between py-3 border-b border-gray-800">
-                <span className="text-gray-500 text-sm">Rol</span>
-                <span className="text-white text-sm font-medium capitalize">{currentRestaurant?.role}</span>
+
+              {/* Días de operación manual override */}
+              <div className="mb-6">
+                <label className="text-gray-300 text-sm font-medium block mb-1">Días de operación por semana</label>
+                <p className="text-gray-500 text-xs mb-3">Se actualiza automáticamente al seleccionar días cerrados, o ajusta manualmente</p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number" min={1} max={7} value={restConfig.operating_days}
+                    onChange={e => setRestConfig(prev => ({ ...prev, operating_days: Number(e.target.value) }))}
+                    className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm text-center focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-gray-400 text-sm">días por semana</span>
+                </div>
               </div>
+
+              {configStatus && (
+                <p className={`text-sm mb-4 ${configStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
+                  {configStatus}
+                </p>
+              )}
+
+              <button onClick={saveRestConfig} disabled={savingConfig}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition">
+                {savingConfig ? 'Guardando...' : '💾 Guardar configuración'}
+              </button>
             </div>
           </div>
         )}

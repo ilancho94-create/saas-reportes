@@ -16,12 +16,18 @@ const RANGES = [
   { label: 'Todo', value: 99 },
 ]
 
+type ViewMode = 'range' | 'single' | 'custom'
+
 export default function VentasPage() {
   const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
   const [range, setRange] = useState(4)
   const [restaurantName, setRestaurantName] = useState('')
+  const [viewMode, setViewMode] = useState<ViewMode>('range')
+  const [selectedWeek, setSelectedWeek] = useState('')
+  const [rangeFrom, setRangeFrom] = useState('')
+  const [rangeTo, setRangeTo] = useState('')
 
   useEffect(() => {
     if (restaurantId) loadData()
@@ -48,7 +54,13 @@ export default function VentasPage() {
       return { report: r, sales: s }
     }))
 
-    setWeeks(weeksData.reverse())
+    const sorted = weeksData.reverse()
+    setWeeks(sorted)
+    if (sorted.length > 0) {
+      setSelectedWeek(sorted[sorted.length - 1].report.week)
+      setRangeFrom(sorted[Math.max(0, sorted.length - 4)].report.week)
+      setRangeTo(sorted[sorted.length - 1].report.week)
+    }
     setLoading(false)
   }
 
@@ -57,7 +69,17 @@ export default function VentasPage() {
     return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })
   }
 
-  const filtered = weeks.slice(-range)
+  // Compute filtered based on viewMode
+  const filtered = (() => {
+    if (viewMode === 'single') {
+      const w = weeks.find(w => w.report.week === selectedWeek)
+      return w ? [w] : []
+    }
+    if (viewMode === 'custom' && rangeFrom && rangeTo) {
+      return weeks.filter(w => w.report.week >= rangeFrom && w.report.week <= rangeTo)
+    }
+    return weeks.slice(-range)
+  })()
   const latest = filtered[filtered.length - 1]
   const prev = filtered[filtered.length - 2]
 
@@ -91,15 +113,45 @@ export default function VentasPage() {
           <h1 className="text-white font-bold text-lg">💰 Ventas</h1>
           <p className="text-gray-500 text-xs">{restaurantName} · Análisis de ventas por período</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {RANGES.map(r => (
-            <button key={r.value} onClick={() => setRange(r.value)}
+            <button key={r.value} onClick={() => { setRange(r.value); setViewMode('range') }}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                range === r.value ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                viewMode === 'range' && range === r.value ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
               }`}>
               {r.label}
             </button>
           ))}
+          <div className="w-px h-4 bg-gray-700 mx-1" />
+          <select value={viewMode === 'single' ? selectedWeek : ''}
+            onChange={e => { setSelectedWeek(e.target.value); setViewMode('single') }}
+            className={`bg-gray-800 border rounded-lg px-3 py-1.5 text-xs focus:outline-none transition ${
+              viewMode === 'single' ? 'border-blue-500 text-white' : 'border-gray-700 text-gray-400'
+            }`}>
+            <option value="">Semana específica...</option>
+            {[...weeks].reverse().map(w => (
+              <option key={w.report.week} value={w.report.week}>{w.report.week}</option>
+            ))}
+          </select>
+          <div className="flex items-center gap-1.5">
+            <select value={viewMode === 'custom' ? rangeFrom : ''}
+              onChange={e => { setRangeFrom(e.target.value); setViewMode('custom') }}
+              className={`bg-gray-800 border rounded-lg px-2 py-1.5 text-xs focus:outline-none transition ${
+                viewMode === 'custom' ? 'border-blue-500 text-white' : 'border-gray-700 text-gray-400'
+              }`}>
+              <option value="">Desde...</option>
+              {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+            </select>
+            <span className="text-gray-600 text-xs">→</span>
+            <select value={viewMode === 'custom' ? rangeTo : ''}
+              onChange={e => { setRangeTo(e.target.value); setViewMode('custom') }}
+              className={`bg-gray-800 border rounded-lg px-2 py-1.5 text-xs focus:outline-none transition ${
+                viewMode === 'custom' ? 'border-blue-500 text-white' : 'border-gray-700 text-gray-400'
+              }`}>
+              <option value="">Hasta...</option>
+              {[...weeks].reverse().map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+            </select>
+          </div>
         </div>
       </div>
 
