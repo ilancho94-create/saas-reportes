@@ -214,6 +214,30 @@ export default function CostoUsoPage() {
   const latest = filtered[filtered.length - 1]
   const latestData = latest ? buildWeekData(latest) : null
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
+  const isMultiWeek = filtered.length > 1
+
+  // ── Promedio ponderado del rango (Σuso / Σventas) ─────────────────────────
+  const rangeSummary = (() => {
+    let totalUso = 0, totalTheo = 0, totalABSales = 0, totalVariacion = 0
+    const catTotals: Record<string, { uso: number; theo: number; sales: number; variacion: number }> = {}
+    CATEGORIES.forEach(cat => { catTotals[cat.key] = { uso: 0, theo: 0, sales: 0, variacion: 0 } })
+    filtered.forEach(w => {
+      const d = buildWeekData(w)
+      if (!d.hasInventory) return
+      totalUso += d.totalUsoCost; totalTheo += d.totalTheoCost
+      totalABSales += d.totalABSales
+      if (d.totalVariacion !== null) totalVariacion += d.totalVariacion
+      CATEGORIES.forEach(cat => {
+        catTotals[cat.key].uso += d[cat.key + '_uso'] || 0
+        catTotals[cat.key].theo += 0
+        catTotals[cat.key].sales += d[cat.key + '_sales'] || 0
+        if (d[cat.key + '_variacion'] !== null) catTotals[cat.key].variacion += d[cat.key + '_variacion'] || 0
+      })
+    })
+    const totalRealPct = totalABSales > 0 ? parseFloat((totalUso / totalABSales * 100).toFixed(1)) : null
+    const totalMixPct = totalABSales > 0 ? parseFloat((totalTheo / totalABSales * 100).toFixed(1)) : null
+    return { totalUso, totalTheo, totalABSales, totalVariacion, totalRealPct, totalMixPct, catTotals }
+  })()
 
   const SHORTCUTS: { key: Shortcut; label: string }[] = [
     { key: 'last1', label: 'Última semana' },
@@ -305,32 +329,39 @@ export default function CostoUsoPage() {
             {latestData && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
-                  Semana más reciente — {latest?.report?.week}
+                  {isMultiWeek
+                    ? `Promedio ponderado del período — ${filtered[0]?.report?.week} → ${latest?.report?.week} (${filtered.length} semanas)`
+                    : `Semana — ${latest?.report?.week} (${latest?.report?.week_start} al ${latest?.report?.week_end})`
+                  }
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <p className="text-gray-500 text-xs mb-1">% Costo Real A&B</p>
-                    <p className="text-3xl font-bold text-blue-400">{fmtPct(latestData.totalRealPct)}</p>
-                    <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalUsoCost)} uso real</p>
+                    <p className="text-gray-500 text-xs mb-1">% Costo Real A&B {isMultiWeek ? '(pond.)' : ''}</p>
+                    <p className="text-3xl font-bold text-blue-400">
+                      {rangeSummary.totalRealPct !== null ? rangeSummary.totalRealPct + '%' : '—'}
+                    </p>
+                    <p className="text-gray-600 text-xs mt-1">{fmt(rangeSummary.totalUso)} uso {isMultiWeek ? 'acumulado' : 'real'}</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <p className="text-gray-500 text-xs mb-1">% Costo P.Mix</p>
-                    <p className="text-3xl font-bold text-green-400">{fmtPct(latestData.totalMixPct)}</p>
-                    <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalTheoCost)} teórico</p>
+                    <p className="text-gray-500 text-xs mb-1">% Costo P.Mix {isMultiWeek ? '(pond.)' : ''}</p>
+                    <p className="text-3xl font-bold text-green-400">
+                      {rangeSummary.totalMixPct !== null ? rangeSummary.totalMixPct + '%' : '—'}
+                    </p>
+                    <p className="text-gray-600 text-xs mt-1">{fmt(rangeSummary.totalTheo)} teórico</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <p className="text-gray-500 text-xs mb-1">Variación $</p>
-                    <p className={`text-3xl font-bold ${latestData.totalVariacion > 0 ? 'text-red-400' : latestData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
-                      {latestData.totalVariacion !== null ? (latestData.totalVariacion > 0 ? '+' : '') + fmt(latestData.totalVariacion) : '—'}
+                    <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'acumulada' : ''}</p>
+                    <p className={`text-3xl font-bold ${rangeSummary.totalVariacion > 0 ? 'text-red-400' : rangeSummary.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
+                      {rangeSummary.totalVariacion !== null ? (rangeSummary.totalVariacion > 0 ? '+' : '') + fmt(rangeSummary.totalVariacion) : '—'}
                     </p>
                     <p className="text-gray-600 text-xs mt-1">
-                      {latestData.totalVariacion > 0 ? 'sobre lo teórico' : latestData.totalVariacion < 0 ? 'bajo lo teórico' : ''}
+                      {rangeSummary.totalVariacion > 0 ? 'sobre lo teórico' : rangeSummary.totalVariacion < 0 ? 'bajo lo teórico' : ''}
                     </p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
                     <p className="text-2xl font-bold text-white">{fmt(latest?.inventory?.grand_total_current)}</p>
-                    <p className="text-gray-600 text-xs mt-1">cierre de semana</p>
+                    <p className="text-gray-600 text-xs mt-1">cierre de semana más reciente</p>
                   </div>
                 </div>
 

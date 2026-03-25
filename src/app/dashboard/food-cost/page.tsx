@@ -168,6 +168,33 @@ export default function FoodCostPage() {
   const weekAData = compareA ? buildWeekData(weeks.find(w => w.report.week === compareA) || weeks[0]) : null
   const weekBData = compareB ? buildWeekData(weeks.find(w => w.report.week === compareB) || weeks[weeks.length - 1]) : null
   const activeCat = CATEGORIES.find(c => c.key === activeCategory)
+  const isMultiWeek = filtered.length > 1
+
+  // ── Promedio ponderado del rango (Σcosto / Σventas) ──────────────────────
+  const rangeSummary = (() => {
+    const t: Record<string, number> = { food: 0, na_beverage: 0, liquor: 0, beer: 0, wine: 0, general: 0, totalAB: 0, totalCOGS: 0 }
+    const s: Record<string, number> = { food: 0, na_beverage: 0, liquor: 0, beer: 0, wine: 0, general: 0, totalAB: 0, net: 0 }
+    filtered.forEach(w => {
+      const d = buildWeekData(w)
+      const cat = w.cogs?.by_category || {}
+      t.food += cat.food || 0; t.na_beverage += cat.na_beverage || 0
+      t.liquor += cat.liquor || 0; t.beer += cat.beer || 0
+      t.wine += cat.wine || 0; t.general += cat.general || 0
+      t.totalAB += d.totalABRaw; t.totalCOGS += w.cogs?.total || 0
+      s.food += d.foodSales; s.na_beverage += d.naBevSales
+      s.liquor += d.liquorSales; s.beer += d.beerSales
+      s.wine += d.wineSales; s.general += d.netSales
+      s.totalAB += d.totalABSales; s.net += d.netSales
+    })
+    return {
+      food: pct(t.food, s.food), na_beverage: pct(t.na_beverage, s.na_beverage),
+      liquor: pct(t.liquor, s.liquor), beer: pct(t.beer, s.beer),
+      wine: pct(t.wine, s.wine), general: pct(t.general, s.general),
+      totalAB: pct(t.totalAB, s.totalAB),
+      totalCOGS: t.totalCOGS, totalCOGSPct: pct(t.totalCOGS, s.net),
+      totalABRaw: t.totalAB, totalABSales: s.totalAB, t, s,
+    }
+  })()
 
   function toggleLine(key: string) {
     setHiddenLines(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
@@ -284,25 +311,31 @@ export default function FoodCostPage() {
           <>
             <div>
               <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
-                Semana más reciente — {latest?.report?.week}
+                {isMultiWeek
+                  ? `Promedio ponderado del período — ${filtered[0]?.report?.week} → ${latest?.report?.week} (${filtered.length} semanas)`
+                  : `Semana — ${latest?.report?.week} (${latest?.report?.week_start} al ${latest?.report?.week_end})`
+                }
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 md:col-span-2">
-                  <p className="text-gray-500 text-xs mb-1">Total A&B — Costo de Compra</p>
+                  <p className="text-gray-500 text-xs mb-1">Total A&B — {isMultiWeek ? 'Promedio ponderado' : 'Costo de Compra'}</p>
                   <p className="text-3xl font-bold text-white">
-                    {latestData.totalABRaw ? pct(latestData.totalABRaw, latestData.totalABSales) + '%' : '—'}
+                    {rangeSummary.totalAB ? rangeSummary.totalAB + '%' : '—'}
                   </p>
-                  <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalABRaw)} comprado · Ventas A&B: {fmt(latestData.totalABSales)}</p>
+                  <p className="text-gray-600 text-xs mt-1">
+                    {fmt(rangeSummary.totalABRaw)} comprado · Ventas A&B: {fmt(rangeSummary.totalABSales)}
+                    {isMultiWeek && <span className="text-gray-700"> · últimas {filtered.length} sem</span>}
+                  </p>
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                  <p className="text-gray-500 text-xs mb-1">Total COGS</p>
-                  <p className="text-2xl font-bold text-orange-400">{fmt(latest?.cogs?.total)}</p>
+                  <p className="text-gray-500 text-xs mb-1">Total COGS {isMultiWeek ? 'acumulado' : ''}</p>
+                  <p className="text-2xl font-bold text-orange-400">{fmt(rangeSummary.totalCOGS)}</p>
                   <p className="text-gray-600 text-xs mt-1">incluyendo general</p>
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                  <p className="text-gray-500 text-xs mb-1">% COGS Total</p>
+                  <p className="text-gray-500 text-xs mb-1">% COGS Total {isMultiWeek ? 'prom.' : ''}</p>
                   <p className="text-2xl font-bold text-orange-400">
-                    {pct(latest?.cogs?.total, latestData.netSales) ? pct(latest?.cogs?.total, latestData.netSales) + '%' : '—'}
+                    {rangeSummary.totalCOGSPct ? rangeSummary.totalCOGSPct + '%' : '—'}
                   </p>
                   <p className="text-gray-600 text-xs mt-1">vs ventas netas</p>
                 </div>
@@ -310,9 +343,9 @@ export default function FoodCostPage() {
 
               <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                 {CATEGORIES.map(cat => {
-                  const catSales = ({ food: latestData.foodSales, beer: latestData.beerSales, liquor: latestData.liquorSales, na_beverage: latestData.naBevSales, wine: latestData.wineSales, general: latestData.netSales } as any)[cat.key] || latestData.netSales
-                  const val = pct(latestData.cat[cat.key], catSales)
+                  const val = (rangeSummary as any)[cat.key]
                   const meta = cat.meta
+                  const dollarAmt = (rangeSummary.t as any)[cat.key]
                   return (
                     <button key={cat.key} onClick={() => setActiveCategory(cat.key)}
                       className={`rounded-xl p-4 text-left transition border ${activeCategory === cat.key ? 'border-2 bg-gray-800' : 'border-gray-800 bg-gray-900 hover:bg-gray-800'}`}
@@ -320,7 +353,7 @@ export default function FoodCostPage() {
                       <p className="text-gray-500 text-xs mb-1">{cat.label}</p>
                       <p className="text-lg font-bold" style={{ color: cat.color }}>{val ? val + '%' : '—'}</p>
                       {meta !== null && <p className="text-gray-600 text-xs">Meta: {meta}%</p>}
-                      <p className="text-gray-600 text-xs">{fmt(latestData.cat[cat.key])}</p>
+                      <p className="text-gray-600 text-xs">{fmt(dollarAmt)}{isMultiWeek ? ' acum.' : ''}</p>
                       {meta && val && (
                         <p className={`text-xs mt-1 font-medium ${getSemaforoColor(val, meta)}`}>{getSemaforoLabel(val, meta)}</p>
                       )}
