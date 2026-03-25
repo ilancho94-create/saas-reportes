@@ -20,12 +20,9 @@ export async function POST(request: NextRequest) {
     const week = formData.get('week') as string
     const reportId = formData.get('report_id') as string
 
-    // DEBUG: log all keys received
-    const allKeys = [...formData.keys()]
-    console.log('=== PROCESS-EDIT DEBUG ===')
-    console.log('Keys recibidos:', allKeys)
-    console.log('week:', week)
-    console.log('report_id:', reportId)
+    console.log('=== PROCESS-EDIT ===')
+    console.log('Keys recibidos:', [...formData.keys()])
+    console.log('week:', week, '| report_id:', reportId)
 
     if (!week || !reportId) {
       return NextResponse.json({ success: false, error: 'Faltan parámetros' })
@@ -40,19 +37,17 @@ export async function POST(request: NextRequest) {
 
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
-      if (!file || file.size === 0) {
-        console.log(`Skipping ${fileType}: no file or empty`)
-        continue
-      }
+      if (!file || file.size === 0) continue
+
       console.log(`Processing ${fileType}: ${file.name} (${file.size} bytes)`)
       try {
         const extracted = await extractWithClaude(file, fileType, week)
-        console.log(`Extracted ${fileType}:`, JSON.stringify(extracted).substring(0, 200))
         results[fileType] = extracted
         if (extracted.date_warning) warnings[fileType] = extracted.date_warning
 
         if (fileType === 'product_mix') {
           productMixData = extracted
+          console.log('product_mix by_item count:', extracted?.by_item?.length)
         } else if (fileType === 'menu_analysis') {
           menuAnalysisData = extracted
           console.log('menu_analysis by_item count:', extracted?.by_item?.length)
@@ -70,20 +65,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log('productMixData present:', !!productMixData)
-    console.log('menuAnalysisData present:', !!menuAnalysisData)
-
     if (productMixData || menuAnalysisData) {
-      // Borrar registro anterior y guardar nuevo
-      const { error: deleteError } = await supabase
-        .from('product_mix_data')
-        .delete()
-        .eq('report_id', reportId)
-      if (deleteError) console.error('Error deleting product_mix_data:', deleteError)
-
-      // Si solo viene uno de los dos, recuperar el otro de Supabase
+      // Si solo viene uno, recuperar el otro de raw_data en Supabase
       if (!productMixData || !menuAnalysisData) {
-        console.log('Solo un archivo recibido, recuperando el otro de Supabase...')
         const { data: existing } = await supabase
           .from('product_mix_data')
           .select('raw_data')
@@ -93,15 +77,16 @@ export async function POST(request: NextRequest) {
         if (existing?.raw_data) {
           if (!productMixData && existing.raw_data.product_mix) {
             productMixData = existing.raw_data.product_mix
-            console.log('product_mix recuperado de Supabase')
+            console.log('product_mix recuperado de Supabase raw_data')
           }
           if (!menuAnalysisData && existing.raw_data.menu_analysis) {
             menuAnalysisData = existing.raw_data.menu_analysis
-            console.log('menu_analysis recuperado de Supabase')
+            console.log('menu_analysis recuperado de Supabase raw_data')
           }
         }
       }
 
+      await supabase.from('product_mix_data').delete().eq('report_id', reportId)
       await saveProductMixCombined(reportId, productMixData, menuAnalysisData)
     }
 
@@ -138,7 +123,6 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
         }
       })
       if (sheets.length === 0) {
-        // fallback: usar todas las hojas si no encuentra las esperadas
         console.log('product_mix: sheets disponibles:', workbook.SheetNames)
         workbook.SheetNames.forEach((name: string) => {
           const sheet = workbook.Sheets[name]
@@ -153,15 +137,12 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
     }
     fileContent = sheets.join('\n\n')
   } else {
-    // Intentar leer como texto si no es CSV ni Excel conocido
     fileContent = buffer.toString('utf-8')
   }
 
   if (!fileContent || fileContent.trim().length === 0) {
     throw new Error(`Archivo vacío o formato no reconocido para ${fileType}`)
   }
-
-  console.log(`fileContent length for ${fileType}:`, fileContent.length)
 
   const weekStart = getWeekStart(week)
   const weekEnd = getWeekEnd(week)
@@ -253,21 +234,19 @@ ${dateInstruction}
   const text = response.content[0].type === 'text' ? response.content[0].text : ''
   const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
 
-  console.log(`Claude raw response for ${fileType} (first 300 chars):`, clean.substring(0, 300))
-
   try {
     return JSON.parse(clean)
   } catch {
-    console.error(`Parse error for ${fileType}. Raw text:`, clean.substring(0, 500))
+    console.error(`Parse error for ${fileType}. Raw:`, clean.substring(0, 300))
     throw new Error(`No se pudo parsear la respuesta de Claude para ${fileType}`)
   }
 }
 
 async function saveProductMixCombined(reportId: string, productMix: any, menuAnalysis: any) {
-  console.log('saveProductMixCombined - productMix present:', !!productMix)
-  console.log('saveProductMixCombined - menuAnalysis present:', !!menuAnalysis)
-  console.log('saveProductMixCombined - menuAnalysis by_item count:', menuAnalysis?.by_item?.length)
+  console.log('saveProductMixCombined - productMix:', !!productMix, '| menuAnalysis:', !!menuAnalysis)
 
+  // Columnas existentes en product_mix_data:
+  // id, report_id, by_category, by_menu, theo_cost_by_category, total_theo_cost, raw_data
   const insertData: Record<string, any> = {
     report_id: reportId,
     raw_data: { product_mix: productMix, menu_analysis: menuAnalysis },
@@ -276,13 +255,10 @@ async function saveProductMixCombined(reportId: string, productMix: any, menuAna
   if (productMix) {
     insertData.by_menu = productMix.by_menu
     insertData.by_category = productMix.by_category || buildCategoryFromMenus(productMix.by_menu)
-    insertData.by_item = productMix.by_item
-    insertData.total_net_sales = productMix.total_net_sales
-    insertData.total_qty = productMix.total_qty
   }
 
   if (productMix?.by_item && menuAnalysis?.by_item && menuAnalysis.by_item.length > 0) {
-    // Caso completo: hacer match por nombre de item
+    // Caso completo: match por nombre entre Toast y R365
     const theoCostByCategory: Record<string, number> = {
       food: 0, na_beverage: 0, liquor: 0, beer: 0, wine: 0, general: 0
     }
@@ -297,23 +273,23 @@ async function saveProductMixCombined(reportId: string, productMix: any, menuAna
         matchCount++
       }
     })
-    console.log(`Match count: ${matchCount} de ${productMix.by_item.length} items`)
+    console.log(`Match: ${matchCount} de ${productMix.by_item.length} items`)
     insertData.theo_cost_by_category = theoCostByCategory
     insertData.total_theo_cost = Object.values(theoCostByCategory)
       .reduce((a: number, b: number) => a + b, 0)
     console.log('total_theo_cost calculado:', insertData.total_theo_cost)
 
   } else if (menuAnalysis?.total_theo_cost && Number(menuAnalysis.total_theo_cost) > 0) {
-    // Caso parcial: usar total directo de R365 sin match por categoría
+    // Caso parcial: usar total directo de R365
     insertData.total_theo_cost = menuAnalysis.total_theo_cost
-    console.log('Usando total_theo_cost directo de R365:', insertData.total_theo_cost)
+    console.log('total_theo_cost directo de R365:', insertData.total_theo_cost)
   }
 
   const { error } = await supabase.from('product_mix_data').insert(insertData)
   if (error) {
     console.error('Error saving product_mix_data:', error)
   } else {
-    console.log('product_mix_data guardado correctamente')
+    console.log('product_mix_data guardado OK. total_theo_cost:', insertData.total_theo_cost)
   }
 }
 
