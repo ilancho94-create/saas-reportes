@@ -25,27 +25,27 @@ const CATEGORIES_BASE = [
   { key: 'wine', label: 'Wine', color: '#ec4899', defaultMeta: 20 },
 ]
 
+type Shortcut = 'last1' | 'last4' | 'last8' | 'month' | 'custom'
+
 export default function CostoUsoPage() {
   const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
-  const [weeks, setWeeks] = useState<any[]>([])
+  const [weeks, setWeeks] = useState<any[]>([])   // sorted ASC (oldest first)
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [alerts, setAlerts] = useState<string[]>([])
-  const [rangeStart, setRangeStart] = useState(0)
-  const [rangeEnd, setRangeEnd] = useState(99)
+  const [shortcut, setShortcut] = useState<Shortcut>('last4')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const [operatingDays, setOperatingDays] = useState(6)
   const [costTargets, setCostTargets] = useState<Record<string, number>>({})
 
-  // Merge default metas with custom targets
   const CATEGORIES = CATEGORIES_BASE.map(cat => ({
     ...cat,
     meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
   }))
 
-  useEffect(() => {
-    if (restaurantId) loadData()
-  }, [restaurantId])
+  useEffect(() => { if (restaurantId) loadData() }, [restaurantId])
 
   async function loadData() {
     if (!restaurantId) return
@@ -61,20 +61,19 @@ export default function CostoUsoPage() {
       .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
     setMappings(maps || [])
 
-    // Load cost targets
     const { data: tgts } = await supabase
       .from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
     if (tgts?.length) {
-      const tgtsMap: Record<string, number> = {}
-      tgts.forEach((t: any) => { tgtsMap[t.category] = Number(t.target_pct) })
-      setCostTargets(tgtsMap)
+      const m: Record<string, number> = {}
+      tgts.forEach((t: any) => { m[t.category] = Number(t.target_pct) })
+      setCostTargets(m)
     }
 
     const { data: reports } = await supabase
       .from('reports').select('*')
       .eq('restaurant_id', restaurantId)
-      .order('created_at', { ascending: false })
-      .limit(12)
+      .order('week', { ascending: true })   // ← ASC: oldest first
+      .limit(52)
 
     if (!reports || reports.length === 0) { setLoading(false); return }
 
@@ -88,15 +87,17 @@ export default function CostoUsoPage() {
       return { report: r, sales: s.data, cogs: c.data, inventory: inv.data, productMix: pm.data }
     }))
 
-    const sorted = weeksData.reverse()
-    setWeeks(sorted)
-    setRangeStart(0)
-    setRangeEnd(sorted.length - 1)
+    setWeeks(weeksData)
 
+    const last = weeksData[weeksData.length - 1]
+    setCustomFrom(weeksData.length >= 4 ? weeksData[weeksData.length - 4].report.week : weeksData[0].report.week)
+    setCustomTo(last?.report.week || '')
+
+    // Alerts de ajuste de inventario
     const newAlerts: string[] = []
-    for (let i = 1; i < sorted.length; i++) {
-      const prev = sorted[i - 1]
-      const curr = sorted[i]
+    for (let i = 1; i < weeksData.length; i++) {
+      const prev = weeksData[i - 1]
+      const curr = weeksData[i]
       if (prev.inventory && curr.inventory) {
         const diff = Math.abs(Number(prev.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous))
         if (diff > 10) {
@@ -107,6 +108,28 @@ export default function CostoUsoPage() {
     setAlerts(newAlerts)
     setLoading(false)
   }
+
+  // ── Filtered by shortcut ─────────────────────────────────────────────────
+  const filtered = (() => {
+    if (weeks.length === 0) return []
+    if (shortcut === 'last1') return weeks.slice(-1)
+    if (shortcut === 'last4') return weeks.slice(-4)
+    if (shortcut === 'last8') return weeks.slice(-8)
+    if (shortcut === 'month') {
+      const now = new Date()
+      const y = now.getFullYear(), m = now.getMonth()
+      return weeks.filter(w => {
+        const d = new Date(w.report.week_start)
+        return d.getFullYear() === y && d.getMonth() === m
+      })
+    }
+    if (shortcut === 'custom' && customFrom && customTo) {
+      const from = customFrom <= customTo ? customFrom : customTo
+      const to = customFrom <= customTo ? customTo : customFrom
+      return weeks.filter(w => w.report.week >= from && w.report.week <= to)
+    }
+    return weeks.slice(-4)
+  })()
 
   function fmt(n: any) {
     if (n === null || n === undefined) return '—'
@@ -187,11 +210,18 @@ export default function CostoUsoPage() {
     return result
   }
 
-  const filtered = weeks.slice(rangeStart, rangeEnd + 1)
   const chartData = filtered.map(buildWeekData)
   const latest = filtered[filtered.length - 1]
   const latestData = latest ? buildWeekData(latest) : null
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
+
+  const SHORTCUTS: { key: Shortcut; label: string }[] = [
+    { key: 'last1', label: 'Última semana' },
+    { key: 'last4', label: 'Últimas 4 sem' },
+    { key: 'last8', label: 'Últimas 8 sem' },
+    { key: 'month', label: 'Este mes' },
+    { key: 'custom', label: 'Custom' },
+  ]
 
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -201,7 +231,8 @@ export default function CostoUsoPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
-      <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
+      {/* ── Header + Selectores ── */}
+      <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-white font-bold text-lg">📦 Costo de Uso</h1>
@@ -210,17 +241,31 @@ export default function CostoUsoPage() {
           </div>
           <p className="text-gray-500 text-xs mt-0.5">{restaurantName} · (Inv. Anterior + Compras − Inv. Actual) / Ventas</p>
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-gray-500 text-xs">Desde:</span>
-          <select value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
-            {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
-          </select>
-          <span className="text-gray-500 text-xs">Hasta:</span>
-          <select value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
-            {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
-          </select>
+      </div>
+
+      {/* ── Shortcuts ── */}
+      <div className="border-b border-gray-800 bg-gray-900 px-6 py-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          {SHORTCUTS.map(s => (
+            <button key={s.key} onClick={() => setShortcut(s.key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${shortcut === s.key ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+              {s.label}
+            </button>
+          ))}
+          {shortcut === 'custom' && (
+            <div className="flex items-center gap-2 ml-2">
+              <select value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+                {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+              </select>
+              <span className="text-gray-500 text-xs">→</span>
+              <select value={customTo} onChange={e => setCustomTo(e.target.value)}
+                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+                {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+              </select>
+            </div>
+          )}
+          <span className="text-gray-600 text-xs ml-2">{filtered.length} semanas</span>
         </div>
       </div>
 
@@ -380,7 +425,8 @@ export default function CostoUsoPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                         <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                          formatter={(v: any, name: any) => [v + '%', name]} />
                         <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
                         <Line type="monotone" dataKey="totalRealPct" name="% Real" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
                         <Line type="monotone" dataKey="totalMixPct" name="% P.Mix" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} />
@@ -395,12 +441,14 @@ export default function CostoUsoPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                         <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
-                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                          formatter={(v: any) => [fmt(v), 'Variación']} />
                         <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
+
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
                   <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
@@ -409,10 +457,12 @@ export default function CostoUsoPage() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                       <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                        formatter={(v: any, name: any) => [v + '%', name]} />
                       <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
                       {CATEGORIES.map(cat => (
-                        <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label} stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
+                        <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label}
+                          stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
@@ -441,7 +491,10 @@ export default function CostoUsoPage() {
                       const d = buildWeekData(w)
                       return (
                         <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                          <td className="py-3 text-gray-300">{w.report.week}</td>
+                          <td className="py-3">
+                            <p className="text-gray-300">{w.report.week}</p>
+                            <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
+                          </td>
                           <td className="py-3 text-right">
                             <span className={`font-medium ${d.totalRealPct && d.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>
                               {fmtPct(d.totalRealPct)}

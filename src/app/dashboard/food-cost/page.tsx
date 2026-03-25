@@ -18,31 +18,30 @@ const CATEGORIES_BASE = [
 ]
 
 type ViewMode = 'range' | 'compare'
+type Shortcut = 'last1' | 'last4' | 'last8' | 'month' | 'custom'
 
 export default function FoodCostPage() {
   const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
-  const [weeks, setWeeks] = useState<any[]>([])
+  const [weeks, setWeeks] = useState<any[]>([])   // sorted ASC (oldest first)
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [costTargets, setCostTargets] = useState<Record<string, number>>({})
   const [activeCategory, setActiveCategory] = useState('food')
   const [viewMode, setViewMode] = useState<ViewMode>('range')
-  const [rangeStart, setRangeStart] = useState(0)
-  const [rangeEnd, setRangeEnd] = useState(99)
+  const [shortcut, setShortcut] = useState<Shortcut>('last4')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
   const [compareA, setCompareA] = useState<string>('')
   const [compareB, setCompareB] = useState<string>('')
   const [hiddenLines, setHiddenLines] = useState<string[]>([])
 
-  // Merge default metas with custom targets
   const CATEGORIES = CATEGORIES_BASE.map(cat => ({
     ...cat,
     meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
   }))
 
-  useEffect(() => {
-    if (restaurantId) loadData()
-  }, [restaurantId])
+  useEffect(() => { if (restaurantId) loadData() }, [restaurantId])
 
   async function loadData() {
     if (!restaurantId) return
@@ -57,20 +56,19 @@ export default function FoodCostPage() {
       .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
     setMappings(maps || [])
 
-    // Load cost targets
     const { data: tgts } = await supabase
       .from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
     if (tgts?.length) {
-      const tgtsMap: Record<string, number> = {}
-      tgts.forEach((t: any) => { tgtsMap[t.category] = Number(t.target_pct) })
-      setCostTargets(tgtsMap)
+      const m: Record<string, number> = {}
+      tgts.forEach((t: any) => { m[t.category] = Number(t.target_pct) })
+      setCostTargets(m)
     }
 
     const { data: reports } = await supabase
       .from('reports').select('*')
       .eq('restaurant_id', restaurantId)
-      .order('created_at', { ascending: false })
-      .limit(20)
+      .order('week', { ascending: true })   // ← ASC: oldest first
+      .limit(52)
 
     if (!reports || reports.length === 0) { setLoading(false); return }
 
@@ -82,19 +80,38 @@ export default function FoodCostPage() {
       return { report: r, sales: s.data, cogs: c.data }
     }))
 
-    const sorted = weeksData.reverse()
-    setWeeks(sorted)
-    setRangeStart(0)
-    setRangeEnd(sorted.length - 1)
-    if (sorted.length >= 2) {
-      setCompareA(sorted[sorted.length - 2].report.week)
-      setCompareB(sorted[sorted.length - 1].report.week)
-    } else if (sorted.length === 1) {
-      setCompareA(sorted[0].report.week)
-      setCompareB(sorted[0].report.week)
-    }
+    setWeeks(weeksData)
+
+    const last = weeksData[weeksData.length - 1]
+    const secondLast = weeksData[weeksData.length - 2]
+    setCustomFrom(weeksData.length >= 4 ? weeksData[weeksData.length - 4].report.week : weeksData[0].report.week)
+    setCustomTo(last?.report.week || '')
+    setCompareA(secondLast?.report.week || last?.report.week || '')
+    setCompareB(last?.report.week || '')
     setLoading(false)
   }
+
+  // ── Filtered by shortcut ─────────────────────────────────────────────────
+  const filtered = (() => {
+    if (weeks.length === 0) return []
+    if (shortcut === 'last1') return weeks.slice(-1)
+    if (shortcut === 'last4') return weeks.slice(-4)
+    if (shortcut === 'last8') return weeks.slice(-8)
+    if (shortcut === 'month') {
+      const now = new Date()
+      const y = now.getFullYear(), m = now.getMonth()
+      return weeks.filter(w => {
+        const d = new Date(w.report.week_start)
+        return d.getFullYear() === y && d.getMonth() === m
+      })
+    }
+    if (shortcut === 'custom' && customFrom && customTo) {
+      const from = customFrom <= customTo ? customFrom : customTo
+      const to = customFrom <= customTo ? customTo : customFrom
+      return weeks.filter(w => w.report.week >= from && w.report.week <= to)
+    }
+    return weeks.slice(-4)
+  })()
 
   function fmt(n: any) {
     if (!n) return '—'
@@ -136,19 +153,15 @@ export default function FoodCostPage() {
       wine: pct(cat.wine, wineSales) || 0,
       general: pct(cat.general, netSales) || 0,
       totalAB: pct(totalABRaw, totalABSales) || 0,
-      'food$': cat.food || 0,
-      'na_beverage$': cat.na_beverage || 0,
-      'liquor$': cat.liquor || 0,
-      'beer$': cat.beer || 0,
-      'wine$': cat.wine || 0,
-      'general$': cat.general || 0,
+      'food$': cat.food || 0, 'na_beverage$': cat.na_beverage || 0,
+      'liquor$': cat.liquor || 0, 'beer$': cat.beer || 0,
+      'wine$': cat.wine || 0, 'general$': cat.general || 0,
       'total$': w.cogs?.total || 0,
       foodSales, beerSales, liquorSales, naBevSales, wineSales,
       totalABSales, totalABRaw, netSales, cat,
     }
   }
 
-  const filtered = weeks.slice(rangeStart, rangeEnd + 1)
   const chartData = filtered.map(buildWeekData)
   const latest = filtered[filtered.length - 1]
   const latestData = latest ? buildWeekData(latest) : null
@@ -176,6 +189,14 @@ export default function FoodCostPage() {
     return `▲ ${diff.toFixed(1)}pts sobre meta`
   }
 
+  const SHORTCUTS: { key: Shortcut; label: string }[] = [
+    { key: 'last1', label: 'Última semana' },
+    { key: 'last4', label: 'Últimas 4 sem' },
+    { key: 'last8', label: 'Últimas 8 sem' },
+    { key: 'month', label: 'Este mes' },
+    { key: 'custom', label: 'Custom' },
+  ]
+
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <p className="text-gray-400">Cargando...</p>
@@ -184,6 +205,7 @@ export default function FoodCostPage() {
 
   return (
     <div className="min-h-screen bg-gray-950">
+      {/* ── Header ── */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -204,20 +226,30 @@ export default function FoodCostPage() {
         </div>
       </div>
 
+      {/* ── Selector de rango ── */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-3">
         {viewMode === 'range' ? (
-          <div className="flex items-center gap-4">
-            <span className="text-gray-500 text-xs">Desde:</span>
-            <select value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
-              {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
-            </select>
-            <span className="text-gray-500 text-xs">Hasta:</span>
-            <select value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
-              {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
-            </select>
-            <span className="text-gray-500 text-xs">{filtered.length} semanas seleccionadas</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            {SHORTCUTS.map(s => (
+              <button key={s.key} onClick={() => setShortcut(s.key)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${shortcut === s.key ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+                {s.label}
+              </button>
+            ))}
+            {shortcut === 'custom' && (
+              <div className="flex items-center gap-2 ml-2">
+                <select value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+                  {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+                </select>
+                <span className="text-gray-500 text-xs">→</span>
+                <select value={customTo} onChange={e => setCustomTo(e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+                  {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+                </select>
+              </div>
+            )}
+            <span className="text-gray-600 text-xs ml-2">{filtered.length} semanas</span>
           </div>
         ) : (
           <div className="flex items-center gap-4">
@@ -242,13 +274,12 @@ export default function FoodCostPage() {
             <p className="text-orange-300 text-sm font-medium">Costo de Compra</p>
             <p className="text-orange-400 text-xs mt-0.5">
               Este reporte muestra lo que se <strong>compró a proveedores</strong> vs las ventas del período.
-              {Object.keys(costTargets).length > 0
-                ? ' · Metas configuradas en Settings.'
-                : ' · Configura tus metas en Settings → Metas de Costo.'}
+              {Object.keys(costTargets).length > 0 ? ' · Metas configuradas en Settings.' : ' · Configura tus metas en Settings → Metas de Costo.'}
             </p>
           </div>
         </div>
 
+        {/* ── RANGO ── */}
         {viewMode === 'range' && latestData && (
           <>
             <div>
@@ -277,26 +308,21 @@ export default function FoodCostPage() {
                 </div>
               </div>
 
-              {/* Category cards with semaforo */}
               <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                 {CATEGORIES.map(cat => {
                   const catSales = ({ food: latestData.foodSales, beer: latestData.beerSales, liquor: latestData.liquorSales, na_beverage: latestData.naBevSales, wine: latestData.wineSales, general: latestData.netSales } as any)[cat.key] || latestData.netSales
                   const val = pct(latestData.cat[cat.key], catSales)
                   const meta = cat.meta
-                  const semaforoColor = getSemaforoColor(val, meta)
-                  const semaforoLabel = getSemaforoLabel(val, meta)
                   return (
                     <button key={cat.key} onClick={() => setActiveCategory(cat.key)}
                       className={`rounded-xl p-4 text-left transition border ${activeCategory === cat.key ? 'border-2 bg-gray-800' : 'border-gray-800 bg-gray-900 hover:bg-gray-800'}`}
                       style={{ borderColor: activeCategory === cat.key ? cat.color : undefined }}>
                       <p className="text-gray-500 text-xs mb-1">{cat.label}</p>
                       <p className="text-lg font-bold" style={{ color: cat.color }}>{val ? val + '%' : '—'}</p>
-                      {meta !== null && (
-                        <p className="text-gray-600 text-xs">Meta: {meta}%</p>
-                      )}
+                      {meta !== null && <p className="text-gray-600 text-xs">Meta: {meta}%</p>}
                       <p className="text-gray-600 text-xs">{fmt(latestData.cat[cat.key])}</p>
                       {meta && val && (
-                        <p className={`text-xs mt-1 font-medium ${semaforoColor}`}>{semaforoLabel}</p>
+                        <p className={`text-xs mt-1 font-medium ${getSemaforoColor(val, meta)}`}>{getSemaforoLabel(val, meta)}</p>
                       )}
                     </button>
                   )
@@ -319,17 +345,9 @@ export default function FoodCostPage() {
               <div className="flex items-center justify-between mb-1">
                 <h2 className="text-white font-semibold">% {activeCat?.label} — Costo de Compra</h2>
                 {activeCat?.meta !== null && (
-                  <span className="text-xs text-gray-500">
-                    Meta: <span className="text-white font-medium">{activeCat?.meta}%</span>
-                    {Object.keys(costTargets).length === 0 && (
-                      <a href="/dashboard/settings" className="ml-2 text-blue-400 hover:text-blue-300">Configurar →</a>
-                    )}
-                  </span>
+                  <span className="text-xs text-gray-500">Meta: <span className="text-white font-medium">{activeCat?.meta}%</span></span>
                 )}
               </div>
-              <p className="text-gray-500 text-xs mb-4">
-                {activeCat?.meta ? `Línea roja = meta ${activeCat.meta}%` : 'Sin meta configurada'}
-              </p>
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -339,8 +357,10 @@ export default function FoodCostPage() {
                     <ReferenceLine y={activeCat?.meta} stroke="#ef4444" strokeDasharray="4 4"
                       label={{ value: `Meta ${activeCat?.meta}%`, fill: '#ef4444', fontSize: 10, position: 'right' }} />
                   )}
-                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [v + '%', activeCat?.label]} />
-                  <Line type="monotone" dataKey={activeCategory} stroke={activeCat?.color} strokeWidth={2} dot={{ fill: activeCat?.color, r: 4 }} hide={hiddenLines.includes(activeCategory)} />
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                    formatter={(v: any) => [v + '%', activeCat?.label]} />
+                  <Line type="monotone" dataKey={activeCategory} stroke={activeCat?.color} strokeWidth={2}
+                    dot={{ fill: activeCat?.color, r: 4 }} hide={hiddenLines.includes(activeCategory)} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -352,12 +372,14 @@ export default function FoodCostPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                   <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                    formatter={(v: any, name: any) => [v + '%', name]} />
                   {CATEGORIES.filter(c => c.meta !== null).map(cat => (
                     <ReferenceLine key={cat.key + '_ref'} y={cat.meta!} stroke={cat.color} strokeDasharray="3 3" strokeOpacity={0.4} />
                   ))}
                   {CATEGORIES.map(cat => (
-                    <Line key={cat.key} type="monotone" dataKey={cat.key} name={cat.label} stroke={cat.color} strokeWidth={2} dot={false} hide={hiddenLines.includes(cat.key)} />
+                    <Line key={cat.key} type="monotone" dataKey={cat.key} name={cat.label} stroke={cat.color}
+                      strokeWidth={2} dot={false} hide={hiddenLines.includes(cat.key)} />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
@@ -369,11 +391,14 @@ export default function FoodCostPage() {
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                   <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + (v/1000).toFixed(0) + 'k'} />
-                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => ['$' + Number(v).toLocaleString(), name]} />
+                  <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false}
+                    tickFormatter={v => '$' + (v / 1000).toFixed(0) + 'k'} />
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                    formatter={(v: any, name: any) => ['$' + Number(v).toLocaleString(), name]} />
                   <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
                   {CATEGORIES.map(cat => (
-                    <Bar key={cat.key} dataKey={cat.key + '$'} name={cat.label} fill={cat.color} stackId="a" hide={hiddenLines.includes(cat.key)} />
+                    <Bar key={cat.key} dataKey={cat.key + '$'} name={cat.label} fill={cat.color} stackId="a"
+                      hide={hiddenLines.includes(cat.key)} />
                   ))}
                 </BarChart>
               </ResponsiveContainer>
@@ -400,14 +425,15 @@ export default function FoodCostPage() {
                       const d = buildWeekData(w)
                       return (
                         <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                          <td className="py-3 text-gray-300">{w.report.week}</td>
+                          <td className="py-3">
+                            <p className="text-gray-300">{w.report.week}</p>
+                            <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
+                          </td>
                           {CATEGORIES.filter(c => c.key !== 'general').map(cat => {
                             const val = d[cat.key as keyof typeof d] as number
-                            const meta = cat.meta
-                            const color = getSemaforoColor(val, meta)
                             return (
                               <td key={cat.key} className="py-3 text-right">
-                                <span className={`font-medium ${color}`}>{val ? val + '%' : '—'}</span>
+                                <span className={`font-medium ${getSemaforoColor(val, cat.meta)}`}>{val ? val + '%' : '—'}</span>
                               </td>
                             )
                           })}
@@ -427,6 +453,7 @@ export default function FoodCostPage() {
           </>
         )}
 
+        {/* ── COMPARAR ── */}
         {viewMode === 'compare' && weekAData && weekBData && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -439,7 +466,6 @@ export default function FoodCostPage() {
                       const catSales = ({ food: data.foodSales, beer: data.beerSales, liquor: data.liquorSales, na_beverage: data.naBevSales, wine: data.wineSales, general: data.netSales } as any)[cat.key] || data.netSales
                       const val = pct(data.cat[cat.key], catSales)
                       const meta = cat.meta
-                      const semaforoColor = getSemaforoColor(val, meta)
                       return (
                         <div key={cat.key} className="flex items-center gap-3">
                           <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
@@ -447,12 +473,10 @@ export default function FoodCostPage() {
                           <div className="flex-1 bg-gray-800 rounded-full h-2">
                             <div className="h-2 rounded-full" style={{ width: `${Math.min(val || 0, 100)}%`, backgroundColor: cat.color }} />
                           </div>
-                          <span className={`font-medium text-sm w-14 text-right ${semaforoColor}`}>{val ? val + '%' : '—'}</span>
+                          <span className={`font-medium text-sm w-14 text-right ${getSemaforoColor(val, meta)}`}>{val ? val + '%' : '—'}</span>
                           <span className="text-gray-600 text-xs w-16 text-right">{fmt(data.cat[cat.key])}</span>
                           {meta && val && (
-                            <span className={`text-xs w-20 ${semaforoColor}`}>
-                              {getSemaforoLabel(val, meta)}
-                            </span>
+                            <span className={`text-xs w-20 ${getSemaforoColor(val, meta)}`}>{getSemaforoLabel(val, meta)}</span>
                           )}
                         </div>
                       )
@@ -471,6 +495,7 @@ export default function FoodCostPage() {
                 </div>
               ))}
             </div>
+
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Diferencias {compareA} vs {compareB}</h2>
               <div className="space-y-3">
