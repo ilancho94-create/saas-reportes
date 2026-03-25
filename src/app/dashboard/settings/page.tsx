@@ -30,17 +30,22 @@ export default function SettingsPage() {
   const [newMappedTo, setNewMappedTo] = useState('food')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas'>('categorias')
+  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas' | 'avt-categorias'>('categorias')
 
   // Restaurant operational config
   const [restConfig, setRestConfig] = useState({
     operating_days: 6,
     week_start_day: 1,
     closed_days: [] as number[],
-    fiscal_year_start: '', // YYYY-MM-DD
+    fiscal_year_start: '',
   })
   const [savingConfig, setSavingConfig] = useState(false)
   const [configStatus, setConfigStatus] = useState('')
+
+  // AVT categories
+  const [avtCategories, setAvtCategories] = useState<any[]>([])
+  const [savingAvtCat, setSavingAvtCat] = useState(false)
+  const [avtCatStatus, setAvtCatStatus] = useState('')
 
   useEffect(() => {
     if (restaurantId) loadData()
@@ -71,7 +76,6 @@ export default function SettingsPage() {
       .order('source_category')
     setMappings(maps || [])
 
-    // Load cost targets
     const { data: tgts } = await supabase
       .from('cost_targets')
       .select('category, target_pct')
@@ -82,6 +86,14 @@ export default function SettingsPage() {
       setTargets(prev => ({ ...prev, ...tgtsMap }))
     }
 
+    // Cargar categorías AvT
+    const { data: cats } = await supabase
+      .from('avt_categories')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .order('category')
+    setAvtCategories(cats || [])
+
     setLoading(false)
   }
 
@@ -89,14 +101,12 @@ export default function SettingsPage() {
     if (!newCategory.trim() || !restaurantId) return
     setSaving(true)
     setStatus('')
-
     const { error } = await supabase.from('category_mappings').insert({
       restaurant_id: restaurantId,
       source_category: newCategory.trim(),
       source_system: 'toast',
       mapped_to: newMappedTo,
     })
-
     if (error) {
       setStatus('❌ Error: ' + error.message)
     } else {
@@ -147,18 +157,15 @@ export default function SettingsPage() {
     if (!restaurantId) return
     setSavingTargets(true)
     setTargetsStatus('')
-
     const upserts = Object.entries(targets).map(([category, target_pct]) => ({
       restaurant_id: restaurantId,
       category,
       target_pct,
       updated_at: new Date().toISOString(),
     }))
-
     const { error } = await supabase
       .from('cost_targets')
       .upsert(upserts, { onConflict: 'restaurant_id,category' })
-
     setSavingTargets(false)
     if (!error) {
       setTargetsStatus('✅ Metas guardadas')
@@ -168,10 +175,46 @@ export default function SettingsPage() {
     }
   }
 
+  async function toggleAvtCategory(category: string, currentActive: boolean) {
+    if (!restaurantId) return
+    await supabase.from('avt_categories')
+      .update({ active: !currentActive })
+      .eq('restaurant_id', restaurantId)
+      .eq('category', category)
+    setAvtCategories(prev => prev.map(c =>
+      c.category === category ? { ...c, active: !currentActive } : c
+    ))
+  }
+
+  async function deleteAvtCategory(category: string) {
+    if (!restaurantId) return
+    await supabase.from('avt_categories')
+      .delete()
+      .eq('restaurant_id', restaurantId)
+      .eq('category', category)
+    setAvtCategories(prev => prev.filter(c => c.category !== category))
+    setAvtCatStatus('✅ Categoría eliminada')
+    setTimeout(() => setAvtCatStatus(''), 2000)
+  }
+
+  async function activateAll() {
+    if (!restaurantId) return
+    setSavingAvtCat(true)
+    await supabase.from('avt_categories')
+      .update({ active: true })
+      .eq('restaurant_id', restaurantId)
+    setAvtCategories(prev => prev.map(c => ({ ...c, active: true })))
+    setSavingAvtCat(false)
+    setAvtCatStatus('✅ Todas activadas')
+    setTimeout(() => setAvtCatStatus(''), 2000)
+  }
+
   const groupedMappings = MAPPED_TO_OPTIONS.map(opt => ({
     ...opt,
     categories: mappings.filter(m => m.mapped_to === opt.value)
   })).filter(g => g.categories.length > 0)
+
+  const activeAvtCount = avtCategories.filter(c => c.active).length
 
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -187,18 +230,22 @@ export default function SettingsPage() {
       </div>
 
       <div className="border-b border-gray-800 bg-gray-900 px-6">
-        <div className="flex gap-1">
+        <div className="flex gap-1 overflow-x-auto">
           {[
             { key: 'categorias', label: 'Mapeo de Categorías' },
             { key: 'restaurante', label: 'Restaurante' },
             { key: 'mapeo-items', label: '🗂 Mapeo de Items R365' },
             { key: 'metas', label: '🎯 Metas de Costo' },
+            { key: 'avt-categorias', label: '📊 Categorías AvT' },
           ].map(tab => (
             <button key={tab.key} onClick={() => setActiveTab(tab.key as any)}
-              className={`px-4 py-3 text-sm font-medium transition border-b-2 ${
+              className={`px-4 py-3 text-sm font-medium transition border-b-2 whitespace-nowrap ${
                 activeTab === tab.key ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
               }`}>
               {tab.label}
+              {tab.key === 'avt-categorias' && avtCategories.length > 0 && (
+                <span className="ml-1.5 text-xs text-gray-600">({activeAvtCount}/{avtCategories.length})</span>
+              )}
             </button>
           ))}
         </div>
@@ -206,6 +253,7 @@ export default function SettingsPage() {
 
       <main className="max-w-4xl mx-auto px-6 py-8 space-y-6">
 
+        {/* ── MAPEO DE CATEGORÍAS ── */}
         {activeTab === 'categorias' && (
           <>
             <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
@@ -214,10 +262,6 @@ export default function SettingsPage() {
                 Cada restaurante categoriza sus ventas diferente en Toast. Aquí defines cómo mapear
                 las categorías de Toast a las categorías estándar del sistema para calcular
                 correctamente Food Cost, Beverage Cost, etc.
-              </p>
-              <p className="text-blue-400 text-sm mt-2">
-                <strong>Ejemplo:</strong> Si Toast tiene "Ayce" como categoría de ventas, puedes mapearlo
-                a "Food" para que se incluya en el cálculo de food cost.
               </p>
             </div>
 
@@ -283,7 +327,6 @@ export default function SettingsPage() {
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-3">Vista previa del mapeo</h2>
-              <p className="text-gray-500 text-xs mb-4">Así se calcularán los costos con el mapeo actual</p>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 {MAPPED_TO_OPTIONS.filter(o => o.value !== 'ignore').map(opt => {
                   const cats = mappings.filter(m => m.mapped_to === opt.value)
@@ -305,6 +348,7 @@ export default function SettingsPage() {
           </>
         )}
 
+        {/* ── RESTAURANTE ── */}
         {activeTab === 'restaurante' && (
           <div className="space-y-6">
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -333,110 +377,75 @@ export default function SettingsPage() {
               <h2 className="text-white font-semibold mb-1">Configuración operacional</h2>
               <p className="text-gray-500 text-xs mb-6">Define los días de operación para calcular correctamente días de inventario y promedios diarios</p>
 
-              {/* Días de inicio de semana */}
               <div className="mb-6">
                 <label className="text-gray-300 text-sm font-medium block mb-3">Inicio de semana</label>
                 <div className="flex gap-2">
                   {['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map((day, i) => (
                     <button key={i} onClick={() => setRestConfig(prev => ({ ...prev, week_start_day: i }))}
                       className={`px-3 py-2 rounded-lg text-xs font-medium transition border ${
-                        restConfig.week_start_day === i
-                          ? 'bg-blue-600 border-blue-500 text-white'
-                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
-                      }`}>
-                      {day}
-                    </button>
+                        restConfig.week_start_day === i ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
+                      }`}>{day}</button>
                   ))}
                 </div>
               </div>
 
-              {/* Días que cierra */}
               <div className="mb-6">
                 <label className="text-gray-300 text-sm font-medium block mb-1">Días que cierra el restaurante</label>
-                <p className="text-gray-500 text-xs mb-3">Selecciona los días en que NO opera (afecta el cálculo de días de inventario)</p>
+                <p className="text-gray-500 text-xs mb-3">Selecciona los días en que NO opera</p>
                 <div className="flex gap-2">
                   {['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map((day, i) => {
                     const isClosed = restConfig.closed_days.includes(i)
                     return (
                       <button key={i} onClick={() => setRestConfig(prev => ({
                         ...prev,
-                        closed_days: isClosed
-                          ? prev.closed_days.filter(d => d !== i)
-                          : [...prev.closed_days, i],
-                        operating_days: isClosed
-                          ? prev.operating_days + 1
-                          : prev.operating_days - 1,
+                        closed_days: isClosed ? prev.closed_days.filter(d => d !== i) : [...prev.closed_days, i],
+                        operating_days: isClosed ? prev.operating_days + 1 : prev.operating_days - 1,
                       }))}
                         className={`px-3 py-2 rounded-lg text-xs font-medium transition border ${
-                          isClosed
-                            ? 'bg-red-950 border-red-800 text-red-400'
-                            : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
-                        }`}>
-                        {day}
-                      </button>
+                          isClosed ? 'bg-red-950 border-red-800 text-red-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
+                        }`}>{day}</button>
                     )
                   })}
                 </div>
                 <p className="text-gray-500 text-xs mt-2">
                   Días de operación: <span className="text-white font-medium">{restConfig.operating_days} días/semana</span>
                   {restConfig.closed_days.length > 0 && (
-                    <span className="text-gray-600 ml-2">
-                      · Cerrado: {restConfig.closed_days.map(d => ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'][d]).join(', ')}
-                    </span>
+                    <span className="text-gray-600 ml-2">· Cerrado: {restConfig.closed_days.map(d => ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'][d]).join(', ')}</span>
                   )}
                 </p>
               </div>
 
-              {/* Días de operación manual override */}
               <div className="mb-6">
                 <label className="text-gray-300 text-sm font-medium block mb-1">Días de operación por semana</label>
-                <p className="text-gray-500 text-xs mb-3">Se actualiza automáticamente al seleccionar días cerrados, o ajusta manualmente</p>
                 <div className="flex items-center gap-3">
-                  <input
-                    type="number" min={1} max={7} value={restConfig.operating_days}
+                  <input type="number" min={1} max={7} value={restConfig.operating_days}
                     onChange={e => setRestConfig(prev => ({ ...prev, operating_days: Number(e.target.value) }))}
-                    className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm text-center focus:outline-none focus:border-blue-500"
-                  />
+                    className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm text-center focus:outline-none focus:border-blue-500" />
                   <span className="text-gray-400 text-sm">días por semana</span>
                 </div>
               </div>
 
-              {/* Año fiscal */}
               <div className="mb-6">
                 <label className="text-gray-300 text-sm font-medium block mb-1">Inicio del año fiscal (Semana 1)</label>
-                <p className="text-gray-500 text-xs mb-3">
-                  Define la fecha exacta en que empieza la Semana 1 de tu año fiscal.
-                  Debe coincidir con cómo R365 y Toast numeran sus semanas.
-                </p>
+                <p className="text-gray-500 text-xs mb-3">Define la fecha exacta en que empieza la Semana 1 de tu año fiscal.</p>
                 <div className="flex items-center gap-4">
-                  <input
-                    type="date"
-                    value={restConfig.fiscal_year_start}
+                  <input type="date" value={restConfig.fiscal_year_start}
                     onChange={e => setRestConfig(prev => ({ ...prev, fiscal_year_start: e.target.value }))}
-                    className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
-                  />
+                    className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500" />
                   {restConfig.fiscal_year_start && (
                     <div className="text-xs text-gray-400">
                       <p>Semana 1 empieza: <span className="text-white">{restConfig.fiscal_year_start}</span></p>
-                      <p className="mt-0.5 text-gray-600">
-                        Semana 2: {new Date(new Date(restConfig.fiscal_year_start).getTime() + 7*24*60*60*1000).toISOString().split('T')[0]}
-                      </p>
                     </div>
                   )}
                 </div>
                 {!restConfig.fiscal_year_start && (
-                  <p className="text-yellow-500 text-xs mt-2">
-                    ⚠️ Sin configurar — el sistema usa la numeración ISO estándar
-                  </p>
+                  <p className="text-yellow-500 text-xs mt-2">⚠️ Sin configurar — el sistema usa la numeración ISO estándar</p>
                 )}
               </div>
 
               {configStatus && (
-                <p className={`text-sm mb-4 ${configStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
-                  {configStatus}
-                </p>
+                <p className={`text-sm mb-4 ${configStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{configStatus}</p>
               )}
-
               <button onClick={saveRestConfig} disabled={savingConfig}
                 className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition">
                 {savingConfig ? 'Guardando...' : '💾 Guardar configuración'}
@@ -445,12 +454,12 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* ── MAPEO DE ITEMS ── */}
         {activeTab === 'mapeo-items' && (
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-white font-semibold mb-2">Mapeo de Items R365</h2>
             <p className="text-gray-500 text-sm mb-6">
-              Asigna categoría (food, beverage, liquor...) a los items de Menu Item Analysis
-              que no tienen match automático con Toast. Se aplican en todos los reportes futuros.
+              Asigna categoría a los items de Menu Item Analysis que no tienen match automático con Toast.
             </p>
             <a href="/dashboard/settings/mapeo-items"
               className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-xl transition">
@@ -459,7 +468,7 @@ export default function SettingsPage() {
           </div>
         )}
 
-
+        {/* ── METAS ── */}
         {activeTab === 'metas' && (
           <MetasTab
             targets={targets}
@@ -468,6 +477,119 @@ export default function SettingsPage() {
             savingTargets={savingTargets}
             targetsStatus={targetsStatus}
           />
+        )}
+
+        {/* ── CATEGORÍAS AVT ── */}
+        {activeTab === 'avt-categorias' && (
+          <div className="space-y-6">
+            <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
+              <h2 className="text-blue-300 font-semibold mb-1">📊 Categorías de Actual vs Teórico</h2>
+              <p className="text-blue-400 text-sm">
+                Estas categorías se detectan automáticamente al subir reportes de AvT.
+                Activa solo las que quieres ver en los filtros del dashboard — las inactivas
+                se ocultan pero sus datos se conservan.
+              </p>
+            </div>
+
+            {avtCategories.length === 0 ? (
+              <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-10 text-center">
+                <p className="text-gray-500">No hay categorías de AvT detectadas aún.</p>
+                <p className="text-gray-600 text-xs mt-2">Se detectan automáticamente al subir un reporte de Actual vs Teórico.</p>
+              </div>
+            ) : (
+              <>
+                {/* Acciones masivas */}
+                <div className="flex items-center justify-between">
+                  <p className="text-gray-400 text-sm">
+                    <span className="text-white font-medium">{activeAvtCount}</span> de{' '}
+                    <span className="text-white font-medium">{avtCategories.length}</span> categorías activas
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={activateAll} disabled={savingAvtCat}
+                      className="bg-green-800 hover:bg-green-700 text-green-300 px-4 py-1.5 rounded-lg text-xs font-medium transition">
+                      Activar todas
+                    </button>
+                    <button onClick={async () => {
+                      if (!restaurantId) return
+                      setSavingAvtCat(true)
+                      await supabase.from('avt_categories').update({ active: false }).eq('restaurant_id', restaurantId)
+                      setAvtCategories(prev => prev.map(c => ({ ...c, active: false })))
+                      setSavingAvtCat(false)
+                      setAvtCatStatus('✅ Todas desactivadas')
+                      setTimeout(() => setAvtCatStatus(''), 2000)
+                    }} disabled={savingAvtCat}
+                      className="bg-gray-800 hover:bg-gray-700 text-gray-400 px-4 py-1.5 rounded-lg text-xs font-medium transition">
+                      Desactivar todas
+                    </button>
+                  </div>
+                </div>
+
+                {avtCatStatus && (
+                  <p className={`text-sm ${avtCatStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{avtCatStatus}</p>
+                )}
+
+                {/* Lista de categorías */}
+                <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-800 bg-gray-800">
+                        <th className="text-left text-gray-500 text-xs py-3 px-5 font-medium">Categoría</th>
+                        <th className="text-center text-gray-500 text-xs py-3 px-4 font-medium">Estado</th>
+                        <th className="text-center text-gray-500 text-xs py-3 px-4 font-medium">Visible en dashboard</th>
+                        <th className="text-right text-gray-500 text-xs py-3 px-5 font-medium">Eliminar</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {avtCategories.map((cat, i) => (
+                        <tr key={cat.category} className={`border-b border-gray-800 hover:bg-gray-800/50 transition ${!cat.active ? 'opacity-50' : ''}`}>
+                          <td className="py-3 px-5">
+                            <span className="text-white text-sm font-medium">{cat.category}</span>
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+                              cat.active ? 'bg-green-900 text-green-400' : 'bg-gray-800 text-gray-500'
+                            }`}>
+                              {cat.active ? 'Activa' : 'Inactiva'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            {/* Toggle switch */}
+                            <button onClick={() => toggleAvtCategory(cat.category, cat.active)}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                                cat.active ? 'bg-blue-600' : 'bg-gray-700'
+                              }`}>
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                cat.active ? 'translate-x-6' : 'translate-x-1'
+                              }`} />
+                            </button>
+                          </td>
+                          <td className="py-3 px-5 text-right">
+                            <button onClick={() => {
+                              if (confirm(`¿Eliminar la categoría "${cat.category}"? Se eliminará permanentemente.`)) {
+                                deleteAvtCategory(cat.category)
+                              }
+                            }}
+                              className="text-gray-600 hover:text-red-400 transition text-xs px-2 py-1 rounded hover:bg-red-950">
+                              Eliminar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="bg-yellow-950 border border-yellow-800 rounded-xl p-4">
+                  <p className="text-yellow-400 text-xs">
+                    <strong>Tip:</strong> Desactiva categorías como <code className="bg-yellow-900 px-1 rounded">CHEMICALS</code>,{' '}
+                    <code className="bg-yellow-900 px-1 rounded">None</code> o{' '}
+                    <code className="bg-yellow-900 px-1 rounded">RESTAURANT SUPPLIES</code> si no quieres verlas en los filtros del AvT.
+                    Sus datos seguirán existiendo pero no aparecerán en el dashboard.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
         )}
 
       </main>
@@ -490,23 +612,7 @@ function MetasTab({ targets, setTargets, saveTargets, savingTargets, targetsStat
         <h2 className="text-blue-300 font-semibold mb-1">🎯 ¿Qué son las metas de costo?</h2>
         <p className="text-blue-400 text-sm">
           Define el porcentaje máximo de costo que quieres alcanzar para cada categoría.
-          Estos objetivos se comparan contra el <strong>costo real</strong> (compras) y el <strong>costo teórico</strong> (según recetas y P.Mix)
-          para darte una visión completa de qué tan realistas son tus metas.
         </p>
-        <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
-          <div className="bg-blue-900/50 rounded-lg p-2.5">
-            <p className="text-blue-300 font-medium">Meta configurada</p>
-            <p className="text-blue-400 mt-0.5">Lo que quieres lograr</p>
-          </div>
-          <div className="bg-blue-900/50 rounded-lg p-2.5">
-            <p className="text-blue-300 font-medium">Costo teórico</p>
-            <p className="text-blue-400 mt-0.5">Lo que debería costar según tus recetas</p>
-          </div>
-          <div className="bg-blue-900/50 rounded-lg p-2.5">
-            <p className="text-blue-300 font-medium">Costo real</p>
-            <p className="text-blue-400 mt-0.5">Lo que realmente gastaste</p>
-          </div>
-        </div>
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -516,7 +622,6 @@ function MetasTab({ targets, setTargets, saveTargets, savingTargets, targetsStat
             const value = targets[cat.key] ?? 0
             const isAggressive = value < 15
             const isRealistic = value >= 15 && value <= 35
-            const isLenient = value > 35
             return (
               <div key={cat.key} className="flex items-center gap-6">
                 <div className="w-40 shrink-0">
@@ -527,32 +632,18 @@ function MetasTab({ targets, setTargets, saveTargets, savingTargets, targetsStat
                   <p className="text-gray-600 text-xs">{cat.description}</p>
                 </div>
                 <div className="flex-1">
-                  <input
-                    type="range"
-                    min={0}
-                    max={60}
-                    step={0.5}
-                    value={value}
+                  <input type="range" min={0} max={60} step={0.5} value={value}
                     onChange={e => setTargets((prev: any) => ({ ...prev, [cat.key]: Number(e.target.value) }))}
-                    className="w-full accent-blue-500"
-                  />
+                    className="w-full accent-blue-500" />
                   <div className="flex justify-between text-xs text-gray-700 mt-0.5">
-                    <span>0%</span>
-                    <span>30%</span>
-                    <span>60%</span>
+                    <span>0%</span><span>30%</span><span>60%</span>
                   </div>
                 </div>
                 <div className="w-24 shrink-0">
                   <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min={0}
-                      max={60}
-                      step={0.5}
-                      value={value}
+                    <input type="number" min={0} max={60} step={0.5} value={value}
                       onChange={e => setTargets((prev: any) => ({ ...prev, [cat.key]: Number(e.target.value) }))}
-                      className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-sm text-center focus:outline-none focus:border-blue-500"
-                    />
+                      className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-sm text-center focus:outline-none focus:border-blue-500" />
                     <span className="text-gray-400 text-sm">%</span>
                   </div>
                   <p className={`text-xs mt-1 ${isAggressive ? 'text-red-400' : isRealistic ? 'text-green-400' : 'text-yellow-400'}`}>
@@ -565,18 +656,13 @@ function MetasTab({ targets, setTargets, saveTargets, savingTargets, targetsStat
         </div>
 
         {targetsStatus && (
-          <p className={`mt-4 text-sm ${targetsStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
-            {targetsStatus}
-          </p>
+          <p className={`mt-4 text-sm ${targetsStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{targetsStatus}</p>
         )}
 
         <div className="mt-6 pt-5 border-t border-gray-800 flex items-center justify-between">
           <p className="text-gray-500 text-xs">Los cambios aplican inmediatamente en Food Cost y Costo de Uso</p>
-          <button
-            onClick={saveTargets}
-            disabled={savingTargets}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition"
-          >
+          <button onClick={saveTargets} disabled={savingTargets}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition">
             {savingTargets ? 'Guardando...' : '💾 Guardar metas'}
           </button>
         </div>
@@ -605,8 +691,7 @@ function MetasTab({ targets, setTargets, saveTargets, savingTargets, targetsStat
                 <p className="text-gray-600 text-xs mt-1">{bench.min}%–{bench.max}%</p>
                 {userTarget > 0 && (
                   <p className={`text-xs mt-2 font-medium ${Math.abs(diff) <= 3 ? 'text-green-400' : diff > 0 ? 'text-yellow-400' : 'text-blue-400'}`}>
-                    Tu meta: {userTarget}%
-                    {Math.abs(diff) <= 3 ? ' ✓' : diff > 0 ? ' ▲' : ' ▼'}
+                    Tu meta: {userTarget}%{Math.abs(diff) <= 3 ? ' ✓' : diff > 0 ? ' ▲' : ' ▼'}
                   </p>
                 )}
               </div>
