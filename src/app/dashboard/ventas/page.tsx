@@ -407,7 +407,7 @@ export default function VentasPage() {
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + (v / 1000).toFixed(0) + 'k'} />
                     <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any, name: string) => ['$' + Number(v).toLocaleString(), name]} />
+                      formatter={(v: any, name: any) => ['$' + Number(v).toLocaleString(), name]} />
                     <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
                     <Bar dataKey="lunch" name="Lunch" fill="#3b82f6" radius={[4, 4, 0, 0]} stackId="a" />
                     <Bar dataKey="dinner" name="Dinner" fill="#a855f7" radius={[0, 0, 0, 0]} stackId="a" />
