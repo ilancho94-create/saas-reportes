@@ -5,14 +5,14 @@ import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, LineChart, Line, Legend
+  ResponsiveContainer, CartesianGrid, LineChart, Line
 } from 'recharts'
 
 export default function WastePage() {
+  const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
   const [selectedWeek, setSelectedWeek] = useState<string>('')
-  const restaurantId = useRestaurantId()
   const [restaurantName, setRestaurantName] = useState('')
 
   useEffect(() => {
@@ -20,16 +20,13 @@ export default function WastePage() {
   }, [restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles').select('restaurant_id').eq('id', user.id).single()
-    if (!profile?.restaurant_id) { setLoading(false); return }
+    if (!restaurantId) return
+    setLoading(true)
+    setWeeks([])
 
     const { data: rest } = await supabase
-      .from('restaurants').select('*').eq('id', restaurantId).single()
-    setRestaurant(rest)
+      .from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
 
     const { data: reports } = await supabase
       .from('reports').select('*')
@@ -42,7 +39,7 @@ export default function WastePage() {
     const weeksData = await Promise.all(reports.map(async (r) => {
       const { data: waste } = await supabase
         .from('waste_data').select('*').eq('report_id', r.id).single()
-      return { report: r, waste: waste }
+      return { report: r, waste }
     }))
 
     const withWaste = weeksData.filter(w => w.waste)
@@ -60,7 +57,6 @@ export default function WastePage() {
   const items: any[] = selected?.waste?.items || []
   const totalCost = selected?.waste?.total_cost || 0
 
-  // Merma por categoría
   const byCategory: Record<string, number> = {}
   items.forEach((item: any) => {
     const cat = item.category || 'Sin categoría'
@@ -70,12 +66,10 @@ export default function WastePage() {
     .map(([cat, total]) => ({ cat, total }))
     .sort((a, b) => b.total - a.total)
 
-  // Items más frecuentes (top 10 por costo)
   const topItems = [...items]
     .sort((a, b) => Number(b.total || 0) - Number(a.total || 0))
     .slice(0, 10)
 
-  // Tendencia semanal
   const trendData = [...weeks].reverse().map(w => ({
     week: w.report.week.replace('2026-', ''),
     total: Number(w.waste?.total_cost || 0),
@@ -94,19 +88,13 @@ export default function WastePage() {
           <h1 className="text-white font-bold text-lg">🗑️ Waste — Merma</h1>
           <p className="text-gray-500 text-xs mt-0.5">{restaurantName}</p>
         </div>
-        <select
-          value={selectedWeek}
-          onChange={e => setSelectedWeek(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
-        >
-          {weeks.map(w => (
-            <option key={w.report.week} value={w.report.week}>{w.report.week}</option>
-          ))}
+        <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
+          {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
         </select>
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-
         {weeks.length === 0 ? (
           <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">
             <div className="text-5xl mb-4">🗑️</div>
@@ -119,7 +107,6 @@ export default function WastePage() {
           </div>
         ) : (
           <>
-            {/* KPIs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-xs mb-1">Total merma</p>
@@ -141,7 +128,6 @@ export default function WastePage() {
               </div>
             </div>
 
-            {/* Gráfica tendencia + por categoría */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Tendencia semanal</h2>
@@ -151,11 +137,9 @@ export default function WastePage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any) => [fmt(v), 'Merma']}
-                    />
-                    <Line type="monotone" dataKey="total" name="Merma $" stroke="#ef4444" strokeWidth={2} dot={{ fill: '#ef4444', r: 3 }} />
+                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                      formatter={(v: any) => [fmt(v), 'Merma']} />
+                    <Line type="monotone" dataKey="total" stroke="#ef4444" strokeWidth={2} dot={{ fill: '#ef4444', r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -168,17 +152,14 @@ export default function WastePage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
                     <YAxis type="category" dataKey="cat" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} tickLine={false} width={100} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any) => [fmt(v), 'Merma']}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                      formatter={(v: any) => [fmt(v), 'Merma']} />
                     <Bar dataKey="total" fill="#ef4444" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
-            {/* Top items */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Items más costosos — {selectedWeek}</h2>
               <div className="overflow-x-auto">
@@ -211,7 +192,6 @@ export default function WastePage() {
               </div>
             </div>
 
-            {/* Tabla completa */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Todos los items — {selectedWeek}</h2>
               <div className="overflow-x-auto">
