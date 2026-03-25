@@ -109,6 +109,30 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Procesar Receiving
+    const receivingFile = formData.get('receiving') as File | null
+    if (receivingFile && receivingFile.size > 0) {
+      try {
+        const buffer = Buffer.from(await receivingFile.arrayBuffer())
+        const items = parseReceivingCsv(buffer.toString('utf-8'))
+        await supabase.from('receiving_data').delete().eq('report_id', report.id)
+        if (items.length > 0) {
+          const rows = items.map((item: any) => ({
+            report_id: report.id,
+            restaurant_id,
+            week,
+            ...item,
+          }))
+          await supabase.from('receiving_data').insert(rows)
+        }
+        results['receiving'] = { items: items.length }
+        console.log(`Receiving: ${items.length} items`)
+      } catch (err) {
+        console.error('Error processing receiving:', err)
+        results['receiving'] = { error: 'No se pudo procesar' }
+      }
+    }
+
     return NextResponse.json({
       success: true, report_id: report.id, week,
       processed: Object.keys(results), warnings,

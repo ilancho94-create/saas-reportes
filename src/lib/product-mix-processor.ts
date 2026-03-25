@@ -386,3 +386,83 @@ export function parseAvtCsv(csvContent: string): any {
 
   return { shortages, overages, by_category, total_shortage_dollar, total_overage_dollar, net_variance_dollar, date_warning: null }
 }
+
+export function parseReceivingCsv(csvContent: string): any[] {
+  const lines = csvContent.split('\n')
+
+  // Header en línea 3
+  const headerLine = lines[3]
+  if (!headerLine) throw new Error('CSV de Receiving sin header')
+
+  const parseRow = (line: string): string[] => {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '"') {
+        inQuotes = !inQuotes
+      } else if (line[i] === ',' && !inQuotes) {
+        result.push(current.trim())
+        current = ''
+      } else {
+        current += line[i]
+      }
+    }
+    result.push(current.trim())
+    return result
+  }
+
+  const headers = parseRow(headerLine)
+
+  const idx = (name: string) => headers.indexOf(name)
+  const itemNameIdx = idx('ItemName')
+  const uomIdx = idx('UofM')
+  const cat1Idx = idx('ItemCategory1')
+  const vendorIdx = idx('VendorName')
+  const totalQtyIdx = idx('TotalItemQuantity')
+  const totalExtIdx = idx('TotalExtPrice')
+
+  if (itemNameIdx === -1 || totalQtyIdx === -1) {
+    throw new Error('CSV de Receiving no tiene las columnas esperadas')
+  }
+
+  const cleanNum = (val: string): number => {
+    if (!val) return 0
+    return parseFloat(val.replace(/[$,]/g, '')) || 0
+  }
+
+  // Agrupar por item — usar el primer registro de summary por item
+  const itemMap: Record<string, any> = {}
+
+  for (const line of lines.slice(4)) {
+    if (!line.trim()) continue
+    const row = parseRow(line)
+    if (row.length <= totalExtIdx) continue
+
+    const itemName = row[itemNameIdx]?.trim()
+    if (!itemName || itemName === 'Location' || itemName === 'ItemName') continue
+    if (itemName.startsWith('Total') || itemName.startsWith('SumQty')) continue
+
+    // Solo procesar la primera vez que aparece el item (tiene los totales)
+    if (itemMap[itemName]) continue
+
+    const totalQty = cleanNum(row[totalQtyIdx])
+    const totalExt = cleanNum(row[totalExtIdx])
+
+    if (totalQty <= 0 || totalExt <= 0) continue
+
+    const unitCost = parseFloat((totalExt / totalQty).toFixed(5))
+
+    itemMap[itemName] = {
+      item_name: itemName,
+      uom: row[uomIdx]?.trim() || '',
+      category: row[cat1Idx]?.trim() || 'OTHER',
+      vendor: row[vendorIdx]?.trim() || '',
+      total_qty: totalQty,
+      unit_cost: unitCost,
+      total_cost: parseFloat(totalExt.toFixed(2)),
+    }
+  }
+
+  return Object.values(itemMap)
+}
