@@ -193,3 +193,102 @@ export function matchAndCombine(
     raw_data: { product_mix: productMix, menu_analysis: menuAnalysis },
   }
 }
+
+export function parseAvtExcel(buffer: Buffer): any {
+  const XLSX = require('xlsx')
+  const workbook = XLSX.read(buffer, { type: 'buffer' })
+  const ws = workbook.Sheets[workbook.SheetNames[0]]
+  const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 })
+
+  const SKIP = ['total', 'grand total', 'net sales']
+
+  let currentMain: string | null = null
+  let currentSub: string | null = null
+  const shortages: any[] = []
+  const overages: any[] = []
+  const byCategoryMap: Record<string, { shortage: number; overage: number }> = {}
+
+  for (let i = 9; i < rows.length; i++) {
+    const row = rows[i]
+    if (!row || row.length < 32) continue
+
+    // Categoría principal — col 4 tiene valor, cols 5 y 6 vacías
+    if (row[4] && String(row[4]).trim() && !row[5] && !row[6]) {
+      const val = String(row[4]).trim()
+      if (
+        !SKIP.some(s => val.toLowerCase().includes(s)) &&
+        !val.startsWith('Begin') &&
+        !val.startsWith('End') &&
+        !val.startsWith('Net')
+      ) {
+        currentMain = val
+        if (currentMain && !byCategoryMap[currentMain]) {
+          byCategoryMap[currentMain] = { shortage: 0, overage: 0 }
+        }
+      }
+      continue
+    }
+
+    // Subcategoría — col 5 tiene valor, col 6 vacía
+    if (row[5] && String(row[5]).trim() && !row[6]) {
+      const val = String(row[5]).trim()
+      if (!val.toLowerCase().endsWith('total')) currentSub = val
+      continue
+    }
+
+    // Item — col 6 tiene valor
+    if (row[6] && String(row[6]).trim()) {
+      const name = String(row[6]).trim()
+      if (SKIP.some(s => name.toLowerCase().includes(s))) continue
+
+      const unexpVarQty = Number(row[19]) || 0
+      const unexpVarDollar = Number(row[31]) || 0
+
+      if (unexpVarDollar === 0) continue
+
+      const item = {
+        name,
+        category: currentMain || 'OTHER',
+        sub_category: currentSub || '',
+        uom: String(row[7] || '').trim(),
+        unit_cost: Number(row[8]) || 0,
+        variance_qty: unexpVarQty,
+        variance_dollar: unexpVarDollar,
+      }
+
+      if (currentMain) {
+        if (!byCategoryMap[currentMain]) {
+          byCategoryMap[currentMain] = { shortage: 0, overage: 0 }
+        }
+        if (unexpVarDollar > 0) {
+          shortages.push(item)
+          byCategoryMap[currentMain].shortage += unexpVarDollar
+        } else {
+          overages.push(item)
+          byCategoryMap[currentMain].overage += Math.abs(unexpVarDollar)
+        }
+      }
+    }
+  }
+
+  const by_category = Object.entries(byCategoryMap).map(([category, vals]) => ({
+    category,
+    total_shortage_dollar: parseFloat(vals.shortage.toFixed(2)),
+    total_overage_dollar: parseFloat(vals.overage.toFixed(2)),
+    net_dollar: parseFloat((vals.shortage - vals.overage).toFixed(2)),
+  }))
+
+  const total_shortage_dollar = shortages.reduce((a, b) => a + b.variance_dollar, 0)
+  const total_overage_dollar = Math.abs(overages.reduce((a, b) => a + b.variance_dollar, 0))
+  const net_variance_dollar = parseFloat((total_shortage_dollar - total_overage_dollar).toFixed(2))
+
+  return {
+    shortages,
+    overages,
+    by_category,
+    total_shortage_dollar: parseFloat(total_shortage_dollar.toFixed(2)),
+    total_overage_dollar: parseFloat(total_overage_dollar.toFixed(2)),
+    net_variance_dollar,
+    date_warning: null,
+  }
+}

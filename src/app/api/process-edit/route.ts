@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine } from '@/lib/product-mix-processor'
+import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvtExcel } from '@/lib/product-mix-processor'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const supabase = createClient(
@@ -32,9 +32,10 @@ export async function POST(request: NextRequest) {
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
-    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'avt']
 
-    // Procesar archivos estándar con Claude
+    // Archivos procesados con Claude (sin avt)
+    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory']
+
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
       if (!file || file.size === 0) continue
@@ -51,13 +52,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Procesar AvT directamente del Excel
+    const avtFile = formData.get('avt') as File | null
+    if (avtFile && avtFile.size > 0) {
+      try {
+        const buffer = Buffer.from(await avtFile.arrayBuffer())
+        const avtData = parseAvtExcel(buffer)
+        results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
+        console.log(`AvT: ${avtData.shortages.length} faltantes, ${avtData.overages.length} sobrantes`)
+        await supabase.from('avt_data').delete().eq('report_id', reportId)
+        await saveToDatabase(reportId, 'avt', avtData)
+      } catch (err) {
+        console.error('Error processing avt:', err)
+        results['avt'] = { error: 'No se pudo procesar' }
+      }
+    }
+
     // Procesar Product Mix + Menu Analysis directamente del Excel
     const productMixFile = formData.get('product_mix') as File | null
     const menuAnalysisFile = formData.get('menu_analysis') as File | null
 
     if (productMixFile || menuAnalysisFile) {
       try {
-        // Obtener restaurant_id del reporte
         const { data: report } = await supabase
           .from('reports').select('restaurant_id').eq('id', reportId).single()
         const restaurantId = report?.restaurant_id || '00000000-0000-0000-0000-000000000001'
@@ -79,7 +95,6 @@ export async function POST(request: NextRequest) {
           console.log(`Menu Analysis: ${menuAnalysis.by_item?.length} items, theo_cost: ${menuAnalysis.total_theo_cost}`)
         }
 
-        // Si solo viene uno, recuperar el otro del raw_data existente en Supabase
         if (!productMix || !menuAnalysis) {
           const { data: existing } = await supabase
             .from('product_mix_data').select('raw_data').eq('report_id', reportId).single()
@@ -95,7 +110,6 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // Cargar category_mappings
         const { data: savedMappings } = await supabase
           .from('category_mappings')
           .select('source_category, mapped_to')
@@ -114,7 +128,6 @@ export async function POST(request: NextRequest) {
           warnings['product_mix'] = `${combined.unmatched_items.length} items sin categoría — ve a Settings → Mapeo de Items`
         }
 
-        // Borrar y reinserta
         await supabase.from('product_mix_data').delete().eq('report_id', reportId)
         const { error } = await supabase.from('product_mix_data').insert({
           report_id: reportId,
@@ -173,24 +186,29 @@ async function extractWithClaude(file: File, fileType: string, week: string): Pr
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"net_sales":número,"gross_sales":número,"discounts":número,"refunds":número,"orders":número,"guests":número,"avg_per_guest":número,"avg_per_order":número,"gratuity":número,"tax":número,"tips":número,"categories":[{"name":string,"items":número,"gross":número,"discount":número,"net":número,"pct":número}],"revenue_centers":[{"name":string,"net":número,"pct":número}],"lunch":{"orders":número,"net":número,"discounts":número},"dinner":{"orders":número,"net":número,"discounts":número},"date_warning":string|null}`,
+
     labor: `Analiza este reporte de labor/payroll de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 Solo incluye empleados con Hourly Rate > 0.
 ${dateInstruction}
 {"total_regular_hours":número,"total_ot_hours":número,"total_pay":número,"by_position":[{"position":string,"regular_hours":número,"ot_hours":número,"total_pay":número}],"by_employee":[{"name":string,"position":string,"hourly_rate":número,"regular_hours":número,"ot_hours":número,"total_pay":número}],"date_warning":string|null}`,
+
     cogs: `Analiza este reporte COGS Analysis by Vendor de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"total":número,"by_category":{"food":número,"na_beverage":número,"liquor":número,"beer":número,"wine":número,"general":número},"by_vendor":[{"name":string,"food":número,"na_beverage":número,"liquor":número,"beer":número,"general":número,"total":número}],"date_warning":string|null}`,
+
     voids: `Analiza este reporte de voids de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"total":número,"total_items":número,"by_reason":[{"reason":string,"count":número,"total":número}],"items":[{"item_name":string,"server":string,"reason":string,"quantity":número,"price":número}],"date_warning":string|null}`,
+
     discounts: `Analiza este reporte de descuentos de Toast POS y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 ${dateInstruction}
 {"total":número,"total_applications":número,"total_orders":número,"items":[{"name":string,"applications":número,"orders":número,"amount":número,"pct":número}],"date_warning":string|null}`,
-   waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
+
+    waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 Columnas del reporte: Number, Date, Location, Item, U of M, Qty, Each Amount, Total, Account Name.
 MAPEO EXACTO de columnas:
@@ -203,30 +221,12 @@ MAPEO EXACTO de columnas:
 NO incluyas el campo "comment".
 ${dateInstruction}
 {"total_cost":número,"total_qty":número,"items":[{"name":string,"uom":string,"qty":número,"unit_cost":número,"total":número,"category":string}],"date_warning":string|null}`,
+
     inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 Busca la sección "Total by Inventory Account" con columnas Current Value y Previous Value.
 ${dateInstruction}
 {"count_date":"YYYY-MM-DD","by_account":[{"account":string,"current_value":número,"previous_value":número,"adjustment":número}],"grand_total_current":número,"grand_total_previous":número,"date_warning":string|null}`,
-    avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365.
-Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-
-ESTRUCTURA DEL REPORTE:
-- Tiene categorías principales: BAR, FOOD, BEVERAGE, CHEMICALS, SUPPLIES
-- Columnas (de izquierda a derecha): Item, UofM, Unit Cost, [Quantity section: Begin/Purch/Xfer/End/Actl/Theo/Var/Waste/Donation/UnExp Var/Effcy], [Dollar section: mismas columnas]
-- LA COLUMNA QUE IMPORTA ES "UnExp Var" (Unexpected Variance) — es la varianza DESPUÉS de descontar waste
-- En la sección Quantity: UnExp Var es la columna 19 (contando desde 0)
-- En la sección Dollar: UnExp Var es la columna 31
-
-CLASIFICACIÓN:
-- UnExp Var POSITIVO ($) = FALTANTE (aparece en rojo en el reporte) = más consumo del teórico
-- UnExp Var NEGATIVO ($) = SOBRANTE (aparece entre paréntesis en el reporte) = menos consumo del teórico
-- Ignora items donde UnExp Var $ = 0
-
-EXTRAE todos los items con UnExp Var ≠ 0, con su categoría principal (BAR/FOOD/BEVERAGE/CHEMICALS/SUPPLIES).
-
-${dateInstruction}
-{"by_category":[{"category":string,"total_shortage_dollar":número,"total_overage_dollar":número,"net_dollar":número}],"shortages":[{"name":string,"category":string,"uom":string,"unit_cost":número,"unexp_var_qty":número,"unexp_var_dollar":número}],"overages":[{"name":string,"category":string,"uom":string,"unit_cost":número,"unexp_var_qty":número,"unexp_var_dollar":número}],"total_shortage_dollar":número,"total_overage_dollar":número,"net_variance_dollar":número,"date_warning":string|null}`,
   }
 
   const response = await anthropic.messages.create({
@@ -251,34 +251,51 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
   const table = TABLE_MAP[fileType]
   if (!table) return
   const insertData: Record<string, any> = { report_id: reportId, raw_data: data }
+
   if (fileType === 'sales') {
-    insertData.net_sales = data.net_sales; insertData.gross_sales = data.gross_sales
-    insertData.discounts = data.discounts; insertData.orders = data.orders
-    insertData.guests = data.guests; insertData.avg_per_guest = data.avg_per_guest
-    insertData.avg_per_order = data.avg_per_order; insertData.categories = data.categories
+    insertData.net_sales = data.net_sales
+    insertData.gross_sales = data.gross_sales
+    insertData.discounts = data.discounts
+    insertData.orders = data.orders
+    insertData.guests = data.guests
+    insertData.avg_per_guest = data.avg_per_guest
+    insertData.avg_per_order = data.avg_per_order
+    insertData.categories = data.categories
     insertData.revenue_centers = data.revenue_centers
     insertData.lunch_dinner = { lunch: data.lunch, dinner: data.dinner }
   } else if (fileType === 'labor') {
-    insertData.total_hours = data.total_regular_hours; insertData.total_ot_hours = data.total_ot_hours
-    insertData.total_pay = data.total_pay; insertData.by_position = data.by_position
+    insertData.total_hours = data.total_regular_hours
+    insertData.total_ot_hours = data.total_ot_hours
+    insertData.total_pay = data.total_pay
+    insertData.by_position = data.by_position
     insertData.by_employee = data.by_employee
   } else if (fileType === 'cogs') {
-    insertData.total = data.total; insertData.by_vendor = data.by_vendor
+    insertData.total = data.total
+    insertData.by_vendor = data.by_vendor
     insertData.by_category = data.by_category
   } else if (fileType === 'waste') {
-    insertData.total_cost = data.total_cost; insertData.items = data.items
+    insertData.total_cost = data.total_cost
+    insertData.items = data.items
   } else if (fileType === 'voids') {
-    insertData.total = data.total; insertData.items = data.items
+    insertData.total = data.total
+    insertData.items = data.items
   } else if (fileType === 'discounts') {
-    insertData.total = data.total; insertData.items = data.items
+    insertData.total = data.total
+    insertData.items = data.items
   } else if (fileType === 'inventory') {
-    insertData.count_date = data.count_date; insertData.by_account = data.by_account
+    insertData.count_date = data.count_date
+    insertData.by_account = data.by_account
     insertData.grand_total_current = data.grand_total_current
     insertData.grand_total_previous = data.grand_total_previous
   } else if (fileType === 'avt') {
-    insertData.net_variance = data.net_variance; insertData.shortages = data.shortages
+    insertData.shortages = data.shortages
     insertData.overages = data.overages
+    insertData.net_variance = data.net_variance_dollar
+    insertData.total_shortage_dollar = data.total_shortage_dollar
+    insertData.total_overage_dollar = data.total_overage_dollar
+    insertData.by_category = data.by_category
   }
+
   const { error } = await supabase.from(table).insert(insertData)
   if (error) console.error(`Error saving ${fileType}:`, error)
 }

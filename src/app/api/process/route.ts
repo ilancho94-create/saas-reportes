@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine } from '@/lib/product-mix-processor'
+import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvtExcel } from '@/lib/product-mix-processor'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const supabase = createClient(
@@ -42,9 +42,10 @@ export async function POST(request: NextRequest) {
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
-    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory', 'avt']
 
-    // Procesar archivos estándar con Claude
+    // Archivos procesados con Claude (sin avt)
+    const fileTypes = ['sales', 'labor', 'cogs', 'voids', 'discounts', 'waste', 'inventory']
+
     for (const fileType of fileTypes) {
       const file = formData.get(fileType) as File | null
       if (!file) continue
@@ -57,6 +58,21 @@ export async function POST(request: NextRequest) {
       } catch (err) {
         console.error(`Error processing ${fileType}:`, err)
         results[fileType] = { error: 'No se pudo procesar' }
+      }
+    }
+
+    // Procesar AvT directamente del Excel
+    const avtFile = formData.get('avt') as File | null
+    if (avtFile && avtFile.size > 0) {
+      try {
+        const buffer = Buffer.from(await avtFile.arrayBuffer())
+        const avtData = parseAvtExcel(buffer)
+        results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
+        console.log(`AvT: ${avtData.shortages.length} faltantes, ${avtData.overages.length} sobrantes`)
+        await saveToDatabase(report.id, 'avt', avtData)
+      } catch (err) {
+        console.error('Error processing avt:', err)
+        results['avt'] = { error: 'No se pudo procesar' }
       }
     }
 
@@ -118,7 +134,6 @@ async function processProductMixDirect(
 
   if (!productMix && !menuAnalysis) return
 
-  // Cargar category_mappings guardados para este restaurante
   const { data: savedMappings } = await supabase
     .from('category_mappings')
     .select('source_category, mapped_to')
@@ -137,20 +152,13 @@ async function processProductMixDirect(
     warnings['product_mix'] = `${combined.unmatched_items.length} items sin categoría — ve a Settings → Mapeo de Items para asignarlos`
   }
 
-  // Guardar en product_mix_data
   const insertData: Record<string, any> = {
     report_id: reportId,
-    raw_data: combined.raw_data,
+    raw_data: { ...combined.raw_data, unmatched_items: combined.unmatched_items },
     by_menu: combined.by_menu,
     by_category: combined.by_category,
     theo_cost_by_category: combined.theo_cost_by_category,
     total_theo_cost: combined.total_theo_cost,
-  }
-
-  // Guardar unmatched items en raw_data para poder mapearlos después
-  insertData.raw_data = {
-    ...combined.raw_data,
-    unmatched_items: combined.unmatched_items,
   }
 
   const { error } = await supabase.from('product_mix_data').insert(insertData)
@@ -209,7 +217,7 @@ Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks
 ${dateInstruction}
 {"total":número,"total_applications":número,"total_orders":número,"items":[{"name":string,"applications":número,"orders":número,"amount":número,"pct":número}],"date_warning":string|null}`,
 
- waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
+    waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 Columnas del reporte: Number, Date, Location, Item, U of M, Qty, Each Amount, Total, Account Name.
 MAPEO EXACTO de columnas:
@@ -228,26 +236,6 @@ Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks
 Busca la sección "Total by Inventory Account" con columnas Current Value y Previous Value.
 ${dateInstruction}
 {"count_date":"YYYY-MM-DD","by_account":[{"account":string,"current_value":número,"previous_value":número,"adjustment":número}],"grand_total_current":número,"grand_total_previous":número,"date_warning":string|null}`,
-
-   avt: `Analiza este reporte Actual vs Theoretical Analysis de Restaurant365.
-Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
-
-ESTRUCTURA DEL REPORTE:
-- Tiene categorías principales: BAR, FOOD, BEVERAGE, CHEMICALS, SUPPLIES
-- Columnas (de izquierda a derecha): Item, UofM, Unit Cost, [Quantity section: Begin/Purch/Xfer/End/Actl/Theo/Var/Waste/Donation/UnExp Var/Effcy], [Dollar section: mismas columnas]
-- LA COLUMNA QUE IMPORTA ES "UnExp Var" (Unexpected Variance) — es la varianza DESPUÉS de descontar waste
-- En la sección Quantity: UnExp Var es la columna 19 (contando desde 0)
-- En la sección Dollar: UnExp Var es la columna 31
-
-CLASIFICACIÓN:
-- UnExp Var POSITIVO ($) = FALTANTE (aparece en rojo en el reporte) = más consumo del teórico
-- UnExp Var NEGATIVO ($) = SOBRANTE (aparece entre paréntesis en el reporte) = menos consumo del teórico
-- Ignora items donde UnExp Var $ = 0
-
-EXTRAE todos los items con UnExp Var ≠ 0, con su categoría principal (BAR/FOOD/BEVERAGE/CHEMICALS/SUPPLIES).
-
-${dateInstruction}
-{"by_category":[{"category":string,"total_shortage_dollar":número,"total_overage_dollar":número,"net_dollar":número}],"shortages":[{"name":string,"category":string,"uom":string,"unit_cost":número,"unexp_var_qty":número,"unexp_var_dollar":número}],"overages":[{"name":string,"category":string,"uom":string,"unit_cost":número,"unexp_var_qty":número,"unexp_var_dollar":número}],"total_shortage_dollar":número,"total_overage_dollar":número,"net_variance_dollar":número,"date_warning":string|null}`,
   }
 
   const response = await anthropic.messages.create({
@@ -316,9 +304,12 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
     insertData.grand_total_current = data.grand_total_current
     insertData.grand_total_previous = data.grand_total_previous
   } else if (fileType === 'avt') {
-    insertData.net_variance = data.net_variance
     insertData.shortages = data.shortages
     insertData.overages = data.overages
+    insertData.net_variance = data.net_variance_dollar
+    insertData.total_shortage_dollar = data.total_shortage_dollar
+    insertData.total_overage_dollar = data.total_overage_dollar
+    insertData.by_category = data.by_category
   }
 
   const { error } = await supabase.from(table).insert(insertData)
