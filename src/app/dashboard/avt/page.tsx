@@ -359,7 +359,11 @@ export default function AvtPage() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Tendencia semanal</h2>
-                <p className="text-gray-500 text-xs mb-4">Faltantes, sobrantes y neto</p>
+                <div className="flex items-center gap-4 mb-4 flex-wrap">
+                  <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-red-500 rounded"/><span className="text-gray-500 text-xs">Faltantes — lo que se perdió (positivo = malo)</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-green-500 rounded"/><span className="text-gray-500 text-xs">Sobrantes — exceso sobre teórico (bueno)</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-yellow-500 rounded" style={{borderTop: '2px dashed #f59e0b', background: 'none'}}/><span className="text-gray-500 text-xs">Neto — diferencia real (cerca de $0 = bien)</span></div>
+                </div>
                 <ResponsiveContainer width="100%" height={180}>
                   <LineChart data={trendData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -376,7 +380,8 @@ export default function AvtPage() {
 
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Por categoría</h2>
-                <p className="text-gray-500 text-xs mb-4">Varianza neta {selectedWeek}</p>
+                <p className="text-gray-500 text-xs mb-1">Varianza neta {selectedWeek}</p>
+                <p className="text-gray-600 text-xs mb-4">Barra hacia la derecha = faltante (malo) · hacia la izquierda = sobrante (bueno)</p>
                 <ResponsiveContainer width="100%" height={180}>
                   <BarChart data={byCategory.map((c: any) => ({
                     category: c.category,
@@ -395,7 +400,8 @@ export default function AvtPage() {
 
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Top 5 faltantes</h2>
-                <p className="text-gray-500 text-xs mb-4">{selectedWeek} · {selectedCategory}</p>
+                <p className="text-gray-500 text-xs mb-1">{selectedWeek} · {selectedCategory}</p>
+                <p className="text-gray-600 text-xs mb-4">Items con mayor pérdida $ — lo que se usó de más vs receta teórica</p>
                 <ResponsiveContainer width="100%" height={180}>
                   <BarChart data={sortedShortages.slice(0, 5).map((i: any) => ({
                     name: i.name?.length > 15 ? i.name.substring(0, 15) + '...' : i.name,
