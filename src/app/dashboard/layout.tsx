@@ -69,11 +69,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between">
           {!collapsed && (
             <div>
-              <p className="text-white font-bold text-sm">SaaS Reportes 🚀</p>
+              <p className="text-white font-bold text-sm">Restaurant X-Ray</p>
               {restaurant && <p className="text-gray-500 text-xs truncate">{restaurant.name}</p>}
             </div>
           )}
-          <button onClick={() => setCollapsed(!collapsed)} className="text-gray-500 hover:text-white transition p-1 rounded">
+          {collapsed && (
+            <div className="w-full flex justify-center">
+              <span className="text-white font-bold text-sm">X</span>
+            </div>
+          )}
+          <button onClick={() => setCollapsed(!collapsed)} className="text-gray-500 hover:text-white transition p-1 rounded shrink-0">
             {collapsed ? '→' : '←'}
           </button>
         </div>
