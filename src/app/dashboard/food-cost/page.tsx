@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend
@@ -19,9 +20,10 @@ const CATEGORIES = [
 type ViewMode = 'range' | 'compare'
 
 export default function FoodCostPage() {
+  const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [activeCategory, setActiveCategory] = useState('food')
   const [viewMode, setViewMode] = useState<ViewMode>('range')
@@ -32,31 +34,25 @@ export default function FoodCostPage() {
   const [hiddenLines, setHiddenLines] = useState<string[]>([])
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [])
+    if (restaurantId) loadData()
+  }, [restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles').select('restaurant_id').eq('id', user.id).single()
-    if (!profile?.restaurant_id) { setLoading(false); return }
+    if (!restaurantId) return
+    setLoading(true)
+    setWeeks([])
 
     const { data: rest } = await supabase
-      .from('restaurants').select('*, organizations(name)').eq('id', profile.restaurant_id).single()
-    setRestaurant(rest)
+      .from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
 
     const { data: maps } = await supabase
-      .from('category_mappings').select('*').eq('restaurant_id', profile.restaurant_id)
+      .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
     setMappings(maps || [])
 
     const { data: reports } = await supabase
       .from('reports').select('*')
-      .eq('restaurant_id', profile.restaurant_id)
+      .eq('restaurant_id', restaurantId)
       .order('created_at', { ascending: false })
       .limit(20)
 
@@ -98,9 +94,7 @@ export default function FoodCostPage() {
     if (!categories || !mappings.length) return 0
     return categories
       .filter((cat: any) => {
-        const mapping = mappings.find(m =>
-          m.source_category.toLowerCase() === cat.name.toLowerCase()
-        )
+        const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
         return mapping?.mapped_to === targetType
       })
       .reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
@@ -126,16 +120,15 @@ export default function FoodCostPage() {
       wine: pct(cat.wine, wineSales) || 0,
       general: pct(cat.general, netSales) || 0,
       totalAB: pct(totalABRaw, totalABSales) || 0,
-      food$: cat.food || 0,
-      na_beverage$: cat.na_beverage || 0,
-      liquor$: cat.liquor || 0,
-      beer$: cat.beer || 0,
-      wine$: cat.wine || 0,
-      general$: cat.general || 0,
-      total$: w.cogs?.total || 0,
+      'food$': cat.food || 0,
+      'na_beverage$': cat.na_beverage || 0,
+      'liquor$': cat.liquor || 0,
+      'beer$': cat.beer || 0,
+      'wine$': cat.wine || 0,
+      'general$': cat.general || 0,
+      'total$': w.cogs?.total || 0,
       foodSales, beerSales, liquorSales, naBevSales, wineSales,
-      totalABSales, totalABRaw, netSales,
-      cat,
+      totalABSales, totalABRaw, netSales, cat,
     }
   }
 
@@ -143,16 +136,12 @@ export default function FoodCostPage() {
   const chartData = filtered.map(buildWeekData)
   const latest = filtered[filtered.length - 1]
   const latestData = latest ? buildWeekData(latest) : null
-
   const weekAData = compareA ? buildWeekData(weeks.find(w => w.report.week === compareA) || weeks[0]) : null
   const weekBData = compareB ? buildWeekData(weeks.find(w => w.report.week === compareB) || weeks[weeks.length - 1]) : null
-
   const activeCat = CATEGORIES.find(c => c.key === activeCategory)
 
   function toggleLine(key: string) {
-    setHiddenLines(prev =>
-      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
-    )
+    setHiddenLines(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
   }
 
   if (loading) return (
@@ -167,23 +156,17 @@ export default function FoodCostPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-white font-bold text-lg">🛒 Food Cost</h1>
-            <span className="bg-orange-900 text-orange-400 text-xs px-2 py-0.5 rounded-full font-medium">
-              Costo de Compra
-            </span>
+            <span className="bg-orange-900 text-orange-400 text-xs px-2 py-0.5 rounded-full font-medium">Costo de Compra</span>
           </div>
-          <p className="text-gray-500 text-xs mt-0.5">{restaurant?.name} · Compras de proveedores / Ventas</p>
+          <p className="text-gray-500 text-xs mt-0.5">{restaurantName} · Compras de proveedores / Ventas</p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setViewMode('range')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${viewMode === 'range' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-          >
+          <button onClick={() => setViewMode('range')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${viewMode === 'range' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
             Rango
           </button>
-          <button
-            onClick={() => setViewMode('compare')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${viewMode === 'compare' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-          >
+          <button onClick={() => setViewMode('compare')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${viewMode === 'compare' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
             Comparar semanas
           </button>
         </div>
@@ -193,62 +176,40 @@ export default function FoodCostPage() {
         {viewMode === 'range' ? (
           <div className="flex items-center gap-4">
             <span className="text-gray-500 text-xs">Desde:</span>
-            <select
-              value={rangeStart}
-              onChange={e => setRangeStart(Number(e.target.value))}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500"
-            >
-              {weeks.map((w, i) => (
-                <option key={w.report.week} value={i}>{w.report.week}</option>
-              ))}
+            <select value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+              {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
             </select>
             <span className="text-gray-500 text-xs">Hasta:</span>
-            <select
-              value={rangeEnd}
-              onChange={e => setRangeEnd(Number(e.target.value))}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500"
-            >
-              {weeks.map((w, i) => (
-                <option key={w.report.week} value={i}>{w.report.week}</option>
-              ))}
+            <select value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+              {weeks.map((w, i) => <option key={w.report.week} value={i}>{w.report.week}</option>)}
             </select>
             <span className="text-gray-500 text-xs">{filtered.length} semanas seleccionadas</span>
           </div>
         ) : (
           <div className="flex items-center gap-4">
             <span className="text-gray-500 text-xs">Semana A:</span>
-            <select
-              value={compareA}
-              onChange={e => setCompareA(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500"
-            >
-              {weeks.map(w => (
-                <option key={w.report.week} value={w.report.week}>{w.report.week}</option>
-              ))}
+            <select value={compareA} onChange={e => setCompareA(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+              {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
             </select>
             <span className="text-gray-500 text-xs">vs Semana B:</span>
-            <select
-              value={compareB}
-              onChange={e => setCompareB(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500"
-            >
-              {weeks.map(w => (
-                <option key={w.report.week} value={w.report.week}>{w.report.week}</option>
-              ))}
+            <select value={compareB} onChange={e => setCompareB(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+              {weeks.map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
             </select>
           </div>
         )}
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-
         <div className="bg-orange-950 border border-orange-900 rounded-xl px-5 py-3 flex items-start gap-3">
           <span className="text-orange-400 text-lg">ℹ️</span>
           <div>
             <p className="text-orange-300 text-sm font-medium">Costo de Compra</p>
             <p className="text-orange-400 text-xs mt-0.5">
               Este reporte muestra lo que se <strong>compró a proveedores</strong> vs las ventas del período.
-              No refleja el consumo real de inventario. Próximamente: Costo de Uso (inventario inicial + compras − inventario final).
             </p>
           </div>
         </div>
@@ -265,9 +226,7 @@ export default function FoodCostPage() {
                   <p className="text-3xl font-bold text-white">
                     {latestData.totalABRaw ? pct(latestData.totalABRaw, latestData.totalABSales) + '%' : '—'}
                   </p>
-                  <p className="text-gray-600 text-xs mt-1">
-                    {fmt(latestData.totalABRaw)} comprado · Ventas A&B: {fmt(latestData.totalABSales)}
-                  </p>
+                  <p className="text-gray-600 text-xs mt-1">{fmt(latestData.totalABRaw)} comprado · Ventas A&B: {fmt(latestData.totalABSales)}</p>
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <p className="text-gray-500 text-xs mb-1">Total COGS</p>
@@ -282,30 +241,17 @@ export default function FoodCostPage() {
                   <p className="text-gray-600 text-xs mt-1">vs ventas netas</p>
                 </div>
               </div>
-
               <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                 {CATEGORIES.map(cat => {
-                  const catSales = {
-                    food: latestData.foodSales,
-                    beer: latestData.beerSales,
-                    liquor: latestData.liquorSales,
-                    na_beverage: latestData.naBevSales,
-                    wine: latestData.wineSales,
-                    general: latestData.netSales,
-                  }[cat.key] || latestData.netSales
+                  const catSales = ({ food: latestData.foodSales, beer: latestData.beerSales, liquor: latestData.liquorSales, na_beverage: latestData.naBevSales, wine: latestData.wineSales, general: latestData.netSales } as any)[cat.key] || latestData.netSales
                   const val = pct(latestData.cat[cat.key], catSales)
                   const overMeta = cat.meta && val && val > cat.meta
                   return (
-                    <button
-                      key={cat.key}
-                      onClick={() => setActiveCategory(cat.key)}
+                    <button key={cat.key} onClick={() => setActiveCategory(cat.key)}
                       className={`rounded-xl p-4 text-left transition border ${activeCategory === cat.key ? 'border-2 bg-gray-800' : 'border-gray-800 bg-gray-900 hover:bg-gray-800'}`}
-                      style={{ borderColor: activeCategory === cat.key ? cat.color : undefined }}
-                    >
+                      style={{ borderColor: activeCategory === cat.key ? cat.color : undefined }}>
                       <p className="text-gray-500 text-xs mb-1">{cat.label}</p>
-                      <p className="text-lg font-bold" style={{ color: cat.color }}>
-                        {val ? val + '%' : '—'}
-                      </p>
+                      <p className="text-lg font-bold" style={{ color: cat.color }}>{val ? val + '%' : '—'}</p>
                       <p className="text-gray-600 text-xs">{fmt(latestData.cat[cat.key])}</p>
                       {cat.meta && val && (
                         <p className={`text-xs mt-1 ${overMeta ? 'text-red-400' : 'text-green-400'}`}>
@@ -321,19 +267,9 @@ export default function FoodCostPage() {
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-gray-500 text-xs">Mostrar/ocultar:</span>
               {CATEGORIES.map(cat => (
-                <button
-                  key={cat.key}
-                  onClick={() => toggleLine(cat.key)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition border ${
-                    hiddenLines.includes(cat.key)
-                      ? 'border-gray-700 bg-gray-900 text-gray-600'
-                      : 'border-gray-700 bg-gray-800 text-white'
-                  }`}
-                >
-                  <div
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: hiddenLines.includes(cat.key) ? '#4b5563' : cat.color }}
-                  />
+                <button key={cat.key} onClick={() => toggleLine(cat.key)}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition border ${hiddenLines.includes(cat.key) ? 'border-gray-700 bg-gray-900 text-gray-600' : 'border-gray-700 bg-gray-800 text-white'}`}>
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: hiddenLines.includes(cat.key) ? '#4b5563' : cat.color }} />
                   {cat.label}
                 </button>
               ))}
@@ -341,26 +277,20 @@ export default function FoodCostPage() {
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-1">% {activeCat?.label} — Costo de Compra</h2>
-              <p className="text-gray-500 text-xs mb-4">
-                {activeCat?.meta ? `Meta recomendada: ${activeCat.meta}%` : 'Tendencia histórica'}
-              </p>
+              <p className="text-gray-500 text-xs mb-4">{activeCat?.meta ? `Meta recomendada: ${activeCat.meta}%` : 'Tendencia histórica'}</p>
               <ResponsiveContainer width="100%" height={200}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                   <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                    formatter={(v: any) => [v + '%', activeCat?.label]}
-                  />
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [v + '%', activeCat?.label]} />
                   <Line type="monotone" dataKey={activeCategory} stroke={activeCat?.color} strokeWidth={2} dot={{ fill: activeCat?.color, r: 4 }} hide={hiddenLines.includes(activeCategory)} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-1">Total A&B % — Costo de Compra por semana</h2>
-              <p className="text-gray-500 text-xs mb-4">Haz click en los botones arriba para mostrar/ocultar categorías</p>
+              <h2 className="text-white font-semibold mb-1">Total A&B % — Todas las categorías</h2>
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -368,16 +298,7 @@ export default function FoodCostPage() {
                   <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
                   <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
                   {CATEGORIES.map(cat => (
-                    <Line
-                      key={cat.key}
-                      type="monotone"
-                      dataKey={cat.key}
-                      name={cat.label}
-                      stroke={cat.color}
-                      strokeWidth={2}
-                      dot={false}
-                      hide={hiddenLines.includes(cat.key)}
-                    />
+                    <Line key={cat.key} type="monotone" dataKey={cat.key} name={cat.label} stroke={cat.color} strokeWidth={2} dot={false} hide={hiddenLines.includes(cat.key)} />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
@@ -385,7 +306,6 @@ export default function FoodCostPage() {
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-1">Compras en $ por categoría</h2>
-              <p className="text-gray-500 text-xs mb-4">Desglose semanal de compras a proveedores</p>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
@@ -401,7 +321,7 @@ export default function FoodCostPage() {
             </div>
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Comparativo por semana — Costo de Compra</h2>
+              <h2 className="text-white font-semibold mb-4">Comparativo por semana</h2>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -450,14 +370,7 @@ export default function FoodCostPage() {
                   <p className="text-gray-500 text-xs mb-4">Costo de Compra</p>
                   <div className="space-y-3">
                     {CATEGORIES.map(cat => {
-                      const catSales = {
-                        food: data.foodSales,
-                        beer: data.beerSales,
-                        liquor: data.liquorSales,
-                        na_beverage: data.naBevSales,
-                        wine: data.wineSales,
-                        general: data.netSales,
-                      }[cat.key] || data.netSales
+                      const catSales = ({ food: data.foodSales, beer: data.beerSales, liquor: data.liquorSales, na_beverage: data.naBevSales, wine: data.wineSales, general: data.netSales } as any)[cat.key] || data.netSales
                       const val = pct(data.cat[cat.key], catSales)
                       const overMeta = cat.meta && val && val > cat.meta
                       return (
@@ -465,14 +378,9 @@ export default function FoodCostPage() {
                           <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
                           <span className="text-gray-400 text-sm w-24">{cat.label}</span>
                           <div className="flex-1 bg-gray-800 rounded-full h-2">
-                            <div
-                              className="h-2 rounded-full"
-                              style={{ width: `${Math.min(val || 0, 100)}%`, backgroundColor: cat.color }}
-                            />
+                            <div className="h-2 rounded-full" style={{ width: `${Math.min(val || 0, 100)}%`, backgroundColor: cat.color }} />
                           </div>
-                          <span className="font-medium text-sm w-14 text-right" style={{ color: cat.color }}>
-                            {val ? val + '%' : '—'}
-                          </span>
+                          <span className="font-medium text-sm w-14 text-right" style={{ color: cat.color }}>{val ? val + '%' : '—'}</span>
                           <span className="text-gray-600 text-xs w-16 text-right">{fmt(data.cat[cat.key])}</span>
                           {cat.meta && val && (
                             <span className={`text-xs w-20 ${overMeta ? 'text-red-400' : 'text-green-400'}`}>
@@ -490,21 +398,17 @@ export default function FoodCostPage() {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400 text-sm font-medium">Total COGS</span>
-                      <span className="text-white font-bold">{fmt(data.total$)}</span>
+                      <span className="text-white font-bold">{fmt((data as any)['total$'])}</span>
                     </div>
                   </div>
                 </div>
               ))}
             </div>
-
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Diferencias {compareA} vs {compareB}</h2>
               <div className="space-y-3">
                 {CATEGORIES.map(cat => {
-                  const getSales = (d: any) => ({
-                    food: d.foodSales, beer: d.beerSales, liquor: d.liquorSales,
-                    na_beverage: d.naBevSales, wine: d.wineSales, general: d.netSales,
-                  }[cat.key] || d.netSales)
+                  const getSales = (d: any) => ({ food: d.foodSales, beer: d.beerSales, liquor: d.liquorSales, na_beverage: d.naBevSales, wine: d.wineSales, general: d.netSales } as any)[cat.key] || d.netSales
                   const valA = pct(weekAData.cat[cat.key], getSales(weekAData))
                   const valB = pct(weekBData.cat[cat.key], getSales(weekBData))
                   if (!valA && !valB) return null
@@ -532,7 +436,6 @@ export default function FoodCostPage() {
             </div>
           </div>
         )}
-
       </main>
     </div>
   )

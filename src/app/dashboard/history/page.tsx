@@ -2,37 +2,26 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 
 export default function HistoryPage() {
+  const restaurantId = useRestaurantId()
   const [reports, setReports] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadReports()
-    })
-  }, [])
+    if (restaurantId) loadReports()
+  }, [restaurantId])
 
   async function loadReports() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('restaurant_id')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile?.restaurant_id) {
-      setLoading(false)
-      return
-    }
+    if (!restaurantId) return
+    setLoading(true)
+    setReports([])
 
     const { data } = await supabase
       .from('reports')
       .select(`*, sales_data (net_sales, orders, guests), labor_data (total_pay, total_hours, total_ot_hours), waste_data (total_cost)`)
-      .eq('restaurant_id', profile.restaurant_id)
+      .eq('restaurant_id', restaurantId)
       .order('created_at', { ascending: false })
 
     setReports(data || [])
@@ -53,10 +42,7 @@ export default function HistoryPage() {
   return (
     <div className="min-h-screen bg-gray-950">
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center gap-4">
-        <button
-          onClick={() => window.location.href = '/dashboard'}
-          className="text-gray-400 hover:text-white text-sm"
-        >
+        <button onClick={() => window.location.href = '/dashboard'} className="text-gray-400 hover:text-white text-sm">
           ← Dashboard
         </button>
         <span className="text-white font-semibold">Historial de reportes</span>
@@ -65,17 +51,15 @@ export default function HistoryPage() {
       <main className="max-w-5xl mx-auto px-6 py-10">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-2xl font-bold text-white">Todas las semanas</h1>
-          <button
-            onClick={() => window.location.href = '/upload'}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg"
-          >
+          <button onClick={() => window.location.href = '/upload'}
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg">
             + Nueva semana
           </button>
         </div>
 
         {reports.length === 0 ? (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-10 text-center">
-            <p className="text-gray-500">No hay reportes aún</p>
+            <p className="text-gray-500">No hay reportes aún para este restaurante</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -87,11 +71,9 @@ export default function HistoryPage() {
               const salesDiff = sales && prevSales ? sales.net_sales - prevSales.net_sales : null
 
               return (
-                <div
-                  key={report.id}
+                <div key={report.id}
                   className="w-full bg-gray-900 border border-gray-800 hover:border-gray-600 rounded-xl p-5 cursor-pointer transition"
-                  onClick={() => window.location.href = `/dashboard/week/${report.id}`}
-                >
+                  onClick={() => window.location.href = `/dashboard/week/${report.id}`}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4">
                       <div>
@@ -99,9 +81,7 @@ export default function HistoryPage() {
                         <p className="text-gray-500 text-sm">{report.week_start} al {report.week_end}</p>
                       </div>
                       {index === 0 && (
-                        <span className="bg-blue-900 text-blue-300 text-xs px-2 py-0.5 rounded-full">
-                          Más reciente
-                        </span>
+                        <span className="bg-blue-900 text-blue-300 text-xs px-2 py-0.5 rounded-full">Más reciente</span>
                       )}
                     </div>
                     <div className="flex items-center gap-8">
@@ -126,13 +106,8 @@ export default function HistoryPage() {
                         <p className="text-white font-semibold">{fmt(waste?.total_cost)}</p>
                       </div>
                       <div className="flex items-center gap-3">
-                        <button
-                          onClick={e => {
-                            e.stopPropagation()
-                            window.location.href = `/upload/edit/${report.id}`
-                          }}
-                          className="text-xs text-gray-500 hover:text-blue-400 border border-gray-700 hover:border-blue-600 px-2 py-1 rounded transition"
-                        >
+                        <button onClick={e => { e.stopPropagation(); window.location.href = `/upload/edit/${report.id}` }}
+                          className="text-xs text-gray-500 hover:text-blue-400 border border-gray-700 hover:border-blue-600 px-2 py-1 rounded transition">
                           Editar
                         </button>
                         <span className="text-gray-600">→</span>

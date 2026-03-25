@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
 
 const MAPPED_TO_OPTIONS = [
   { value: 'food', label: 'Food' },
@@ -13,83 +14,37 @@ const MAPPED_TO_OPTIONS = [
   { value: 'ignore', label: 'Ignorar' },
 ]
 
-const DAYS_OF_WEEK = [
-  { value: 1, label: 'Lunes' },
-  { value: 2, label: 'Martes' },
-  { value: 3, label: 'Miércoles' },
-  { value: 4, label: 'Jueves' },
-  { value: 5, label: 'Viernes' },
-  { value: 6, label: 'Sábado' },
-  { value: 7, label: 'Domingo' },
-]
-
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const restaurantId = useRestaurantId()
+  const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [newCategory, setNewCategory] = useState('')
   const [newMappedTo, setNewMappedTo] = useState('food')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<'categorias' | 'operacion' | 'restaurante' | 'mapeo-items'>('categorias')
-
-  // Operación settings
-  const [operatingDays, setOperatingDays] = useState(6)
-  const [weekStartDay, setWeekStartDay] = useState(1)
-  const [closedDay, setClosedDay] = useState(1)
-  const [savingOp, setSavingOp] = useState(false)
-  const [statusOp, setStatusOp] = useState('')
+  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items'>('categorias')
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [])
+    if (restaurantId) loadData()
+  }, [restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { data: profile } = await supabase
-      .from('profiles').select('restaurant_id').eq('id', user.id).single()
-    if (!profile?.restaurant_id) { setLoading(false); return }
+    if (!restaurantId) return
+    setLoading(true)
+    setWeeks([])
 
     const { data: rest } = await supabase
-      .from('restaurants').select('*, organizations(name)').eq('id', profile.restaurant_id).single()
-    setRestaurant(rest)
-    setOperatingDays(rest?.operating_days || 6)
-    setWeekStartDay(rest?.week_start_day || 1)
-    setClosedDay(rest?.closed_day || 1)
+      .from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
 
     const { data: maps } = await supabase
       .from('category_mappings')
       .select('*')
-      .eq('restaurant_id', profile.restaurant_id)
+      .eq('restaurant_id', restaurantId)
       .order('source_category')
     setMappings(maps || [])
     setLoading(false)
-  }
-
-  async function saveOperacion() {
-    setSavingOp(true)
-    setStatusOp('')
-    const { error } = await supabase
-      .from('restaurants')
-      .update({
-        operating_days: operatingDays,
-        week_start_day: weekStartDay,
-        closed_day: closedDay,
-      })
-      .eq('id', restaurant.id)
-
-    if (error) {
-      setStatusOp('❌ Error: ' + error.message)
-    } else {
-      setStatusOp('✅ Configuración guardada')
-      setTimeout(() => setStatusOp(''), 3000)
-    }
-    setSavingOp(false)
   }
 
   async function addMapping() {
@@ -149,7 +104,7 @@ export default function SettingsPage() {
     <div className="min-h-screen bg-gray-950">
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4">
         <h1 className="text-white font-bold text-lg">⚙️ Settings</h1>
-        <p className="text-gray-500 text-xs">{restaurant?.name} · {restaurant?.organizations?.name}</p>
+        <p className="text-gray-500 text-xs">{restaurantName} · {restaurant?.organizations?.name}</p>
       </div>
 
       {/* Tabs */}
@@ -157,7 +112,6 @@ export default function SettingsPage() {
         <div className="flex gap-1">
           {[
             { key: 'categorias', label: 'Mapeo de Categorías' },
-            { key: 'operacion', label: '📅 Operación' },
             { key: 'restaurante', label: 'Restaurante' },
             { key: 'mapeo-items', label: '🗂 Mapeo de Items R365' },
           ].map(tab => (
@@ -178,125 +132,6 @@ export default function SettingsPage() {
 
       <main className="max-w-4xl mx-auto px-6 py-8 space-y-6">
 
-        {/* TAB: OPERACIÓN */}
-        {activeTab === 'operacion' && (
-          <>
-            <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
-              <h2 className="text-blue-300 font-semibold mb-1">Configuración de operación</h2>
-              <p className="text-blue-400 text-sm">
-                Estos valores afectan el cálculo de <strong>Días de Inventario</strong> y la forma en que se 
-                identifican las semanas en los reportes.
-              </p>
-            </div>
-
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-6">
-
-              {/* Días de operación */}
-              <div>
-                <label className="text-white font-medium text-sm block mb-1">Días de operación por semana</label>
-                <p className="text-gray-500 text-xs mb-3">
-                  Se usa para calcular Días de Inventario = ((Inv. Final + Inv. Inicial) / 2) / Uso × días
-                </p>
-                <div className="flex gap-2">
-                  {[5, 6, 7].map(d => (
-                    <button
-                      key={d}
-                      onClick={() => setOperatingDays(d)}
-                      className={`px-6 py-2.5 rounded-lg text-sm font-medium border transition ${
-                        operatingDays === d
-                          ? 'bg-blue-600 border-blue-500 text-white'
-                          : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
-                      }`}
-                    >
-                      {d} días
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Día de cierre */}
-              <div>
-                <label className="text-white font-medium text-sm block mb-1">Día de cierre semanal</label>
-                <p className="text-gray-500 text-xs mb-3">El día que el restaurante no opera</p>
-                <div className="flex flex-wrap gap-2">
-                  {DAYS_OF_WEEK.map(d => (
-                    <button
-                      key={d.value}
-                      onClick={() => setClosedDay(d.value)}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium border transition ${
-                        closedDay === d.value
-                          ? 'bg-red-900 border-red-700 text-red-300'
-                          : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
-                      }`}
-                    >
-                      {d.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Inicio de semana */}
-              <div>
-                <label className="text-white font-medium text-sm block mb-1">Inicio de semana contable</label>
-                <p className="text-gray-500 text-xs mb-3">
-                  El día en que empieza cada semana para efectos de reportes
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {DAYS_OF_WEEK.map(d => (
-                    <button
-                      key={d.value}
-                      onClick={() => setWeekStartDay(d.value)}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium border transition ${
-                        weekStartDay === d.value
-                          ? 'bg-blue-600 border-blue-500 text-white'
-                          : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
-                      }`}
-                    >
-                      {d.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Resumen configuración actual */}
-              <div className="bg-gray-800 rounded-xl p-4">
-                <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">Configuración actual</p>
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <p className="text-gray-500 text-xs">Días de operación</p>
-                    <p className="text-white font-bold text-lg">{operatingDays} días</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 text-xs">Día de cierre</p>
-                    <p className="text-white font-bold text-lg">{DAYS_OF_WEEK.find(d => d.value === closedDay)?.label}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 text-xs">Inicio de semana</p>
-                    <p className="text-white font-bold text-lg">{DAYS_OF_WEEK.find(d => d.value === weekStartDay)?.label}</p>
-                  </div>
-                </div>
-              </div>
-
-              <AvtCategoriesSection restaurantId={restaurant?.id} />
-
-              {statusOp && (
-                <p className={`text-sm ${statusOp.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
-                  {statusOp}
-                </p>
-              )}
-
-              <button
-                onClick={saveOperacion}
-                disabled={savingOp}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 disabled:text-gray-600 text-white font-semibold px-8 py-3 rounded-xl transition"
-              >
-                {savingOp ? 'Guardando...' : '💾 Guardar configuración'}
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* TAB: CATEGORIAS */}
         {activeTab === 'categorias' && (
           <>
             <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
@@ -400,7 +235,9 @@ export default function SettingsPage() {
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-3">Vista previa del mapeo</h2>
-              <p className="text-gray-500 text-xs mb-4">Así se calcularán los costos con el mapeo actual</p>
+              <p className="text-gray-500 text-xs mb-4">
+                Así se calcularán los costos con el mapeo actual
+              </p>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 {MAPPED_TO_OPTIONS.filter(o => o.value !== 'ignore').map(opt => {
                   const cats = mappings.filter(m => m.mapped_to === opt.value)
@@ -424,32 +261,19 @@ export default function SettingsPage() {
           </>
         )}
 
-        {/* TAB: RESTAURANTE */}
         {activeTab === 'restaurante' && (
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-white font-semibold mb-4">Información del restaurante</h2>
             <div className="space-y-3">
               <div className="flex justify-between py-3 border-b border-gray-800">
                 <span className="text-gray-500 text-sm">Nombre</span>
-                <span className="text-white text-sm font-medium">{restaurant?.name}</span>
+                <span className="text-white text-sm font-medium">{restaurantName}</span>
               </div>
               <div className="flex justify-between py-3 border-b border-gray-800">
                 <span className="text-gray-500 text-sm">Organización</span>
                 <span className="text-white text-sm font-medium">{restaurant?.organizations?.name}</span>
               </div>
               <div className="flex justify-between py-3 border-b border-gray-800">
-                <span className="text-gray-500 text-sm">Días de operación</span>
-                <span className="text-white text-sm font-medium">{restaurant?.operating_days} días/semana</span>
-              </div>
-              <div className="flex justify-between py-3 border-b border-gray-800">
-                <span className="text-gray-500 text-sm">Día de cierre</span>
-                <span className="text-white text-sm font-medium">{DAYS_OF_WEEK.find(d => d.value === restaurant?.closed_day)?.label || '—'}</span>
-              </div>
-              <div className="flex justify-between py-3 border-b border-gray-800">
-                <span className="text-gray-500 text-sm">Inicio de semana</span>
-                <span className="text-white text-sm font-medium">{DAYS_OF_WEEK.find(d => d.value === restaurant?.week_start_day)?.label || '—'}</span>
-              </div>
-              <div className="flex justify-between py-3">
                 <span className="text-gray-500 text-sm">ID Restaurante</span>
                 <span className="text-gray-500 text-xs font-mono">{restaurant?.id}</span>
               </div>
@@ -457,7 +281,6 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* TAB: MAPEO ITEMS */}
         {activeTab === 'mapeo-items' && (
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <h2 className="text-white font-semibold mb-2">Mapeo de Items R365</h2>
@@ -475,60 +298,6 @@ export default function SettingsPage() {
         )}
 
       </main>
-    </div>
-  )
-}
-
-function AvtCategoriesSection({ restaurantId }: { restaurantId: string }) {
-  const [cats, setCats] = useState<any[]>([])
-  const [saving, setSaving] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (restaurantId) loadCats()
-  }, [restaurantId])
-
-  async function loadCats() {
-    const { data } = await supabase.from('avt_categories')
-      .select('*').eq('restaurant_id', restaurantId).order('category')
-    setCats(data || [])
-  }
-
-  async function toggle(id: string, active: boolean) {
-    setSaving(id)
-    await supabase.from('avt_categories').update({ active }).eq('id', id)
-    setCats(prev => prev.map(c => c.id === id ? { ...c, active } : c))
-    setSaving(null)
-  }
-
-  if (cats.length === 0) return (
-    <div className="bg-gray-800 rounded-xl p-4">
-      <p className="text-gray-400 text-xs font-medium mb-1">Categorías de AvT</p>
-      <p className="text-gray-600 text-xs">Se detectan automáticamente al subir un reporte de AvT. Aún no hay categorías registradas.</p>
-    </div>
-  )
-
-  return (
-    <div>
-      <label className="text-white font-medium text-sm block mb-1">Categorías de AvT</label>
-      <p className="text-gray-500 text-xs mb-3">
-        Se detectan automáticamente al subir reportes. Desactiva las que no quieras ver en filtros y reportes.
-      </p>
-      <div className="flex flex-wrap gap-2">
-        {cats.map(cat => (
-          <button
-            key={cat.id}
-            onClick={() => toggle(cat.id, !cat.active)}
-            disabled={saving === cat.id}
-            className={`px-4 py-2 rounded-lg text-sm font-medium border transition ${
-              cat.active
-                ? 'bg-blue-600 border-blue-500 text-white'
-                : 'border-gray-700 text-gray-500 line-through'
-            }`}
-          >
-            {saving === cat.id ? '...' : cat.category}
-          </button>
-        ))}
-      </div>
     </div>
   )
 }

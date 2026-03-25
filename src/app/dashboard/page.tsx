@@ -2,12 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRestaurantId } from '@/lib/use-restaurant'
+import { useAuth } from '@/lib/auth-context'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 export default function Dashboard() {
-  const [user, setUser] = useState<any>(null)
+  const restaurantId = useRestaurantId()
+  const { user, currentRestaurant } = useAuth()
   const [loading, setLoading] = useState(true)
-  const [restaurant, setRestaurant] = useState<any>(null)
+  const [restaurantName, setRestaurantName] = useState('')
   const [reports, setReports] = useState<any[]>([])
   const [latestSales, setLatestSales] = useState<any>(null)
   const [latestLabor, setLatestLabor] = useState<any>(null)
@@ -15,47 +18,31 @@ export default function Dashboard() {
   const [trendData, setTrendData] = useState<any[]>([])
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else {
-        setUser(data.user)
-        loadData()
-      }
-    })
-  }, [])
+    if (restaurantId) loadData()
+  }, [restaurantId])
 
   async function loadData() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
+    if (!restaurantId) return
+    setLoading(true)
+    setReports([])
+    setLatestSales(null)
+    setLatestLabor(null)
+    setLatestWaste(null)
+    setTrendData([])
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('restaurant_id')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile?.restaurant_id) { setLoading(false); return }
-
-    // Cargar info del restaurante
     const { data: rest } = await supabase
-      .from('restaurants')
-      .select('*, organizations(name)')
-      .eq('id', profile.restaurant_id)
-      .single()
-    setRestaurant(rest)
+      .from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
 
-    // Cargar últimos 8 reportes para tendencia
     const { data: reps } = await supabase
-      .from('reports')
-      .select('*')
-      .eq('restaurant_id', profile.restaurant_id)
+      .from('reports').select('*')
+      .eq('restaurant_id', restaurantId)
       .order('created_at', { ascending: false })
       .limit(8)
 
     if (!reps || reps.length === 0) { setLoading(false); return }
     setReports(reps)
 
-    // Cargar datos del reporte más reciente
     const latest = reps[0]
     const [s, l, w] = await Promise.all([
       supabase.from('sales_data').select('*').eq('report_id', latest.id).single(),
@@ -66,23 +53,15 @@ export default function Dashboard() {
     if (l.data) setLatestLabor(l.data)
     if (w.data) setLatestWaste(w.data)
 
-    // Cargar ventas de todas las semanas para tendencia
-    const trendPromises = reps.map(r =>
-      supabase.from('sales_data').select('net_sales').eq('report_id', r.id).single()
+    const trendResults = await Promise.all(
+      reps.map(r => supabase.from('sales_data').select('net_sales').eq('report_id', r.id).single())
     )
-    const trendResults = await Promise.all(trendPromises)
-    const trend = reps.map((r, i) => ({
+    setTrendData(reps.map((r, i) => ({
       week: r.week.replace('2026-', ''),
       ventas: trendResults[i].data?.net_sales || 0,
-    })).reverse()
-    setTrendData(trend)
+    })).reverse())
 
     setLoading(false)
-  }
-
-  async function handleLogout() {
-    await supabase.auth.signOut()
-    window.location.href = '/'
   }
 
   function fmt(n: any) {
@@ -94,14 +73,6 @@ export default function Dashboard() {
     if (!part || !total) return '—'
     return (Number(part) / Number(total) * 100).toFixed(1) + '%'
   }
-
-  const prevReport = reports[1]
-
-  if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <p className="text-gray-400">Cargando...</p>
-    </div>
-  )
 
   const hasData = latestSales || latestLabor
   const latestReport = reports[0]
@@ -115,38 +86,18 @@ export default function Dashboard() {
     { label: 'Historial', icon: '📅', desc: 'Todos los reportes semanales', href: '/dashboard/history', color: 'from-gray-800 to-gray-900 border-gray-700' },
   ]
 
+  if (loading) return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+      <p className="text-gray-400">Cargando...</p>
+    </div>
+  )
+
   return (
     <div className="min-h-screen bg-gray-950">
-      <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-xl font-bold text-white">Restaurant X-Ray 🔬</span>
-          {restaurant && (
-            <>
-              <span className="text-gray-600">·</span>
-              <span className="text-gray-300 text-sm">{restaurant.name}</span>
-              <span className="text-gray-600 text-xs">({restaurant.organizations?.name})</span>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-gray-400 text-sm">{user?.email}</span>
-          <button
-            onClick={handleLogout}
-            className="text-sm text-gray-400 border border-gray-700 px-3 py-1.5 rounded-lg hover:border-gray-500 transition"
-          >
-            Salir
-          </button>
-        </div>
-      </header>
-
       <main className="max-w-6xl mx-auto px-6 py-10">
-
-        {/* Header con semana actual */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-white">
-              {restaurant?.name || 'Mi Restaurante'}
-            </h1>
+            <h1 className="text-3xl font-bold text-white">{restaurantName || 'Mi Restaurante'}</h1>
             {hasData && (
               <p className="text-gray-400 mt-1">
                 Última semana: <span className="text-white font-medium">{latestReport?.week}</span>
@@ -154,17 +105,14 @@ export default function Dashboard() {
               </p>
             )}
           </div>
-          <button
-            onClick={() => window.location.href = '/upload'}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
-          >
+          <button onClick={() => window.location.href = '/upload'}
+            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition">
             + Nuevo reporte
           </button>
         </div>
 
         {hasData ? (
           <>
-            {/* KPIs rápidos */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-sm mb-1">Ventas Netas</p>
@@ -173,9 +121,7 @@ export default function Dashboard() {
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-sm mb-1">% Labor</p>
-                <p className="text-2xl font-bold text-purple-400">
-                  {pct(latestLabor?.total_pay, latestSales?.net_sales)}
-                </p>
+                <p className="text-2xl font-bold text-purple-400">{pct(latestLabor?.total_pay, latestSales?.net_sales)}</p>
                 <p className="text-gray-600 text-xs mt-1">{fmt(latestLabor?.total_pay)} total</p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -192,7 +138,6 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Gráfica de tendencia */}
             {trendData.length > 1 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
                 <h2 className="text-white font-semibold mb-4">Tendencia de ventas</h2>
@@ -200,11 +145,8 @@ export default function Dashboard() {
                   <LineChart data={trendData}>
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 12 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + (v/1000).toFixed(0) + 'k'} />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      labelStyle={{ color: '#9ca3af' }}
-                      formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Ventas']}
-                    />
+                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                      labelStyle={{ color: '#9ca3af' }} formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Ventas']} />
                     <Line type="monotone" dataKey="ventas" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 4 }} />
                   </LineChart>
                 </ResponsiveContainer>
@@ -216,31 +158,24 @@ export default function Dashboard() {
             <div className="text-5xl mb-4">📂</div>
             <h2 className="text-white font-semibold text-lg mb-2">No hay reportes aún</h2>
             <p className="text-gray-500 mb-6">Sube tus archivos de Toast y R365 para empezar</p>
-            <button
-              onClick={() => window.location.href = '/upload'}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg"
-            >
+            <button onClick={() => window.location.href = '/upload'}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg">
               Subir primer reporte
             </button>
           </div>
         )}
 
-        {/* Menú de secciones */}
         <h2 className="text-white font-semibold mb-4">Explorar por sección</h2>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           {menuItems.map(item => (
-            <button
-              key={item.href}
-              onClick={() => window.location.href = item.href}
-              className={`bg-gradient-to-br ${item.color} border rounded-xl p-5 text-left hover:scale-[1.02] transition-all`}
-            >
+            <button key={item.href} onClick={() => window.location.href = item.href}
+              className={`bg-gradient-to-br ${item.color} border rounded-xl p-5 text-left hover:scale-[1.02] transition-all`}>
               <div className="text-2xl mb-2">{item.icon}</div>
               <p className="text-white font-semibold">{item.label}</p>
               <p className="text-gray-400 text-xs mt-1">{item.desc}</p>
             </button>
           ))}
         </div>
-
       </main>
     </div>
   )

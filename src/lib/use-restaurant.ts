@@ -1,6 +1,6 @@
 import { useAuth } from '@/lib/auth-context'
 
-export function useRestaurantId(): string {
+export function useRestaurantId(): string | null {
   const { currentRestaurant } = useAuth()
-  return currentRestaurant?.id || '00000000-0000-0000-0000-000000000001'
+  return currentRestaurant?.id || null
 }
