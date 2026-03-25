@@ -901,7 +901,7 @@ function ManageUserAccess({ allOrgs, onStatus }: { allOrgs: any[], onStatus: (ms
       return
     }
 
-    await loadUserAccess(found.user_id, found.email)
+    await loadUserAccess((found as any).user_id, (found as any).email)
     setSearching(false)
   }
 
