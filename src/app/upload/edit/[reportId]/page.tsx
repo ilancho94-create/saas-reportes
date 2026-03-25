@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
@@ -58,7 +58,7 @@ const STEPS = [
   {
     id: 'receiving', label: 'Compras de Insumos', icon: '🧾', system: 'R365', required: false,
     where: 'R365 → Reports → Receiving by Purchased Item',
-    extracts: 'Costo unitario por insumo, proveedor y categoría para análisis de variación de precios',
+    extracts: 'Costo unitario por insumo, proveedor y categoría',
   },
 ]
 
@@ -83,6 +83,7 @@ export default function EditReportPage() {
   const [uploading, setUploading] = useState(false)
   const [status, setStatus] = useState('')
   const [currentStep, setCurrentStep] = useState(0)
+  const [dragOver, setDragOver] = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -108,7 +109,6 @@ export default function EditReportPage() {
     const { data: pmData } = await supabase
       .from('product_mix_data').select('id').eq('report_id', reportId).single()
 
-    // Verificar receiving_data
     const { data: recData } = await supabase
       .from('receiving_data').select('id').eq('report_id', reportId).limit(1)
 
@@ -121,7 +121,25 @@ export default function EditReportPage() {
     setLoading(false)
   }
 
-  function handleFile(file: File, stepId: string) {
+  // ── Drag & Drop handlers (igual que upload) ───────────────────────────────
+  const handleDrop = useCallback((e: React.DragEvent, stepId: string) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) setFiles(prev => ({ ...prev, [stepId]: file }))
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+  }, [])
+
+  function handleFileInput(file: File, stepId: string) {
     setFiles(prev => ({ ...prev, [stepId]: file }))
   }
 
@@ -187,6 +205,7 @@ export default function EditReportPage() {
 
       <main className="max-w-2xl mx-auto px-6 py-10">
 
+        {/* Barra de progreso */}
         <div className="flex items-center gap-1 mb-8">
           {STEPS.map((s, i) => (
             <div key={s.id} onClick={() => setCurrentStep(i)}
@@ -208,6 +227,7 @@ export default function EditReportPage() {
 
         {!isLastStep ? (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+            {/* Header del paso */}
             <div className="px-6 py-5 border-b border-gray-800 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <span className="text-3xl">{step.icon}</span>
@@ -225,29 +245,16 @@ export default function EditReportPage() {
               </div>
             </div>
 
+            {/* Dónde descargarlo */}
             <div className="px-6 py-4 border-b border-gray-800 bg-gray-950">
               <p className="text-gray-600 text-xs mb-1">📍 {step.where}</p>
               <p className="text-gray-500 text-xs">{step.extracts}</p>
             </div>
 
+            {/* Zona de archivo */}
             <div className="px-6 py-5">
-              {existingData[step.id] && !files[step.id] ? (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3 bg-green-950 border border-green-800 rounded-xl px-4 py-3">
-                    <span className="text-green-400 text-xl">✓</span>
-                    <div className="flex-1">
-                      <p className="text-green-400 font-medium text-sm">Datos existentes</p>
-                      <p className="text-green-600 text-xs">Este archivo ya fue procesado para {report?.week}</p>
-                    </div>
-                  </div>
-                  <label className="cursor-pointer block border-2 border-dashed border-gray-700 hover:border-blue-600 rounded-xl p-5 text-center transition">
-                    <p className="text-gray-400 text-sm font-medium">🔄 Reemplazar con nuevo archivo</p>
-                    <p className="text-gray-600 text-xs mt-1">Click para seleccionar un archivo diferente</p>
-                    <input type="file" accept=".xlsx,.xls,.csv,.pdf" className="hidden"
-                      onChange={e => e.target.files?.[0] && handleFile(e.target.files[0], step.id)} />
-                  </label>
-                </div>
-              ) : files[step.id] ? (
+              {files[step.id] ? (
+                // Archivo nuevo seleccionado
                 <div className="flex items-center justify-between bg-blue-950 border border-blue-800 rounded-xl px-4 py-3">
                   <div className="flex items-center gap-3">
                     <span className="text-blue-400 text-xl">↑</span>
@@ -259,17 +266,65 @@ export default function EditReportPage() {
                   <label className="cursor-pointer text-gray-400 text-sm hover:text-white">
                     Cambiar
                     <input type="file" accept=".xlsx,.xls,.csv,.pdf" className="hidden"
-                      onChange={e => e.target.files?.[0] && handleFile(e.target.files[0], step.id)} />
+                      onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
                   </label>
                 </div>
+              ) : existingData[step.id] ? (
+                // Ya tiene datos — mostrar estado + zona drag & drop para reemplazar
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3 bg-green-950 border border-green-800 rounded-xl px-4 py-3">
+                    <span className="text-green-400 text-xl">✓</span>
+                    <div className="flex-1">
+                      <p className="text-green-400 font-medium text-sm">Datos existentes</p>
+                      <p className="text-green-600 text-xs">Este archivo ya fue procesado para {report?.week}</p>
+                    </div>
+                  </div>
+                  {/* Drag & drop para reemplazar */}
+                  <div
+                    onDrop={e => handleDrop(e, step.id)}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    className={`relative rounded-xl border-2 border-dashed transition-all ${
+                      dragOver ? 'border-blue-400 bg-blue-950/30' : 'border-gray-700 hover:border-gray-500'
+                    }`}>
+                    <label className="cursor-pointer block p-6 text-center">
+                      <div className="text-3xl mb-2">{dragOver ? '📂' : '🔄'}</div>
+                      <p className="text-gray-300 font-medium text-sm mb-1">
+                        {dragOver ? 'Suelta el archivo aquí' : 'Reemplazar con nuevo archivo'}
+                      </p>
+                      <p className="text-gray-500 text-xs mb-3">Arrastra aquí o</p>
+                      <span className="inline-block bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-4 py-2 rounded-lg transition">
+                        Buscar archivo
+                      </span>
+                      <p className="text-gray-600 text-xs mt-2">Excel, CSV o PDF</p>
+                      <input type="file" accept=".xlsx,.xls,.csv,.pdf" className="hidden"
+                        onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
+                    </label>
+                  </div>
+                </div>
               ) : (
-                <label className="cursor-pointer block border-2 border-dashed border-gray-700 hover:border-gray-500 rounded-xl p-8 text-center transition">
-                  <div className="text-4xl mb-3">📎</div>
-                  <p className="text-white font-medium mb-1">Seleccionar archivo</p>
-                  <p className="text-gray-500 text-sm">Excel, CSV o PDF</p>
-                  <input type="file" accept=".xlsx,.xls,.csv,.pdf" className="hidden"
-                    onChange={e => e.target.files?.[0] && handleFile(e.target.files[0], step.id)} />
-                </label>
+                // Sin datos — zona drag & drop normal
+                <div
+                  onDrop={e => handleDrop(e, step.id)}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  className={`relative rounded-xl border-2 border-dashed transition-all ${
+                    dragOver ? 'border-blue-400 bg-blue-950/30' : 'border-gray-700 hover:border-gray-500'
+                  }`}>
+                  <label className="cursor-pointer block p-8 text-center">
+                    <div className="text-4xl mb-3">{dragOver ? '📂' : '📎'}</div>
+                    <p className="text-white font-medium mb-1">
+                      {dragOver ? 'Suelta el archivo aquí' : 'Arrastra tu archivo aquí'}
+                    </p>
+                    <p className="text-gray-500 text-sm mb-3">o</p>
+                    <span className="inline-block bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-4 py-2 rounded-lg transition">
+                      Buscar archivo
+                    </span>
+                    <p className="text-gray-600 text-xs mt-3">Excel, CSV o PDF</p>
+                    <input type="file" accept=".xlsx,.xls,.csv,.pdf" className="hidden"
+                      onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
+                  </label>
+                </div>
               )}
             </div>
 
