@@ -193,7 +193,14 @@ ${dateInstruction}
    waste: `Analiza este reporte de Waste History de Restaurant365 y extrae los datos en JSON.
 Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin backticks.
 Columnas del reporte: Number, Date, Location, Item, U of M, Qty, Each Amount, Total, Account Name.
-NO incluyas el campo "comment" — ese campo no existe en este reporte.
+MAPEO EXACTO de columnas:
+- "name" = columna Item
+- "uom" = columna U of M
+- "qty" = columna Qty (cantidad física, ej: 16.80)
+- "unit_cost" = columna Each Amount (costo por unidad, ej: $1.84)
+- "total" = columna Total (costo total = qty × unit_cost, ej: $30.92)
+- "category" = columna Account Name
+NO incluyas el campo "comment".
 ${dateInstruction}
 {"total_cost":número,"total_qty":número,"items":[{"name":string,"uom":string,"qty":número,"unit_cost":número,"total":número,"category":string}],"date_warning":string|null}`,
     inventory: `Analiza este reporte Inventory Count Review de Restaurant365 y extrae los datos en JSON.
