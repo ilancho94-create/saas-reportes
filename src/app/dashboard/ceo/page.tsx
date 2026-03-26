@@ -240,12 +240,6 @@ export default function CeoDashboard() {
               <option value="all">🏢 Todos ({restaurantsData.length})</option>
               {restaurantsData.map((r: any) => <option key={r.restaurant.id} value={r.restaurant.id}>{r.restaurant.name}</option>)}
             </select>
-            {shortcut === 'week' && allWeeks.length > 0 && (
-              <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
-                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
-                {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
-              </select>
-            )}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap mb-3">
@@ -265,6 +259,12 @@ export default function CeoDashboard() {
                 {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
               </select>
             </div>
+          )}
+          {shortcut === 'week' && allWeeks.length > 0 && (
+            <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-blue-500">
+              {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
+            </select>
           )}
         </div>
         <div className="flex gap-1 flex-wrap">
