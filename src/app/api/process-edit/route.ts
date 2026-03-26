@@ -292,6 +292,7 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
     insertData.grand_total_previous = data.grand_total_previous
   } else if (fileType === 'avt') {
     insertData.shortages = data.shortages; insertData.overages = data.overages
+    insertData.all_items = data.all_items || []
     insertData.net_variance = data.net_variance_dollar
     insertData.total_shortage_dollar = data.total_shortage_dollar
     insertData.total_overage_dollar = data.total_overage_dollar
