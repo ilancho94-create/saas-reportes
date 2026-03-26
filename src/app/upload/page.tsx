@@ -76,7 +76,7 @@ const STEPS = [
   },
   {
     id: 'avt', label: 'Actual vs Teórico', icon: '📊', system: 'R365', required: false,
-    accept: '.csv,.xlsx', acceptLabel: 'CSV o Excel',
+    accept: '.csv', acceptLabel: 'CSV (.csv)',
     where: 'R365 → Reports → Actual vs Theoretical Analysis',
     instructions: [
       'Abre Restaurant365', 'Ve a Reports', 'Busca Actual vs Theoretical Analysis',
