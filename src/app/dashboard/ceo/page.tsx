@@ -394,10 +394,10 @@ export default function CeoDashboard() {
                     <YAxis yAxisId="left" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => '$' + (v / 1000).toFixed(0) + 'k'} />
                     <YAxis yAxisId="right" orientation="right" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v + '%'} />
                     <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any, name: string) => {
+                      formatter={(v: any, name: any) => {
                         const labels: Record<string, string> = { ventas: 'Ventas', laborPct: '% Labor', cogsPct: '% COGS', profitPct: '% Profit' }
                         const isAmt = name === 'ventas'
-                        return [isAmt ? fmt(v) : v + '%', labels[name] || name]
+                        return [isAmt ? fmt(v) : v + '%', labels[String(name)] || String(name)]
                       }} />
                     <Legend formatter={(v: string) => {
                       const labels: Record<string, string> = { ventas: 'Ventas', laborPct: '% Labor', cogsPct: '% COGS', profitPct: '% Profit' }
