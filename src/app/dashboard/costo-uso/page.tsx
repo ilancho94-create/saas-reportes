@@ -276,13 +276,133 @@ export default function CostoUsoPage() {
 
   const chartData = filtered.map(buildWeekData)
   const latest = filtered[filtered.length - 1]
-  // FIX 2: detailWeek es la semana seleccionada en modo 'week', o la última del rango en multiweek
+  // isMultiWeek needs to be before detailData
+  const isMultiWeek = filtered.length > 1
+
+  // detailWeek: semana seleccionada en modo 'week', o la última del rango en multiweek
   const detailWeek = shortcut === 'week'
     ? filtered[0] || latest
     : latest
-  const detailData = detailWeek ? buildWeekData(detailWeek) : null
+
+  // buildRangeData: agrega el rango completo para la tabla de detalle por categoría
+  // Lógica:
+  //   inv_anterior  = inv_previous de la PRIMERA semana con inventario del rango
+  //   compras       = SUMA de cogs de todas las semanas del rango
+  //   inv_actual    = inv_current de la ÚLTIMA semana con inventario del rango
+  //   uso           = inv_anterior + compras - inv_actual  (fórmula directa)
+  //   ventas        = SUMA de ventas mapeadas de todas las semanas
+  //   días_rango    = nSemanas * operatingDays  (días reales cubiertos)
+  //   días_inv      = inv_promedio / uso_diario = ((inv_actual+inv_anterior)/2) / (uso/días_rango)
+  function buildRangeData() {
+    if (!filtered.length) return null
+    const withInv = filtered.filter(w => (w.inventory?.by_account?.length || 0) > 0)
+    const firstInv = withInv[0]
+    const lastInv = withInv[withInv.length - 1]
+    // días totales del rango
+    const nSemanas = filtered.length
+    const diasRango = nSemanas * operatingDays
+
+    const result: any = {
+      fullWeek: latest?.report?.week,
+      reportId: latest?.report?.id,
+      hasInventory: withInv.length > 0,
+      hasAnyAdj: filtered.some(w => hasAdjustments(w.report.week)),
+    }
+
+    CATEGORIES.forEach(cat => {
+      // ── Inv. Anterior: columna "previous_value" de la primera semana con inventario ──
+      const firstInvAccounts = firstInv?.inventory?.by_account || []
+      const firstInvCat = getInventoryByCategory(firstInvAccounts, cat.key)
+      const adjInvPrevFirst = firstInv ? getAdj(firstInv.report.week, cat.key, 'inv_previous') : 0
+      const invPrevious = firstInvCat.previous + adjInvPrevFirst
+
+      // ── Inv. Actual: columna "current_value" de la última semana con inventario ──
+      const lastInvAccounts = lastInv?.inventory?.by_account || []
+      const lastInvCat = getInventoryByCategory(lastInvAccounts, cat.key)
+      const adjInvCurrLast = lastInv ? getAdj(lastInv.report.week, cat.key, 'inv_current') : 0
+      const invCurrent = lastInvCat.current + adjInvCurrLast
+
+      // ── Compras: suma de cogs de todas las semanas ──
+      let purchases = 0
+      filtered.forEach(w => {
+        const cogsCat = w.cogs?.by_category || {}
+        const adjPurch = getAdj(w.report.week, cat.key, 'purchases')
+        purchases += (cogsCat[cat.key] || 0) + adjPurch
+      })
+
+      // ── Uso: fórmula directa sobre el rango completo ──
+      const uso = withInv.length > 0 ? Math.max(invPrevious + purchases - invCurrent, 0) : 0
+
+      // ── Ventas: suma del rango ──
+      let catSales = 0
+      filtered.forEach(w => { catSales += getMappedSales(w.sales?.categories || [], cat.key) })
+
+      // ── Costo Teórico: suma del rango ──
+      let theoCost = 0
+      filtered.forEach(w => {
+        const theoCostByCat = w.productMix?.theo_cost_by_category || {}
+        const adjTheo = getAdj(w.report.week, cat.key, 'theo_cost')
+        theoCost += (theoCostByCat[cat.key] || 0) + adjTheo
+      })
+
+      // ── Porcentajes ──
+      const realPct = catSales > 0 ? pct(uso, catSales) : null
+      const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
+      const variacion = realPct !== null && mixPct !== null && catSales > 0
+        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
+
+      // ── Días de inventario ──
+      // uso_diario = uso / días_rango
+      // días_inv = inv_promedio / uso_diario = ((inv_actual+inv_anterior)/2) / (uso/días_rango)
+      const diasInv = uso > 0
+        ? parseFloat((((invCurrent + invPrevious) / 2) / (uso / diasRango)).toFixed(1))
+        : null
+
+      const hasAdj = filtered.some(w =>
+        getAdj(w.report.week, cat.key, 'inv_previous') !== 0 ||
+        getAdj(w.report.week, cat.key, 'purchases') !== 0 ||
+        getAdj(w.report.week, cat.key, 'inv_current') !== 0 ||
+        getAdj(w.report.week, cat.key, 'theo_cost') !== 0
+      )
+
+      result[cat.key + '_uso'] = uso
+      result[cat.key + '_uso_pct'] = realPct || 0
+      result[cat.key + '_theo_pct'] = mixPct || 0
+      result[cat.key + '_variacion'] = variacion
+      result[cat.key + '_dias_inv'] = diasInv
+      result[cat.key + '_inv_current'] = invCurrent
+      result[cat.key + '_inv_previous'] = invPrevious
+      result[cat.key + '_purchases'] = purchases
+      result[cat.key + '_sales'] = catSales
+      result[cat.key + '_has_adj'] = hasAdj
+      result[cat.key + '_theo_cost'] = theoCost
+    })
+
+    // ── Totales ──
+    let totalUso = 0, totalTheo = 0, totalSales = 0
+    let totalInvPrev = 0, totalInvCurr = 0
+    CATEGORIES.forEach(cat => {
+      totalUso += result[cat.key + '_uso'] || 0
+      totalTheo += result[cat.key + '_theo_cost'] || 0
+      totalSales += result[cat.key + '_sales'] || 0
+      totalInvPrev += result[cat.key + '_inv_previous'] || 0
+      totalInvCurr += result[cat.key + '_inv_current'] || 0
+    })
+    result.totalUsoCost = totalUso
+    result.totalTheoCost = totalTheo
+    result.totalABSales = totalSales
+    result.totalRealPct = totalSales > 0 ? pct(totalUso, totalSales) : null
+    result.totalMixPct = totalSales > 0 ? pct(totalTheo, totalSales) : null
+    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
+      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalSales).toFixed(2)) : null
+    result.diasRango = diasRango
+    return result
+  }
+
+  // En modo semana única: buildWeekData de detailWeek
+  // En modo multi-semana: buildRangeData() que agrega el rango completo
+  const detailData = isMultiWeek ? buildRangeData() : (detailWeek ? buildWeekData(detailWeek) : null)
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
-  const isMultiWeek = filtered.length > 1
 
   const rangeSummary = (() => {
     let totalUso = 0, totalTheo = 0, totalABSales = 0, totalVariacion = 0
