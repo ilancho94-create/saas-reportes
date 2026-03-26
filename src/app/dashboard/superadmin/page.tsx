@@ -13,20 +13,29 @@ export default function SuperAdminPage() {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<SATab>('orgs')
 
-  // Data
   const [orgs, setOrgs] = useState<any[]>([])
   const [restaurants, setRestaurants] = useState<any[]>([])
   const [users, setUsers] = useState<any[]>([])
   const [reports, setReports] = useState<any[]>([])
 
-  // Forms
   const [newOrg, setNewOrg] = useState({ name: '', slug: '' })
   const [newRest, setNewRest] = useState({ name: '', org_id: '' })
   const [savingOrg, setSavingOrg] = useState(false)
   const [savingRest, setSavingRest] = useState(false)
   const [formMsg, setFormMsg] = useState('')
 
-  // User management
+  // Edit state — orgs
+  const [editingOrgId, setEditingOrgId] = useState<string | null>(null)
+  const [editOrgName, setEditOrgName] = useState('')
+  const [editOrgSlug, setEditOrgSlug] = useState('')
+  const [savingEditOrg, setSavingEditOrg] = useState(false)
+
+  // Edit state — restaurants
+  const [editingRestId, setEditingRestId] = useState<string | null>(null)
+  const [editRestName, setEditRestName] = useState('')
+  const [editRestOrgId, setEditRestOrgId] = useState('')
+  const [savingEditRest, setSavingEditRest] = useState(false)
+
   const [userSearch, setUserSearch] = useState('')
   const [foundUser, setFoundUser] = useState<any>(null)
   const [searchingUser, setSearchingUser] = useState(false)
@@ -36,7 +45,6 @@ export default function SuperAdminPage() {
   const [assigningUser, setAssigningUser] = useState(false)
   const [assignMsg, setAssignMsg] = useState('')
 
-  // New user
   const [newUserEmail, setNewUserEmail] = useState('')
   const [newUserPassword, setNewUserPassword] = useState('')
   const [newUserOrg, setNewUserOrg] = useState('')
@@ -45,9 +53,7 @@ export default function SuperAdminPage() {
   const [creatingUser, setCreatingUser] = useState(false)
   const [createUserMsg, setCreateUserMsg] = useState('')
 
-  useEffect(() => {
-    checkSuperAdmin()
-  }, [user])
+  useEffect(() => { checkSuperAdmin() }, [user])
 
   async function checkSuperAdmin() {
     if (!user) return
@@ -80,6 +86,17 @@ export default function SuperAdminPage() {
     setSavingOrg(false)
   }
 
+  async function saveEditOrg(id: string) {
+    if (!editOrgName) return
+    setSavingEditOrg(true)
+    const { error } = await supabase.from('organizations').update({
+      name: editOrgName,
+      slug: editOrgSlug || editOrgName.toLowerCase().replace(/\s+/g, '-'),
+    }).eq('id', id)
+    if (!error) { setEditingOrgId(null); loadAll() }
+    setSavingEditOrg(false)
+  }
+
   async function archiveOrg(id: string, archived: boolean) {
     await supabase.from('organizations').update({ archived: !archived }).eq('id', id)
     loadAll()
@@ -92,6 +109,17 @@ export default function SuperAdminPage() {
     if (error) { setFormMsg('❌ ' + error.message) }
     else { setFormMsg('✅ Restaurante creado'); setNewRest({ name: '', org_id: '' }); loadAll() }
     setSavingRest(false)
+  }
+
+  async function saveEditRest(id: string) {
+    if (!editRestName || !editRestOrgId) return
+    setSavingEditRest(true)
+    const { error } = await supabase.from('restaurants').update({
+      name: editRestName,
+      organization_id: editRestOrgId,
+    }).eq('id', id)
+    if (!error) { setEditingRestId(null); loadAll() }
+    setSavingEditRest(false)
   }
 
   async function searchUser() {
@@ -107,8 +135,7 @@ export default function SuperAdminPage() {
     if (!foundUser || !assignRest || !assignRole) return
     setAssigningUser(true); setAssignMsg('')
     const { error } = await supabase.from('user_restaurants').upsert({
-      user_id: foundUser.id, restaurant_id: assignRest, role: assignRole,
-      organization_id: assignOrg,
+      user_id: foundUser.id, restaurant_id: assignRest, role: assignRole, organization_id: assignOrg,
     }, { onConflict: 'user_id,restaurant_id' })
     if (error) { setAssignMsg('❌ ' + error.message) }
     else { setAssignMsg('✅ Acceso asignado correctamente'); loadAll() }
@@ -135,9 +162,7 @@ export default function SuperAdminPage() {
         setCreateUserMsg('✅ Usuario creado correctamente')
         setNewUserEmail(''); setNewUserPassword(''); setNewUserOrg(''); setNewUserRest(''); setNewUserRole('manager')
         loadAll()
-      } else {
-        setCreateUserMsg('❌ ' + (data.error || 'Error al crear usuario'))
-      }
+      } else { setCreateUserMsg('❌ ' + (data.error || 'Error al crear usuario')) }
     } catch { setCreateUserMsg('❌ Error de conexión') }
     setCreatingUser(false)
   }
@@ -148,18 +173,13 @@ export default function SuperAdminPage() {
     { id: 'users', label: '👥 Usuarios' },
     { id: 'reports', label: '📊 Reportes' },
   ]
-
   const ROLES = ['admin', 'owner', 'gm', 'manager', 'chef', 'supervisor']
+  const inputCls = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500'
 
-  if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <p className="text-gray-400">Cargando Super Admin...</p>
-    </div>
-  )
+  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><p className="text-gray-400">Cargando Super Admin...</p></div>
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-amber-900 bg-gray-900 px-6 py-4">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-8 h-8 rounded-lg bg-amber-600 flex items-center justify-center text-white font-bold text-sm">⚡</div>
@@ -183,16 +203,15 @@ export default function SuperAdminPage() {
         {/* ══ ORGANIZACIONES ══ */}
         {activeTab === 'orgs' && (
           <>
-            {/* Crear org */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">➕ Nueva organización</h2>
               <div className="flex gap-3 flex-wrap">
                 <input type="text" placeholder="Nombre (ej. Grupo Mercurio)" value={newOrg.name}
                   onChange={e => setNewOrg(p => ({ ...p, name: e.target.value }))}
-                  className="flex-1 min-w-48 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
-                <input type="text" placeholder="Slug (opcional, auto-generado)" value={newOrg.slug}
+                  className={`flex-1 min-w-48 ${inputCls}`} />
+                <input type="text" placeholder="Slug (opcional)" value={newOrg.slug}
                   onChange={e => setNewOrg(p => ({ ...p, slug: e.target.value }))}
-                  className="flex-1 min-w-48 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
+                  className={`flex-1 min-w-48 ${inputCls}`} />
                 <button onClick={createOrg} disabled={savingOrg || !newOrg.name}
                   className="bg-amber-600 hover:bg-amber-700 disabled:bg-gray-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition">
                   {savingOrg ? 'Creando...' : 'Crear'}
@@ -201,7 +220,6 @@ export default function SuperAdminPage() {
               {formMsg && <p className={`text-xs mt-2 ${formMsg.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{formMsg}</p>}
             </div>
 
-            {/* Lista de orgs */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-800">
                 <h2 className="text-white font-semibold">Organizaciones ({orgs.length})</h2>
@@ -209,24 +227,54 @@ export default function SuperAdminPage() {
               <div className="divide-y divide-gray-800">
                 {orgs.map(org => {
                   const orgRests = restaurants.filter(r => r.organization_id === org.id)
+                  const isEditing = editingOrgId === org.id
                   return (
-                    <div key={org.id} className="px-6 py-4 flex items-center justify-between">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="text-white font-medium">{org.name}</p>
-                          {org.archived && <span className="text-xs bg-red-900 text-red-400 px-2 py-0.5 rounded-full">Archivada</span>}
-                        </div>
-                        <p className="text-gray-500 text-xs mt-0.5">{org.slug} · {orgRests.length} restaurante{orgRests.length !== 1 ? 's' : ''}</p>
-                        {orgRests.length > 0 && (
-                          <div className="flex gap-1 mt-1 flex-wrap">
-                            {orgRests.map(r => <span key={r.id} className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{r.name}</span>)}
+                    <div key={org.id} className="px-6 py-4">
+                      {isEditing ? (
+                        <div className="space-y-3">
+                          <div className="flex gap-3 flex-wrap">
+                            <input type="text" value={editOrgName} onChange={e => setEditOrgName(e.target.value)}
+                              placeholder="Nombre" className={`flex-1 min-w-48 ${inputCls}`} />
+                            <input type="text" value={editOrgSlug} onChange={e => setEditOrgSlug(e.target.value)}
+                              placeholder="Slug (opcional)" className={`flex-1 min-w-48 ${inputCls}`} />
                           </div>
-                        )}
-                      </div>
-                      <button onClick={() => archiveOrg(org.id, org.archived)}
-                        className={`text-xs px-3 py-1.5 rounded-lg transition ${org.archived ? 'bg-green-900 text-green-400 hover:bg-green-800' : 'bg-gray-800 text-gray-400 hover:bg-red-950 hover:text-red-400'}`}>
-                        {org.archived ? 'Restaurar' : 'Archivar'}
-                      </button>
+                          <div className="flex gap-2">
+                            <button onClick={() => saveEditOrg(org.id)} disabled={savingEditOrg || !editOrgName}
+                              className="bg-amber-600 hover:bg-amber-700 disabled:bg-gray-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium transition">
+                              {savingEditOrg ? 'Guardando...' : '✓ Guardar'}
+                            </button>
+                            <button onClick={() => setEditingOrgId(null)}
+                              className="bg-gray-800 hover:bg-gray-700 text-gray-400 px-4 py-1.5 rounded-lg text-sm transition">
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="text-white font-medium">{org.name}</p>
+                              {org.archived && <span className="text-xs bg-red-900 text-red-400 px-2 py-0.5 rounded-full">Archivada</span>}
+                            </div>
+                            <p className="text-gray-500 text-xs mt-0.5">{org.slug} · {orgRests.length} restaurante{orgRests.length !== 1 ? 's' : ''}</p>
+                            {orgRests.length > 0 && (
+                              <div className="flex gap-1 mt-1 flex-wrap">
+                                {orgRests.map(r => <span key={r.id} className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{r.name}</span>)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={() => { setEditingOrgId(org.id); setEditOrgName(org.name); setEditOrgSlug(org.slug || '') }}
+                              className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition">
+                              ✏️ Editar
+                            </button>
+                            <button onClick={() => archiveOrg(org.id, org.archived)}
+                              className={`text-xs px-3 py-1.5 rounded-lg transition ${org.archived ? 'bg-green-900 text-green-400 hover:bg-green-800' : 'bg-gray-800 text-gray-400 hover:bg-red-950 hover:text-red-400'}`}>
+                              {org.archived ? 'Restaurar' : 'Archivar'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -239,15 +287,14 @@ export default function SuperAdminPage() {
         {/* ══ RESTAURANTES ══ */}
         {activeTab === 'restaurants' && (
           <>
-            {/* Crear restaurante */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">➕ Nuevo restaurante / sucursal</h2>
               <div className="flex gap-3 flex-wrap">
                 <input type="text" placeholder="Nombre del restaurante" value={newRest.name}
                   onChange={e => setNewRest(p => ({ ...p, name: e.target.value }))}
-                  className="flex-1 min-w-48 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
+                  className={`flex-1 min-w-48 ${inputCls}`} />
                 <select value={newRest.org_id} onChange={e => setNewRest(p => ({ ...p, org_id: e.target.value }))}
-                  className="flex-1 min-w-48 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                  className={`flex-1 min-w-48 ${inputCls}`}>
                   <option value="">— Seleccionar organización —</option>
                   {orgs.filter(o => !o.archived).map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
                 </select>
@@ -259,25 +306,52 @@ export default function SuperAdminPage() {
               {formMsg && <p className={`text-xs mt-2 ${formMsg.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{formMsg}</p>}
             </div>
 
-            {/* Lista de restaurantes */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-800">
                 <h2 className="text-white font-semibold">Restaurantes ({restaurants.length})</h2>
               </div>
               <div className="divide-y divide-gray-800">
-                {restaurants.map(rest => (
-                  <div key={rest.id} className="px-6 py-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-white font-medium">{rest.name}</p>
-                        <p className="text-gray-500 text-xs mt-0.5">{rest.organizations?.name || '—'} · ID: {rest.id.substring(0, 8)}...</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs bg-gray-800 text-gray-400 px-2 py-1 rounded font-mono">{rest.id.substring(0, 8)}</span>
-                      </div>
+                {restaurants.map(rest => {
+                  const isEditing = editingRestId === rest.id
+                  return (
+                    <div key={rest.id} className="px-6 py-4">
+                      {isEditing ? (
+                        <div className="space-y-3">
+                          <div className="flex gap-3 flex-wrap">
+                            <input type="text" value={editRestName} onChange={e => setEditRestName(e.target.value)}
+                              placeholder="Nombre" className={`flex-1 min-w-48 ${inputCls}`} />
+                            <select value={editRestOrgId} onChange={e => setEditRestOrgId(e.target.value)}
+                              className={`flex-1 min-w-48 ${inputCls}`}>
+                              <option value="">— Organización —</option>
+                              {orgs.filter(o => !o.archived).map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={() => saveEditRest(rest.id)} disabled={savingEditRest || !editRestName || !editRestOrgId}
+                              className="bg-amber-600 hover:bg-amber-700 disabled:bg-gray-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium transition">
+                              {savingEditRest ? 'Guardando...' : '✓ Guardar'}
+                            </button>
+                            <button onClick={() => setEditingRestId(null)}
+                              className="bg-gray-800 hover:bg-gray-700 text-gray-400 px-4 py-1.5 rounded-lg text-sm transition">
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-white font-medium">{rest.name}</p>
+                            <p className="text-gray-500 text-xs mt-0.5">{rest.organizations?.name || '—'} · ID: {rest.id.substring(0, 8)}...</p>
+                          </div>
+                          <button onClick={() => { setEditingRestId(rest.id); setEditRestName(rest.name); setEditRestOrgId(rest.organization_id) }}
+                            className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition">
+                            ✏️ Editar
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
                 {restaurants.length === 0 && <p className="px-6 py-4 text-gray-500 text-sm">No hay restaurantes</p>}
               </div>
             </div>
@@ -287,26 +361,20 @@ export default function SuperAdminPage() {
         {/* ══ USUARIOS ══ */}
         {activeTab === 'users' && (
           <>
-            {/* Crear nuevo usuario */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">➕ Crear nuevo usuario</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                <input type="email" placeholder="Email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
-                <input type="password" placeholder="Contraseña (mín. 6 caracteres)" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
-                <select value={newUserOrg} onChange={e => { setNewUserOrg(e.target.value); setNewUserRest('') }}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                <input type="email" placeholder="Email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} className={inputCls} />
+                <input type="password" placeholder="Contraseña (mín. 6 caracteres)" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} className={inputCls} />
+                <select value={newUserOrg} onChange={e => { setNewUserOrg(e.target.value); setNewUserRest('') }} className={inputCls}>
                   <option value="">— Organización —</option>
                   {orgs.filter(o => !o.archived).map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
                 </select>
-                <select value={newUserRest} onChange={e => setNewUserRest(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                <select value={newUserRest} onChange={e => setNewUserRest(e.target.value)} className={inputCls}>
                   <option value="">— Restaurante —</option>
                   {restaurants.filter(r => !newUserOrg || r.organization_id === newUserOrg).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                 </select>
-                <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} className={inputCls}>
                   {ROLES.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
                 </select>
                 <button onClick={createNewUser} disabled={creatingUser || !newUserEmail || !newUserPassword || !newUserRest}
@@ -317,24 +385,19 @@ export default function SuperAdminPage() {
               {createUserMsg && <p className={`text-xs ${createUserMsg.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{createUserMsg}</p>}
             </div>
 
-            {/* Buscar y gestionar usuario existente */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">🔍 Gestionar usuario existente</h2>
               <div className="flex gap-3 mb-4">
                 <input type="email" placeholder="Email del usuario" value={userSearch} onChange={e => setUserSearch(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && searchUser()}
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
+                  onKeyDown={e => e.key === 'Enter' && searchUser()} className={`flex-1 ${inputCls}`} />
                 <button onClick={searchUser} disabled={searchingUser}
                   className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm transition">
                   {searchingUser ? 'Buscando...' : 'Buscar'}
                 </button>
               </div>
-
               {assignMsg && !foundUser && <p className="text-red-400 text-xs mb-3">{assignMsg}</p>}
-
               {foundUser && (
                 <div className="space-y-4">
-                  {/* Info del usuario */}
                   <div className="bg-gray-800 rounded-xl p-4">
                     <div className="flex items-center gap-3 mb-3">
                       <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-bold">
@@ -345,7 +408,6 @@ export default function SuperAdminPage() {
                         <p className="text-gray-500 text-xs">{foundUser.id}</p>
                       </div>
                     </div>
-                    {/* Accesos actuales */}
                     {foundUser.user_restaurants?.length > 0 && (
                       <div>
                         <p className="text-gray-500 text-xs mb-2">Accesos actuales:</p>
@@ -366,23 +428,20 @@ export default function SuperAdminPage() {
                       </div>
                     )}
                   </div>
-
-                  {/* Asignar nuevo acceso */}
                   <div>
                     <p className="text-gray-400 text-xs font-semibold mb-2">Asignar nuevo acceso:</p>
                     <div className="flex gap-3 flex-wrap">
                       <select value={assignOrg} onChange={e => { setAssignOrg(e.target.value); setAssignRest('') }}
-                        className="flex-1 min-w-40 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                        className={`flex-1 min-w-40 ${inputCls}`}>
                         <option value="">— Organización —</option>
                         {orgs.filter(o => !o.archived).map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
                       </select>
                       <select value={assignRest} onChange={e => setAssignRest(e.target.value)}
-                        className="flex-1 min-w-40 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                        className={`flex-1 min-w-40 ${inputCls}`}>
                         <option value="">— Restaurante —</option>
                         {restaurants.filter(r => !assignOrg || r.organization_id === assignOrg).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                       </select>
-                      <select value={assignRole} onChange={e => setAssignRole(e.target.value)}
-                        className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                      <select value={assignRole} onChange={e => setAssignRole(e.target.value)} className={inputCls}>
                         {ROLES.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
                       </select>
                       <button onClick={assignUserToRestaurant} disabled={assigningUser || !assignRest}
@@ -396,29 +455,26 @@ export default function SuperAdminPage() {
               )}
             </div>
 
-            {/* Lista todos los usuarios */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-800">
                 <h2 className="text-white font-semibold">Todos los usuarios ({users.length})</h2>
               </div>
               <div className="divide-y divide-gray-800">
                 {users.map(u => (
-                  <div key={u.id} className="px-6 py-4 flex items-center justify-between">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-white text-sm font-medium">{u.email}</p>
-                        {u.is_superadmin && <span className="text-xs bg-amber-900 text-amber-400 px-2 py-0.5 rounded-full">⚡ Superadmin</span>}
-                      </div>
-                      <div className="flex gap-1 mt-1 flex-wrap">
-                        {(u.user_restaurants || []).map((ur: any) => (
-                          <span key={ur.restaurant_id} className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">
-                            {ur.restaurants?.name} · {ur.role}
-                          </span>
-                        ))}
-                        {(!u.user_restaurants || u.user_restaurants.length === 0) && (
-                          <span className="text-xs text-gray-600">Sin restaurantes asignados</span>
-                        )}
-                      </div>
+                  <div key={u.id} className="px-6 py-4">
+                    <div className="flex items-center gap-2">
+                      <p className="text-white text-sm font-medium">{u.email}</p>
+                      {u.is_superadmin && <span className="text-xs bg-amber-900 text-amber-400 px-2 py-0.5 rounded-full">⚡ Superadmin</span>}
+                    </div>
+                    <div className="flex gap-1 mt-1 flex-wrap">
+                      {(u.user_restaurants || []).map((ur: any) => (
+                        <span key={ur.restaurant_id} className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">
+                          {ur.restaurants?.name} · {ur.role}
+                        </span>
+                      ))}
+                      {(!u.user_restaurants || u.user_restaurants.length === 0) && (
+                        <span className="text-xs text-gray-600">Sin restaurantes asignados</span>
+                      )}
                     </div>
                   </div>
                 ))}
