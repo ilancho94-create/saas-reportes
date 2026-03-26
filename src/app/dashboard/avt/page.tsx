@@ -25,7 +25,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }
 const MAIN_CATEGORIES_FALLBACK = ['BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
 type SortKey = 'variance_dollar' | 'name' | 'unit_cost' | 'variance_qty'
 type ViewMode = 'dollar' | 'qty'
-type ActiveTab = 'dashboard' | 'seguimiento' | 'detalle'
+type ActiveTab = 'dashboard' | 'seguimiento' | 'detalle' | 'inventario'
 
 export default function AvtPage() {
   const [loading, setLoading] = useState(true)
@@ -149,10 +149,16 @@ export default function AvtPage() {
     return '$' + Math.abs(Number(n)).toLocaleString('en-US', { maximumFractionDigits: 0 })
   }
 
+  function fmtN(n: any, decimals = 2) {
+    if (n === null || n === undefined || n === 0) return '—'
+    return Number(n).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+  }
+
   const selected = weeks.find(w => w.report.week === selectedWeek)
   const avt = selected?.avt
   const allShortages: any[] = avt?.shortages || []
   const allOverages: any[] = avt?.overages || []
+  const allItems: any[] = avt?.all_items || []
   const byCategory: any[] = avt?.by_category || []
 
   const filteredShortages = selectedCategory === 'Todas'
@@ -188,9 +194,6 @@ export default function AvtPage() {
     return { week: w.report.week.replace('2026-', ''), faltantes, sobrantes, neto: faltantes - sobrantes }
   })
 
-  // ── ITEMS RECURRENTES (bug fix) ───────────────────────────────────────────
-  // Contar cuántas semanas aparece cada item en los datos de AvT reales,
-  // filtrando por categoría seleccionada, ordenado por impacto $ acumulado
   const itemStatsMap: Record<string, { weekCount: number; totalDollar: number; category: string }> = {}
   weeks.forEach(w => {
     const s: any[] = w.avt?.shortages || []
@@ -248,6 +251,7 @@ export default function AvtPage() {
           {([
             { id: 'dashboard', label: '📊 Dashboard' },
             { id: 'detalle', label: '🔍 Detalle' },
+            { id: 'inventario', label: '📦 Inventario' },
             { id: 'seguimiento', label: `📋 Seguimiento${pendingCount > 0 ? ` (${pendingCount})` : ''}` },
           ] as { id: ActiveTab; label: string }[]).map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -271,7 +275,6 @@ export default function AvtPage() {
           </div>
         ) : activeTab === 'dashboard' ? (
           <>
-            {/* Filtros */}
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-gray-500 text-xs">Categoría:</span>
               <div className="flex gap-1 flex-wrap">
@@ -300,7 +303,6 @@ export default function AvtPage() {
               </div>
             </div>
 
-            {/* KPIs */}
             <div className="grid grid-cols-4 gap-4">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-xs mb-1">Total Faltantes</p>
@@ -325,7 +327,6 @@ export default function AvtPage() {
               </div>
             </div>
 
-            {/* Gráficas */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Tendencia semanal</h2>
@@ -386,7 +387,6 @@ export default function AvtPage() {
               </div>
             </div>
 
-            {/* Items recurrentes — corregido */}
             {recurrentItems.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">
@@ -415,7 +415,6 @@ export default function AvtPage() {
               </div>
             )}
 
-            {/* Tablas */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-white font-semibold">🔴 Faltantes — {selectedWeek}
@@ -448,31 +447,17 @@ export default function AvtPage() {
           </>
 
         ) : activeTab === 'detalle' ? (
-          <DetalleTab
-            weeks={weeks}
-            selectedWeek={selectedWeek}
-            allShortages={allShortages}
-            allOverages={allOverages}
-            fmt={fmt}
-          />
+          <DetalleTab weeks={weeks} selectedWeek={selectedWeek} allShortages={allShortages} allOverages={allOverages} fmt={fmt} />
+
+        ) : activeTab === 'inventario' ? (
+          <InventarioTab allItems={allItems} selectedWeek={selectedWeek} fmt={fmt} fmtN={fmtN} weeks={weeks} />
 
         ) : (
           <SeguimientoTab
-            weeks={weeks}
-            selectedWeek={selectedWeek}
-            allShortages={allShortages}
-            allOverages={allOverages}
-            tracking={tracking}
-            savingId={savingId}
-            restaurantId={restaurantId}
-            allTracking={allTracking}
-            onSave={saveTracking}
-            getPrefillData={getPrefillData}
-            getItemHistory={getItemHistory}
-            fmt={fmt}
-            top10ByCat={top10ByCat}
-            expandedItem={expandedItem}
-            setExpandedItem={setExpandedItem}
+            weeks={weeks} selectedWeek={selectedWeek} allShortages={allShortages} allOverages={allOverages}
+            tracking={tracking} savingId={savingId} restaurantId={restaurantId} allTracking={allTracking}
+            onSave={saveTracking} getPrefillData={getPrefillData} getItemHistory={getItemHistory}
+            fmt={fmt} top10ByCat={top10ByCat} expandedItem={expandedItem} setExpandedItem={setExpandedItem}
           />
         )}
       </main>
@@ -480,7 +465,253 @@ export default function AvtPage() {
   )
 }
 
-// ── NUEVA PESTAÑA: DETALLE ─────────────────────────────────────────────────
+// ── PESTAÑA INVENTARIO ─────────────────────────────────────────────────────
+function InventarioTab({ allItems, selectedWeek, fmt, fmtN, weeks }: any) {
+  const [search, setSearch] = useState('')
+  const [catFilter, setCatFilter] = useState('Todas')
+  const [subCatFilter, setSubCatFilter] = useState('Todas')
+  const [viewMode, setViewMode] = useState<'qty' | 'dollar'>('qty')
+  const [selectedItem, setSelectedItem] = useState<string | null>(null)
+  const [sortCol, setSortCol] = useState<string>('unexplained_amt')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const noData = !allItems || allItems.length === 0
+
+  const categories = ['Todas', ...Array.from(new Set((allItems || []).map((i: any) => i.category).filter(Boolean))).sort() as string[]]
+  const subCategories = catFilter === 'Todas'
+    ? ['Todas']
+    : ['Todas', ...Array.from(new Set((allItems || []).filter((i: any) => i.category === catFilter).map((i: any) => i.sub_category).filter(Boolean))).sort() as string[]]
+
+  const filtered = (allItems || []).filter((i: any) => {
+    const matchSearch = !search || i.name?.toLowerCase().includes(search.toLowerCase())
+    const matchCat = catFilter === 'Todas' || i.category === catFilter
+    const matchSub = subCatFilter === 'Todas' || i.sub_category === subCatFilter
+    return matchSearch && matchCat && matchSub
+  }).sort((a: any, b: any) => {
+    const av = Math.abs(Number(a[sortCol] || 0))
+    const bv = Math.abs(Number(b[sortCol] || 0))
+    if (sortCol === 'name') return sortDir === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name)
+    return sortDir === 'desc' ? bv - av : av - bv
+  })
+
+  function toggleSort(col: string) {
+    if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    else { setSortCol(col); setSortDir('desc') }
+  }
+
+  function SortBtn({ col, label }: { col: string; label: string }) {
+    const active = sortCol === col
+    return (
+      <button onClick={() => toggleSort(col)}
+        className={`flex items-center gap-1 hover:text-white transition ${active ? 'text-white' : 'text-gray-500'}`}>
+        {label}
+        <span className="text-xs">{active ? (sortDir === 'desc' ? '↓' : '↑') : '↕'}</span>
+      </button>
+    )
+  }
+
+  // Historial de un item en semanas anteriores
+  function getItemWeekHistory(itemName: string) {
+    return weeks.map((w: any) => {
+      const item = (w.avt?.all_items || []).find((i: any) => i.name === itemName)
+      if (!item) return null
+      return { week: w.report.week.replace('2026-', ''), fullWeek: w.report.week, ...item }
+    }).filter(Boolean).reverse()
+  }
+
+  const itemHistory = selectedItem ? getItemWeekHistory(selectedItem) : []
+  const selectedItemData = selectedItem ? (allItems || []).find((i: any) => i.name === selectedItem) : null
+
+  if (noData) return (
+    <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">
+      <div className="text-5xl mb-4">📦</div>
+      <h2 className="text-white font-semibold text-lg mb-2">Sin datos de inventario</h2>
+      <p className="text-gray-500">Los datos detallados de inventario estarán disponibles al subir un nuevo reporte de AvT.</p>
+      <p className="text-gray-600 text-xs mt-2">Los reportes anteriores no tienen este nivel de detalle — sube uno nuevo para verlo.</p>
+    </div>
+  )
+
+  return (
+    <div className="space-y-4">
+      {/* Controles */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-48">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">🔍</span>
+            <input type="text" placeholder="Buscar item..."
+              value={search} onChange={e => { setSearch(e.target.value); setSelectedItem(null) }}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+          </div>
+          <select value={catFilter} onChange={e => { setCatFilter(e.target.value); setSubCatFilter('Todas') }}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none">
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          {subCategories.length > 2 && (
+            <select value={subCatFilter} onChange={e => setSubCatFilter(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none">
+              {subCategories.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
+          <div className="flex gap-1 ml-auto">
+            {(['qty', 'dollar'] as const).map(m => (
+              <button key={m} onClick={() => setViewMode(m)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${viewMode === m ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-500'}`}>
+                {m === 'qty' ? 'Qty' : '$ Dinero'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-gray-600 text-xs">{filtered.length} items · {selectedWeek} · Clic en item para ver historial</p>
+      </div>
+
+      {/* Panel de detalle del item seleccionado */}
+      {selectedItem && selectedItemData && (
+        <div className="bg-gray-900 border border-blue-800 rounded-xl p-5">
+          <div className="flex items-start justify-between mb-4">
+            <div>
+              <h3 className="text-white font-semibold text-base">{selectedItem}</h3>
+              <p className="text-gray-500 text-xs mt-0.5">{selectedItemData.category} · {selectedItemData.sub_category} · {selectedItemData.uom} · ${selectedItemData.unit_cost}/unit</p>
+            </div>
+            <button onClick={() => setSelectedItem(null)} className="text-gray-500 hover:text-white text-sm">✕</button>
+          </div>
+
+          {/* KPIs del item esta semana */}
+          <div className="grid grid-cols-4 gap-3 mb-4">
+            {[
+              { label: 'Inventario Inicial', qty: selectedItemData.begin_qty, amt: selectedItemData.begin_amt, color: 'text-gray-300' },
+              { label: 'Compras', qty: selectedItemData.purchase_qty, amt: selectedItemData.purchase_amt, color: 'text-blue-300' },
+              { label: 'Inventario Final', qty: selectedItemData.end_qty, amt: selectedItemData.end_amt, color: 'text-gray-300' },
+              { label: 'Actual Usado', qty: selectedItemData.actual_qty, amt: selectedItemData.actual_amt, color: 'text-purple-300' },
+            ].map(k => (
+              <div key={k.label} className="bg-gray-800 rounded-lg p-3">
+                <p className="text-gray-500 text-xs mb-1">{k.label}</p>
+                <p className={`font-bold text-sm ${k.color}`}>
+                  {viewMode === 'qty' ? fmtN(k.qty, 3) : fmt(k.amt)}
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-4 gap-3 mb-4">
+            {[
+              { label: 'Teórico', qty: selectedItemData.theo_qty, amt: selectedItemData.theo_amt, color: 'text-yellow-300' },
+              { label: 'Merma', qty: selectedItemData.waste_qty, amt: selectedItemData.waste_amt, color: 'text-orange-300' },
+              { label: 'Varianza Total', qty: selectedItemData.variance_qty, amt: selectedItemData.variance_amt, color: selectedItemData.variance_amt > 0 ? 'text-red-400' : 'text-green-400' },
+              { label: 'Varianza Inesperada', qty: selectedItemData.unexplained_qty, amt: selectedItemData.unexplained_amt, color: selectedItemData.unexplained_amt > 0 ? 'text-red-400' : selectedItemData.unexplained_amt < 0 ? 'text-green-400' : 'text-gray-500' },
+            ].map(k => (
+              <div key={k.label} className={`rounded-lg p-3 ${Math.abs(Number(k.amt)) > 0 && k.label === 'Varianza Inesperada' ? (Number(k.amt) > 0 ? 'bg-red-950 border border-red-800' : 'bg-green-950 border border-green-800') : 'bg-gray-800'}`}>
+                <p className="text-gray-500 text-xs mb-1">{k.label}</p>
+                <p className={`font-bold text-sm ${k.color}`}>
+                  {viewMode === 'qty' ? fmtN(k.qty, 3) : (k.amt === 0 ? '—' : (Number(k.amt) >= 0 ? fmt(k.amt) : '(' + fmt(Math.abs(Number(k.amt))) + ')'))}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {/* Historial en semanas anteriores */}
+          {itemHistory.length > 1 && (
+            <div>
+              <p className="text-gray-500 text-xs font-semibold mb-2">Historial de varianza inesperada ({itemHistory.length} semanas):</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-800">
+                      <th className="text-left text-gray-600 pb-2 font-medium">Semana</th>
+                      <th className="text-right text-gray-600 pb-2 font-medium">Inicial</th>
+                      <th className="text-right text-gray-600 pb-2 font-medium">Compras</th>
+                      <th className="text-right text-gray-600 pb-2 font-medium">Final</th>
+                      <th className="text-right text-gray-600 pb-2 font-medium">Actual</th>
+                      <th className="text-right text-gray-600 pb-2 font-medium">Teórico</th>
+                      <th className="text-right text-gray-600 pb-2 font-medium">Merma</th>
+                      <th className="text-right text-gray-600 pb-2 font-medium">Var. Inesperada</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itemHistory.map((h: any, i: number) => {
+                      const isCurrentWeek = h.fullWeek === selectedWeek
+                      const unexp = Number(h.unexplained_amt || h.unexplained_qty || 0)
+                      return (
+                        <tr key={i} className={`border-b border-gray-800 ${isCurrentWeek ? 'bg-blue-950/30' : ''}`}>
+                          <td className={`py-1.5 ${isCurrentWeek ? 'text-blue-400 font-semibold' : 'text-gray-400'}`}>{h.week}</td>
+                          <td className="py-1.5 text-right text-gray-400">{viewMode === 'qty' ? fmtN(h.begin_qty, 2) : fmt(h.begin_amt)}</td>
+                          <td className="py-1.5 text-right text-blue-400">{viewMode === 'qty' ? fmtN(h.purchase_qty, 2) : fmt(h.purchase_amt)}</td>
+                          <td className="py-1.5 text-right text-gray-400">{viewMode === 'qty' ? fmtN(h.end_qty, 2) : fmt(h.end_amt)}</td>
+                          <td className="py-1.5 text-right text-purple-400">{viewMode === 'qty' ? fmtN(h.actual_qty, 2) : fmt(h.actual_amt)}</td>
+                          <td className="py-1.5 text-right text-yellow-400">{viewMode === 'qty' ? fmtN(h.theo_qty, 2) : fmt(h.theo_amt)}</td>
+                          <td className="py-1.5 text-right text-orange-400">{viewMode === 'qty' ? fmtN(h.waste_qty, 2) : fmt(h.waste_amt)}</td>
+                          <td className={`py-1.5 text-right font-bold ${unexp > 0 ? 'text-red-400' : unexp < 0 ? 'text-green-400' : 'text-gray-600'}`}>
+                            {viewMode === 'qty'
+                              ? (h.unexplained_qty === 0 ? '—' : fmtN(h.unexplained_qty, 3))
+                              : (unexp === 0 ? '—' : unexp > 0 ? fmt(unexp) : '(' + fmt(Math.abs(unexp)) + ')')}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tabla principal */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-gray-800 bg-gray-950">
+              <tr>
+                <th className="text-left text-gray-500 py-3 px-4 font-medium w-8">#</th>
+                <th className="text-left text-gray-500 py-3 font-medium"><SortBtn col="name" label="Item" /></th>
+                <th className="text-left text-gray-500 py-3 font-medium">Cat.</th>
+                <th className="text-left text-gray-500 py-3 font-medium">UOM</th>
+                <th className="text-right text-gray-500 py-3 font-medium"><SortBtn col="begin_qty" label="Inicial" /></th>
+                <th className="text-right text-gray-500 py-3 font-medium"><SortBtn col="purchase_qty" label="Compras" /></th>
+                <th className="text-right text-gray-500 py-3 font-medium">Transfer</th>
+                <th className="text-right text-gray-500 py-3 font-medium"><SortBtn col="end_qty" label="Final" /></th>
+                <th className="text-right text-gray-500 py-3 font-medium"><SortBtn col="actual_qty" label="Actual" /></th>
+                <th className="text-right text-gray-500 py-3 font-medium"><SortBtn col="theo_qty" label="Teórico" /></th>
+                <th className="text-right text-gray-500 py-3 font-medium"><SortBtn col="waste_qty" label="Merma" /></th>
+                <th className="text-right text-gray-500 py-3 pr-4 font-medium"><SortBtn col="unexplained_amt" label="Var. Inesperada" /></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((item: any, i: number) => {
+                const unexp = viewMode === 'qty' ? Number(item.unexplained_qty || 0) : Number(item.unexplained_amt || 0)
+                const isSelected = selectedItem === item.name
+                return (
+                  <tr key={i} onClick={() => setSelectedItem(isSelected ? null : item.name)}
+                    className={`border-b border-gray-800 cursor-pointer transition ${isSelected ? 'bg-blue-950/30' : 'hover:bg-gray-800/40'}`}>
+                    <td className="py-2 px-4 text-gray-600">{i + 1}</td>
+                    <td className="py-2 text-white font-medium">{item.name}</td>
+                    <td className="py-2 text-gray-500">{item.sub_category || item.category || '—'}</td>
+                    <td className="py-2 text-gray-600">{item.uom}</td>
+                    <td className="py-2 text-right text-gray-400">{viewMode === 'qty' ? fmtN(item.begin_qty, 2) : fmt(item.begin_amt)}</td>
+                    <td className="py-2 text-right text-blue-400">{viewMode === 'qty' ? fmtN(item.purchase_qty, 2) : fmt(item.purchase_amt)}</td>
+                    <td className="py-2 text-right text-gray-600">{viewMode === 'qty' ? fmtN(item.transfer_qty, 2) : fmt(item.transfer_amt)}</td>
+                    <td className="py-2 text-right text-gray-400">{viewMode === 'qty' ? fmtN(item.end_qty, 2) : fmt(item.end_amt)}</td>
+                    <td className="py-2 text-right text-purple-400">{viewMode === 'qty' ? fmtN(item.actual_qty, 2) : fmt(item.actual_amt)}</td>
+                    <td className="py-2 text-right text-yellow-400">{viewMode === 'qty' ? fmtN(item.theo_qty, 2) : fmt(item.theo_amt)}</td>
+                    <td className="py-2 text-right text-orange-400">{viewMode === 'qty' ? fmtN(item.waste_qty, 2) : fmt(item.waste_amt)}</td>
+                    <td className={`py-2 text-right pr-4 font-bold ${unexp > 0 ? 'text-red-400' : unexp < 0 ? 'text-green-400' : 'text-gray-600'}`}>
+                      {unexp === 0 ? '—' : viewMode === 'qty'
+                        ? fmtN(unexp, 3)
+                        : unexp > 0 ? fmt(unexp) : '(' + fmt(Math.abs(unexp)) + ')'}
+                    </td>
+                  </tr>
+                )
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan={12} className="py-10 text-center text-gray-600">No hay items que coincidan</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── DetalleTab ─────────────────────────────────────────────────────────────
 function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any) {
   const [search, setSearch] = useState('')
   const [selectedItem, setSelectedItem] = useState<string | null>(null)
@@ -488,7 +719,6 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
   const [typeFilter, setTypeFilter] = useState<'all' | 'shortage' | 'overage'>('all')
   const [detalleView, setDetalleView] = useState<'dollar' | 'qty'>('dollar')
 
-  // Todos los items de la semana combinados
   const allItems = [
     ...allShortages.map((i: any) => ({ ...i, tipo: 'shortage' })),
     ...allOverages.map((i: any) => ({ ...i, tipo: 'overage' })),
@@ -503,7 +733,6 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
     return matchSearch && matchCat && matchType
   })
 
-  // Historial de variaciones semana a semana para un item
   function getItemWeekHistory(itemName: string) {
     return weeks.map((w: any) => {
       const s = (w.avt?.shortages || []).find((i: any) => i.name === itemName)
@@ -525,18 +754,13 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
 
   return (
     <div className="space-y-4">
-      {/* Header + controles */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
         <div className="flex items-center gap-3 flex-wrap">
           <div className="relative flex-1 min-w-48">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">🔍</span>
-            <input
-              type="text"
-              placeholder="Buscar item..."
-              value={search}
-              onChange={e => { setSearch(e.target.value); setSelectedItem(null) }}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
-            />
+            <input type="text" placeholder="Buscar item..."
+              value={search} onChange={e => { setSearch(e.target.value); setSelectedItem(null) }}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500" />
           </div>
           <select value={catFilter} onChange={e => setCatFilter(e.target.value)}
             className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none">
@@ -562,7 +786,6 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
         <p className="text-gray-600 text-xs mt-2">{filtered.length} items · {selectedWeek}</p>
       </div>
 
-      {/* Panel de historial del item seleccionado */}
       {selectedItem && itemHistory.length > 0 && (
         <div className="bg-gray-900 border border-blue-800 rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
@@ -573,7 +796,6 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
             <button onClick={() => setSelectedItem(null)} className="text-gray-500 hover:text-white text-sm">✕</button>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            {/* Mini gráfica de tendencia */}
             <div>
               <p className="text-gray-500 text-xs mb-2">Tendencia varianza {detalleView === 'dollar' ? '$' : 'Qty'}</p>
               <ResponsiveContainer width="100%" height={120}>
@@ -585,14 +807,11 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
                     formatter={(v: any) => [detalleView === 'dollar' ? fmt(Math.abs(v)) : Math.abs(Number(v)).toFixed(3), v > 0 ? 'Faltante' : 'Sobrante']} />
                   <ReferenceLine y={0} stroke="#374151" />
                   <Bar dataKey={detalleView === 'dollar' ? 'variance_dollar' : 'variance_qty'} radius={[3, 3, 0, 0]}>
-                    {itemHistory.map((h: any, i: number) => (
-                      <Cell key={i} fill={h.tipo === 'shortage' ? '#ef4444' : '#22c55e'} />
-                    ))}
+                    {itemHistory.map((h: any, i: number) => <Cell key={i} fill={h.tipo === 'shortage' ? '#ef4444' : '#22c55e'} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            {/* Tabla de historial */}
             <div>
               <p className="text-gray-500 text-xs mb-2">Detalle por semana</p>
               <div className="space-y-1 max-h-32 overflow-y-auto">
@@ -615,7 +834,6 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
         </div>
       )}
 
-      {/* Tabla principal */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -638,23 +856,19 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
                 const varDollar = Math.abs(Number(item.variance_dollar || 0))
                 const varQty = Math.abs(Number(item.variance_qty || 0))
                 const isSelected = selectedItem === item.name
-                // Contar cuántas semanas aparece en el historial de weeks
                 const weekCount = weeks.filter((w: any) => {
                   const s = w.avt?.shortages || []
                   const o = w.avt?.overages || []
                   return [...s, ...o].some((x: any) => x.name === item.name)
                 }).length
                 return (
-                  <tr key={i}
-                    onClick={() => setSelectedItem(isSelected ? null : item.name)}
+                  <tr key={i} onClick={() => setSelectedItem(isSelected ? null : item.name)}
                     className={`border-b border-gray-800 cursor-pointer transition ${isSelected ? 'bg-blue-950/40' : 'hover:bg-gray-800/50'}`}>
                     <td className="py-2.5 px-4 text-gray-600 text-xs">{i + 1}</td>
                     <td className="py-2.5">
                       <div className="flex items-center gap-2">
                         <span className={`text-sm font-medium ${isShortage ? 'text-red-300' : 'text-green-300'}`}>{item.name}</span>
-                        {weekCount > 1 && (
-                          <span className="text-orange-400 text-xs bg-orange-950 px-1.5 py-0.5 rounded">⚠️ {weekCount} sem.</span>
-                        )}
+                        {weekCount > 1 && <span className="text-orange-400 text-xs bg-orange-950 px-1.5 py-0.5 rounded">⚠️ {weekCount} sem.</span>}
                       </div>
                     </td>
                     <td className="py-2.5 text-gray-500 text-xs">{item.category || '—'}</td>
@@ -690,7 +904,7 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
   )
 }
 
-// ── SimpleTable (sin cambios) ───────────────────────────────────────────────
+// ── SimpleTable ─────────────────────────────────────────────────────────────
 function SimpleTable({ items, type, viewMode, allTracking, selectedWeek, fmt, getRecurrenceInfo }: any) {
   const isShortage = type === 'shortage'
   return (
@@ -754,7 +968,7 @@ function SimpleTable({ items, type, viewMode, allTracking, selectedWeek, fmt, ge
   )
 }
 
-// ── SeguimientoTab (sin cambios) ────────────────────────────────────────────
+// ── SeguimientoTab ──────────────────────────────────────────────────────────
 function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracking, savingId,
   restaurantId, allTracking, onSave, getPrefillData, getItemHistory, fmt, top10ByCat, expandedItem, setExpandedItem }: any) {
   const [seguimientoTab, setSeguimientoTab] = useState<'items' | 'responsables'>('items')

@@ -212,7 +212,6 @@ export function parseAvtExcel(buffer: Buffer): any {
     const row = rows[i]
     if (!row || row.length < 32) continue
 
-    // Categoría principal — col 4 tiene valor, cols 5 y 6 vacías
     if (row[4] && String(row[4]).trim() && !row[5] && !row[6]) {
       const val = String(row[4]).trim()
       if (
@@ -229,14 +228,12 @@ export function parseAvtExcel(buffer: Buffer): any {
       continue
     }
 
-    // Subcategoría — col 5 tiene valor, col 6 vacía
     if (row[5] && String(row[5]).trim() && !row[6]) {
       const val = String(row[5]).trim()
       if (!val.toLowerCase().endsWith('total')) currentSub = val
       continue
     }
 
-    // Item — col 6 tiene valor
     if (row[6] && String(row[6]).trim()) {
       const name = String(row[6]).trim()
       if (SKIP.some(s => name.toLowerCase().includes(s))) continue
@@ -295,11 +292,10 @@ export function parseAvtExcel(buffer: Buffer): any {
 
 export function parseAvtCsv(csvContent: string): any {
   const lines = csvContent.split('\n')
-  
-  // Header está en línea 3 (índice 3)
+
   const headerLine = lines[3]
   if (!headerLine) throw new Error('CSV de AvT sin header')
-  
+
   const parseRow = (line: string): string[] => {
     const result: string[] = []
     let current = ''
@@ -318,58 +314,91 @@ export function parseAvtCsv(csvContent: string): any {
     return result
   }
 
-  const headers = parseRow(headerLine)
-
-  const idx = (name: string) => headers.indexOf(name)
-  const cat1Idx = idx('ItemCategory1Name')
-  const nameIdx = idx('ItemName')
-  const uomIdx = idx('UofMName')
-  const costIdx = idx('Cost')
-  const unexpQtyIdx = idx('UnexplainedVarianceQty')
-  const unexpAmtIdx = idx('UnexplainedVarianceAmt')
-
-  if (nameIdx === -1 || unexpAmtIdx === -1) {
-    throw new Error('CSV de AvT no tiene las columnas esperadas')
+  const cleanNum = (val: string): number => {
+    if (!val) return 0
+    val = val.trim().replace(/\$/g, '').replace(/,/g, '').replace(/%/g, '')
+    if (val.startsWith('(') && val.endsWith(')')) val = '-' + val.slice(1, -1)
+    return parseFloat(val) || 0
   }
 
-  const cleanDollar = (val: string): number => {
-    val = val.trim().replace(/\$/g, '').replace(/,/g, '')
-    if (val.startsWith('(') && val.endsWith(')')) {
-      val = '-' + val.slice(1, -1)
-    }
-    return parseFloat(val) || 0
+  // Índices fijos validados contra archivo real de Mula Cantina
+  const I = {
+    cat1: 0, cat2: 26, cat3: 52,
+    name: 78, uom: 79, cost: 80,
+    begin_qty: 81, purchase_qty: 82, transfer_qty: 83, end_qty: 84,
+    actual_qty: 85, theo_qty: 86, variance_qty: 87,
+    waste_qty: 88, donation_qty: 89, unexplained_qty: 90, efficiency_qty: 91,
+    begin_amt: 92, purchase_amt: 93, transfer_amt: 94, end_amt: 95,
+    actual_amt: 96, theo_amt: 97, variance_amt: 98,
+    waste_amt: 99, donation_amt: 100, unexplained_amt: 101, efficiency_amt: 102,
   }
 
   const shortages: any[] = []
   const overages: any[] = []
+  const allItems: any[] = []
   const byCategoryMap: Record<string, { shortage: number; overage: number }> = {}
 
   for (const line of lines.slice(4)) {
     if (!line.trim()) continue
     const row = parseRow(line)
-    if (row.length <= unexpAmtIdx) continue
+    if (row.length <= I.unexplained_amt) continue
 
-    const name = row[nameIdx]?.trim()
-    if (!name || name.includes('Total') || name.includes('TOTAL')) continue
+    const name = row[I.name]?.trim()
+    if (!name || name.toLowerCase().includes('total')) continue
 
-    const cat = row[cat1Idx]?.trim() || 'OTHER'
-    const uom = row[uomIdx]?.trim() || ''
-    const unitCost = cleanDollar(row[costIdx] || '0')
-    const unexpQty = cleanDollar(row[unexpQtyIdx] || '0')
-    const unexpAmt = cleanDollar(row[unexpAmtIdx] || '0')
+    const cat1 = row[I.cat1]?.trim() || 'OTHER'
+    const cat2 = row[I.cat2]?.trim() || ''
+    const cat3 = row[I.cat3]?.trim() || ''
+    const uom = row[I.uom]?.trim() || ''
+    const unitCost = cleanNum(row[I.cost])
+    const unexpAmt = cleanNum(row[I.unexplained_amt])
+
+    const item: any = {
+      name,
+      category: cat1,
+      sub_category: cat2,
+      sub_category2: cat3,
+      uom,
+      unit_cost: unitCost,
+      // Qty
+      begin_qty: cleanNum(row[I.begin_qty]),
+      purchase_qty: cleanNum(row[I.purchase_qty]),
+      transfer_qty: cleanNum(row[I.transfer_qty]),
+      end_qty: cleanNum(row[I.end_qty]),
+      actual_qty: cleanNum(row[I.actual_qty]),
+      theo_qty: cleanNum(row[I.theo_qty]),
+      variance_qty: cleanNum(row[I.variance_qty]),
+      waste_qty: cleanNum(row[I.waste_qty]),
+      donation_qty: cleanNum(row[I.donation_qty]),
+      unexplained_qty: cleanNum(row[I.unexplained_qty]),
+      // Amt
+      begin_amt: cleanNum(row[I.begin_amt]),
+      purchase_amt: cleanNum(row[I.purchase_amt]),
+      transfer_amt: cleanNum(row[I.transfer_amt]),
+      end_amt: cleanNum(row[I.end_amt]),
+      actual_amt: cleanNum(row[I.actual_amt]),
+      theo_amt: cleanNum(row[I.theo_amt]),
+      variance_amt: cleanNum(row[I.variance_amt]),
+      waste_amt: cleanNum(row[I.waste_amt]),
+      donation_amt: cleanNum(row[I.donation_amt]),
+      unexplained_amt,
+      // Alias para compatibilidad con el resto del código
+      variance_dollar: unexpAmt,
+      variance_qty_display: cleanNum(row[I.unexplained_qty]),
+    }
+
+    allItems.push(item)
 
     if (unexpAmt === 0) continue
 
-    if (!byCategoryMap[cat]) byCategoryMap[cat] = { shortage: 0, overage: 0 }
-
-    const item = { name, category: cat, uom, unit_cost: unitCost, variance_qty: unexpQty, variance_dollar: unexpAmt }
+    if (!byCategoryMap[cat1]) byCategoryMap[cat1] = { shortage: 0, overage: 0 }
 
     if (unexpAmt > 0) {
       shortages.push(item)
-      byCategoryMap[cat].shortage += unexpAmt
+      byCategoryMap[cat1].shortage += unexpAmt
     } else {
       overages.push(item)
-      byCategoryMap[cat].overage += Math.abs(unexpAmt)
+      byCategoryMap[cat1].overage += Math.abs(unexpAmt)
     }
   }
 
@@ -384,13 +413,21 @@ export function parseAvtCsv(csvContent: string): any {
   const total_overage_dollar = parseFloat(Math.abs(overages.reduce((a, b) => a + b.variance_dollar, 0)).toFixed(2))
   const net_variance_dollar = parseFloat((total_shortage_dollar - total_overage_dollar).toFixed(2))
 
-  return { shortages, overages, by_category, total_shortage_dollar, total_overage_dollar, net_variance_dollar, date_warning: null }
+  return {
+    shortages,
+    overages,
+    all_items: allItems,
+    by_category,
+    total_shortage_dollar,
+    total_overage_dollar,
+    net_variance_dollar,
+    date_warning: null,
+  }
 }
 
 export function parseReceivingCsv(csvContent: string): any[] {
   const lines = csvContent.split('\n')
 
-  // Header en línea 3
   const headerLine = lines[3]
   if (!headerLine) throw new Error('CSV de Receiving sin header')
 
@@ -431,7 +468,6 @@ export function parseReceivingCsv(csvContent: string): any[] {
     return parseFloat(val.replace(/[$,]/g, '')) || 0
   }
 
-  // Agrupar por item — usar el primer registro de summary por item
   const itemMap: Record<string, any> = {}
 
   for (const line of lines.slice(4)) {
@@ -443,7 +479,6 @@ export function parseReceivingCsv(csvContent: string): any[] {
     if (!itemName || itemName === 'Location' || itemName === 'ItemName') continue
     if (itemName.startsWith('Total') || itemName.startsWith('SumQty')) continue
 
-    // Solo procesar la primera vez que aparece el item (tiene los totales)
     if (itemMap[itemName]) continue
 
     const totalQty = cleanNum(row[totalQtyIdx])
