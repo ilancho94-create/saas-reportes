@@ -33,7 +33,7 @@ const ADJUSTMENT_FIELDS = [
   { key: 'theo_cost', label: 'Costo Teórico adicional' },
 ]
 
-type Shortcut = 'last1' | 'last4' | 'last8' | 'month' | 'custom'
+type Shortcut = 'week' | 'last4' | 'last8' | 'month' | 'custom'
 
 export default function CostoUsoPage() {
   const restaurantId = useRestaurantId()
@@ -43,6 +43,7 @@ export default function CostoUsoPage() {
   const [mappings, setMappings] = useState<any[]>([])
   const [alerts, setAlerts] = useState<string[]>([])
   const [shortcut, setShortcut] = useState<Shortcut>('last4')
+  const [selectedWeek, setSelectedWeek] = useState('')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [operatingDays, setOperatingDays] = useState(6)
@@ -113,6 +114,7 @@ export default function CostoUsoPage() {
 
     setWeeks(weeksData)
     const last = weeksData[weeksData.length - 1]
+    setSelectedWeek(last?.report.week || '')
     setCustomFrom(weeksData.length >= 4 ? weeksData[weeksData.length - 4].report.week : weeksData[0].report.week)
     setCustomTo(last?.report.week || '')
 
@@ -179,9 +181,10 @@ export default function CostoUsoPage() {
     setShowAdjPanel(true)
   }
 
+  // FIX 1: 'week' shortcut filtra por selectedWeek
   const filtered = (() => {
     if (weeks.length === 0) return []
-    if (shortcut === 'last1') return weeks.slice(-1)
+    if (shortcut === 'week') return weeks.filter(w => w.report.week === selectedWeek)
     if (shortcut === 'last4') return weeks.slice(-4)
     if (shortcut === 'last8') return weeks.slice(-8)
     if (shortcut === 'month') {
@@ -273,7 +276,11 @@ export default function CostoUsoPage() {
 
   const chartData = filtered.map(buildWeekData)
   const latest = filtered[filtered.length - 1]
-  const latestData = latest ? buildWeekData(latest) : null
+  // FIX 2: detailWeek es la semana seleccionada en modo 'week', o la última del rango en multiweek
+  const detailWeek = shortcut === 'week'
+    ? filtered[0] || latest
+    : latest
+  const detailData = detailWeek ? buildWeekData(detailWeek) : null
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
   const isMultiWeek = filtered.length > 1
 
@@ -293,8 +300,9 @@ export default function CostoUsoPage() {
     }
   })()
 
+  // FIX 3: 'week' en lugar de 'last1', con selector inline
   const SHORTCUTS: { key: Shortcut; label: string }[] = [
-    { key: 'last1', label: 'Última semana' }, { key: 'last4', label: 'Últimas 4 sem' },
+    { key: 'week', label: 'Semana' }, { key: 'last4', label: 'Últimas 4 sem' },
     { key: 'last8', label: 'Últimas 8 sem' }, { key: 'month', label: 'Este mes' }, { key: 'custom', label: 'Custom' },
   ]
 
@@ -329,6 +337,13 @@ export default function CostoUsoPage() {
               {s.label}
             </button>
           ))}
+          {/* FIX 3: selector de semana inline junto al botón Semana */}
+          {shortcut === 'week' && weeks.length > 0 && (
+            <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
+              {[...weeks].reverse().map(w => <option key={w.report.week} value={w.report.week}>{w.report.week}</option>)}
+            </select>
+          )}
           {shortcut === 'custom' && (
             <div className="flex items-center gap-2 ml-2">
               <select value={customFrom} onChange={e => setCustomFrom(e.target.value)}
@@ -342,7 +357,7 @@ export default function CostoUsoPage() {
               </select>
             </div>
           )}
-          <span className="text-gray-600 text-xs ml-2">{filtered.length} semanas</span>
+          <span className="text-gray-600 text-xs ml-2">{filtered.length} semana{filtered.length !== 1 ? 's' : ''}</span>
         </div>
       </div>
 
@@ -483,12 +498,12 @@ export default function CostoUsoPage() {
           </div>
         ) : (
           <>
-            {latestData && (
+            {detailData && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
                   {isMultiWeek
                     ? `Promedio ponderado del período — ${filtered[0]?.report?.week} → ${latest?.report?.week} (${filtered.length} semanas)`
-                    : `Semana — ${latest?.report?.week} (${latest?.report?.week_start} al ${latest?.report?.week_end})`}
+                    : `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -510,16 +525,16 @@ export default function CostoUsoPage() {
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
-                    <p className="text-2xl font-bold text-white">{fmt(latest?.inventory?.grand_total_current)}</p>
+                    <p className="text-2xl font-bold text-white">{fmt(detailWeek?.inventory?.grand_total_current)}</p>
                     <p className="text-gray-600 text-xs mt-1">cierre de semana más reciente</p>
                   </div>
                 </div>
 
-                {/* Tabla por categoría */}
+                {/* FIX 2: tabla usa detailData y detailWeek, no latestData/latest */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-white font-semibold">Detalle por categoría — {latest?.report?.week}</h2>
-                    {latestData.hasAnyAdj && <span className="text-yellow-400 text-xs bg-yellow-950 px-2 py-1 rounded-full">✏️ Contiene ajustes manuales</span>}
+                    <h2 className="text-white font-semibold">Detalle por categoría — {detailWeek?.report?.week}</h2>
+                    {detailData.hasAnyAdj && <span className="text-yellow-400 text-xs bg-yellow-950 px-2 py-1 rounded-full">✏️ Contiene ajustes manuales</span>}
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -535,16 +550,16 @@ export default function CostoUsoPage() {
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Días Inv</th>
-                          {canEdit && <th className="text-center text-gray-500 text-xs pb-3 font-medium">Ajuste</th>}
+                          {canEdit && shortcut === 'week' && <th className="text-center text-gray-500 text-xs pb-3 font-medium">Ajuste</th>}
                         </tr>
                       </thead>
                       <tbody>
                         {CATEGORIES.map(cat => {
-                          const realPct = latestData[cat.key + '_uso_pct']
-                          const mixPct = latestData[cat.key + '_theo_pct']
-                          const variacion = latestData[cat.key + '_variacion']
-                          const dias = latestData[cat.key + '_dias_inv']
-                          const hasAdj = latestData[cat.key + '_has_adj']
+                          const realPct = detailData[cat.key + '_uso_pct']
+                          const mixPct = detailData[cat.key + '_theo_pct']
+                          const variacion = detailData[cat.key + '_variacion']
+                          const dias = detailData[cat.key + '_dias_inv']
+                          const hasAdj = detailData[cat.key + '_has_adj']
                           const overMeta = cat.meta && realPct && realPct > cat.meta
                           return (
                             <tr key={cat.key} className="border-b border-gray-800 hover:bg-gray-800 transition">
@@ -555,11 +570,11 @@ export default function CostoUsoPage() {
                                   {hasAdj && <span className="text-yellow-400 text-xs" title="Tiene ajuste manual aplicado">✏️</span>}
                                 </div>
                               </td>
-                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_inv_previous'])}</td>
-                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_purchases'])}</td>
-                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_inv_current'])}</td>
-                              <td className="py-3 text-right text-white text-sm font-medium">{fmt(latestData[cat.key + '_uso'])}</td>
-                              <td className="py-3 text-right text-gray-400 text-sm">{fmt(latestData[cat.key + '_sales'])}</td>
+                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_inv_previous'])}</td>
+                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_purchases'])}</td>
+                              <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_inv_current'])}</td>
+                              <td className="py-3 text-right text-white text-sm font-medium">{fmt(detailData[cat.key + '_uso'])}</td>
+                              <td className="py-3 text-right text-gray-400 text-sm">{fmt(detailData[cat.key + '_sales'])}</td>
                               <td className="py-3 text-right"><span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</span></td>
                               <td className="py-3 text-right text-blue-400 text-sm">{fmtPct(mixPct)}</td>
                               <td className="py-3 text-right">
@@ -570,9 +585,10 @@ export default function CostoUsoPage() {
                                 ) : <span className="text-gray-600">—</span>}
                               </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>
-                              {canEdit && (
+                              {/* FIX: ajuste solo en modo semana única */}
+                              {canEdit && shortcut === 'week' && (
                                 <td className="py-3 text-center">
-                                  <button onClick={() => openAdjPanel(latest.report.week, latest.report.id, cat.key)}
+                                  <button onClick={() => openAdjPanel(detailWeek.report.week, detailWeek.report.id, cat.key)}
                                     className="text-xs px-2 py-1 rounded-lg bg-gray-800 hover:bg-yellow-900 text-gray-400 hover:text-yellow-400 transition">
                                     + Ajuste
                                   </button>
@@ -584,29 +600,28 @@ export default function CostoUsoPage() {
                         <tr className="border-t-2 border-gray-700">
                           <td className="py-3 text-white font-bold">Total A&B</td>
                           <td colSpan={3} />
-                          <td className="py-3 text-right text-white font-bold">{fmt(latestData.totalUsoCost)}</td>
-                          <td className="py-3 text-right text-white font-bold">{fmt(latestData.totalABSales)}</td>
-                          <td className="py-3 text-right"><span className={`font-bold ${latestData.totalRealPct && latestData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(latestData.totalRealPct)}</span></td>
-                          <td className="py-3 text-right text-blue-400 font-bold">{fmtPct(latestData.totalMixPct)}</td>
+                          <td className="py-3 text-right text-white font-bold">{fmt(detailData.totalUsoCost)}</td>
+                          <td className="py-3 text-right text-white font-bold">{fmt(detailData.totalABSales)}</td>
+                          <td className="py-3 text-right"><span className={`font-bold ${detailData.totalRealPct && detailData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(detailData.totalRealPct)}</span></td>
+                          <td className="py-3 text-right text-blue-400 font-bold">{fmtPct(detailData.totalMixPct)}</td>
                           <td className="py-3 text-right">
-                            {latestData.totalVariacion !== null ? (
-                              <span className={`font-bold ${latestData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                                {latestData.totalVariacion > 0 ? '+' : ''}{fmt(latestData.totalVariacion)}
+                            {detailData.totalVariacion !== null ? (
+                              <span className={`font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                {detailData.totalVariacion > 0 ? '+' : ''}{fmt(detailData.totalVariacion)}
                               </span>
                             ) : '—'}
                           </td>
-                          <td />{canEdit && <td />}
+                          <td />{canEdit && shortcut === 'week' && <td />}
                         </tr>
                       </tbody>
                     </table>
                   </div>
 
-                  {/* Ajustes inline de esta semana */}
-                  {latestData.hasAnyAdj && (
+                  {detailData.hasAnyAdj && (
                     <div className="mt-4 pt-4 border-t border-gray-800">
                       <p className="text-yellow-400 text-xs font-semibold mb-2">✏️ Ajustes aplicados esta semana:</p>
                       <div className="space-y-1">
-                        {getWeekAdjustments(latest?.report?.week).map(a => (
+                        {getWeekAdjustments(detailWeek?.report?.week).map(a => (
                           <div key={a.id} className="flex items-center gap-3 text-xs bg-yellow-950/40 rounded-lg px-3 py-2">
                             <span className="text-yellow-300 font-medium shrink-0">{CATEGORIES.find(c => c.key === a.category)?.label}</span>
                             <span className="text-gray-600">·</span>
@@ -630,107 +645,112 @@ export default function CostoUsoPage() {
               </div>
             )}
 
-            {chartData.filter(d => d.hasInventory).length > 1 && (
+            {/* FIX 1: gráficas aparecen siempre que hay datos, no solo cuando filtered > 1 */}
+            {chartData.filter(d => d.hasInventory).length >= 1 && (
               <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                    <h2 className="text-white font-semibold mb-1">% Real vs % P.Mix por semana</h2>
-                    <p className="text-gray-500 text-xs mb-4">Total A&B</p>
-                    <ResponsiveContainer width="100%" height={200}>
-                      <LineChart data={chartData.filter(d => d.hasInventory)}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                        <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
-                        <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
-                        <Line type="monotone" dataKey="totalRealPct" name="% Real" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
-                        <Line type="monotone" dataKey="totalMixPct" name="% P.Mix" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                    <h2 className="text-white font-semibold mb-1">Variación $ por semana</h2>
-                    <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno)</p>
-                    <ResponsiveContainer width="100%" height={200}>
-                      <BarChart data={chartData.filter(d => d.hasInventory)}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                        <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
-                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
-                        <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                {chartData.filter(d => d.hasInventory).length > 1 && (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                        <h2 className="text-white font-semibold mb-1">% Real vs % P.Mix por semana</h2>
+                        <p className="text-gray-500 text-xs mb-4">Total A&B</p>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <LineChart data={chartData.filter(d => d.hasInventory)}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                            <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
+                            <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                            <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
+                            <Line type="monotone" dataKey="totalRealPct" name="% Real" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
+                            <Line type="monotone" dataKey="totalMixPct" name="% P.Mix" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                        <h2 className="text-white font-semibold mb-1">Variación $ por semana</h2>
+                        <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno)</p>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <BarChart data={chartData.filter(d => d.hasInventory)}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                            <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
+                            <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
+                            <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                      <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
+                      <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <LineChart data={chartData.filter(d => d.hasInventory)}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                          <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
+                          <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                          <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
+                          {CATEGORIES.map(cat => (
+                            <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label} stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </>
+                )}
+
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                  <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
-                  <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
-                  <ResponsiveContainer width="100%" height={220}>
-                    <LineChart data={chartData.filter(d => d.hasInventory)}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                      <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
-                      <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
-                      {CATEGORIES.map(cat => (
-                        <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label} stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
-                      ))}
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <h2 className="text-white font-semibold mb-4">Histórico por semana</h2>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-800">
+                          <th className="text-left text-gray-500 text-xs pb-3 font-medium">Semana</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">% Real</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Uso $</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas A&B</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Inventario</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">P.Mix</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...filtered].reverse().map((w) => {
+                          const d = buildWeekData(w)
+                          return (
+                            <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                              <td className="py-3">
+                                <div className="flex items-center gap-2">
+                                  <div>
+                                    <p className="text-gray-300">{w.report.week}</p>
+                                    <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
+                                  </div>
+                                  {d.hasAnyAdj && <span className="text-yellow-400 text-xs" title="Semana con ajustes manuales">✏️</span>}
+                                </div>
+                              </td>
+                              <td className="py-3 text-right"><span className={`font-medium ${d.totalRealPct && d.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(d.totalRealPct)}</span></td>
+                              <td className="py-3 text-right text-blue-400">{fmtPct(d.totalMixPct)}</td>
+                              <td className="py-3 text-right">
+                                {d.totalVariacion !== null ? (
+                                  <span className={`font-medium ${d.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                    {d.totalVariacion > 0 ? '+' : ''}{fmt(d.totalVariacion)}
+                                  </span>
+                                ) : <span className="text-gray-600">—</span>}
+                              </td>
+                              <td className="py-3 text-right text-white">{fmt(d.totalUsoCost)}</td>
+                              <td className="py-3 text-right text-gray-400">{fmt(d.totalABSales)}</td>
+                              <td className="py-3 text-right">{d.hasInventory ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
+                              <td className="py-3 text-right">{d.hasProductMix ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </>
             )}
-
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Histórico por semana</h2>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-800">
-                      <th className="text-left text-gray-500 text-xs pb-3 font-medium">Semana</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">% Real</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Uso $</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas A&B</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Inventario</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">P.Mix</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...filtered].reverse().map((w) => {
-                      const d = buildWeekData(w)
-                      return (
-                        <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                          <td className="py-3">
-                            <div className="flex items-center gap-2">
-                              <div>
-                                <p className="text-gray-300">{w.report.week}</p>
-                                <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
-                              </div>
-                              {d.hasAnyAdj && <span className="text-yellow-400 text-xs" title="Semana con ajustes manuales">✏️</span>}
-                            </div>
-                          </td>
-                          <td className="py-3 text-right"><span className={`font-medium ${d.totalRealPct && d.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(d.totalRealPct)}</span></td>
-                          <td className="py-3 text-right text-blue-400">{fmtPct(d.totalMixPct)}</td>
-                          <td className="py-3 text-right">
-                            {d.totalVariacion !== null ? (
-                              <span className={`font-medium ${d.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                                {d.totalVariacion > 0 ? '+' : ''}{fmt(d.totalVariacion)}
-                              </span>
-                            ) : <span className="text-gray-600">—</span>}
-                          </td>
-                          <td className="py-3 text-right text-white">{fmt(d.totalUsoCost)}</td>
-                          <td className="py-3 text-right text-gray-400">{fmt(d.totalABSales)}</td>
-                          <td className="py-3 text-right">{d.hasInventory ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
-                          <td className="py-3 text-right">{d.hasProductMix ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
           </>
         )}
       </main>
