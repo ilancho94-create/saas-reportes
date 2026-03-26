@@ -381,7 +381,7 @@ export function parseAvtCsv(csvContent: string): any {
       variance_amt: cleanNum(row[I.variance_amt]),
       waste_amt: cleanNum(row[I.waste_amt]),
       donation_amt: cleanNum(row[I.donation_amt]),
-      unexplained_amt,
+      unexplained_amt: unexpAmt,
       // Alias para compatibilidad con el resto del código
       variance_dollar: unexpAmt,
       variance_qty_display: cleanNum(row[I.unexplained_qty]),
