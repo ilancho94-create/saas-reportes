@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
+import { can } from '@/lib/permissions'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend
@@ -25,12 +26,19 @@ const CATEGORIES_BASE = [
   { key: 'wine', label: 'Wine', color: '#ec4899', defaultMeta: 20 },
 ]
 
+const ADJUSTMENT_FIELDS = [
+  { key: 'inv_previous', label: 'Inv. Anterior' },
+  { key: 'purchases', label: 'Compras' },
+  { key: 'inv_current', label: 'Inv. Final' },
+  { key: 'theo_cost', label: 'Costo Teórico adicional' },
+]
+
 type Shortcut = 'last1' | 'last4' | 'last8' | 'month' | 'custom'
 
 export default function CostoUsoPage() {
   const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
-  const [weeks, setWeeks] = useState<any[]>([])   // sorted ASC (oldest first)
+  const [weeks, setWeeks] = useState<any[]>([])
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [alerts, setAlerts] = useState<string[]>([])
@@ -39,11 +47,26 @@ export default function CostoUsoPage() {
   const [customTo, setCustomTo] = useState('')
   const [operatingDays, setOperatingDays] = useState(6)
   const [costTargets, setCostTargets] = useState<Record<string, number>>({})
+  const [userRole, setUserRole] = useState<string>('')
+  const [userCustomPerms, setUserCustomPerms] = useState<any>(null)
+  const [adjustments, setAdjustments] = useState<any[]>([])
+  const [showAdjPanel, setShowAdjPanel] = useState(false)
+  const [adjWeek, setAdjWeek] = useState('')
+  const [adjReportId, setAdjReportId] = useState('')
+  const [adjCategory, setAdjCategory] = useState('')
+  const [adjField, setAdjField] = useState('inv_previous')
+  const [adjValue, setAdjValue] = useState('')
+  const [adjNote, setAdjNote] = useState('')
+  const [adjSaving, setAdjSaving] = useState(false)
+  const [adjError, setAdjError] = useState('')
+  const [showAdjLog, setShowAdjLog] = useState(false)
 
   const CATEGORIES = CATEGORIES_BASE.map(cat => ({
     ...cat,
     meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
   }))
+
+  const canEdit = can(userRole, 'costo_uso', 'edit', userCustomPerms)
 
   useEffect(() => { if (restaurantId) loadData() }, [restaurantId])
 
@@ -52,28 +75,29 @@ export default function CostoUsoPage() {
     setLoading(true)
     setWeeks([])
 
-    const { data: rest } = await supabase
-      .from('restaurants').select('name, operating_days').eq('id', restaurantId).single()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      const { data: ur } = await supabase.from('user_restaurants')
+        .select('role, custom_permissions').eq('user_id', user.id).eq('restaurant_id', restaurantId).single()
+      if (ur) { setUserRole(ur.role || ''); setUserCustomPerms(ur.custom_permissions || null) }
+    }
+
+    const { data: rest } = await supabase.from('restaurants').select('name, operating_days').eq('id', restaurantId).single()
     setRestaurantName(rest?.name || '')
     setOperatingDays(rest?.operating_days || 6)
 
-    const { data: maps } = await supabase
-      .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
+    const { data: maps } = await supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId)
     setMappings(maps || [])
 
-    const { data: tgts } = await supabase
-      .from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
+    const { data: tgts } = await supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
     if (tgts?.length) {
       const m: Record<string, number> = {}
       tgts.forEach((t: any) => { m[t.category] = Number(t.target_pct) })
       setCostTargets(m)
     }
 
-    const { data: reports } = await supabase
-      .from('reports').select('*')
-      .eq('restaurant_id', restaurantId)
-      .order('week', { ascending: true })   // ← ASC: oldest first
-      .limit(52)
+    const { data: reports } = await supabase.from('reports').select('*')
+      .eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52)
 
     if (!reports || reports.length === 0) { setLoading(false); return }
 
@@ -88,40 +112,81 @@ export default function CostoUsoPage() {
     }))
 
     setWeeks(weeksData)
-
     const last = weeksData[weeksData.length - 1]
     setCustomFrom(weeksData.length >= 4 ? weeksData[weeksData.length - 4].report.week : weeksData[0].report.week)
     setCustomTo(last?.report.week || '')
 
-    // Alerts de ajuste de inventario
+    const { data: adjs } = await supabase.from('costo_uso_adjustments')
+      .select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false })
+    setAdjustments(adjs || [])
+
     const newAlerts: string[] = []
     for (let i = 1; i < weeksData.length; i++) {
-      const prev = weeksData[i - 1]
-      const curr = weeksData[i]
+      const prev = weeksData[i - 1]; const curr = weeksData[i]
       if (prev.inventory && curr.inventory) {
         const diff = Math.abs(Number(prev.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous))
-        if (diff > 10) {
-          newAlerts.push(`⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: diferencia de $${diff.toFixed(0)} en inventario`)
-        }
+        if (diff > 10) newAlerts.push(`⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: diferencia de $${diff.toFixed(0)} en inventario`)
       }
     }
     setAlerts(newAlerts)
     setLoading(false)
   }
 
-  // ── Filtered by shortcut ─────────────────────────────────────────────────
+  function getAdj(week: string, category: string, field: string): number {
+    return adjustments.filter(a => a.week === week && a.category === category && a.field === field)
+      .reduce((sum, a) => sum + Number(a.adjustment_value), 0)
+  }
+  function hasAdjustments(week: string): boolean { return adjustments.some(a => a.week === week) }
+  function getWeekAdjustments(week: string): any[] { return adjustments.filter(a => a.week === week) }
+
+  async function saveAdjustment() {
+    if (!adjValue || !adjNote.trim()) { setAdjError('Debes ingresar un valor y una nota explicativa'); return }
+    const numVal = parseFloat(adjValue)
+    if (isNaN(numVal)) { setAdjError('El valor debe ser un número'); return }
+    setAdjSaving(true); setAdjError('')
+    const w = weeks.find(w => w.report.week === adjWeek)
+    let originalValue = 0
+    if (w) {
+      const d = buildWeekData(w)
+      if (adjField === 'inv_previous') originalValue = d[adjCategory + '_inv_previous'] || 0
+      else if (adjField === 'purchases') originalValue = d[adjCategory + '_purchases'] || 0
+      else if (adjField === 'inv_current') originalValue = d[adjCategory + '_inv_current'] || 0
+      else if (adjField === 'theo_cost') originalValue = d[adjCategory + '_theo_cost'] || 0
+    }
+    const { data: { user } } = await supabase.auth.getUser()
+    const { error } = await supabase.from('costo_uso_adjustments').insert({
+      restaurant_id: restaurantId, report_id: adjReportId, week: adjWeek,
+      category: adjCategory, field: adjField, original_value: originalValue,
+      adjustment_value: numVal, note: adjNote.trim(),
+      created_by: user?.email || user?.id || 'unknown',
+    })
+    if (error) { setAdjError('Error al guardar: ' + error.message); setAdjSaving(false); return }
+    const { data: adjs } = await supabase.from('costo_uso_adjustments')
+      .select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false })
+    setAdjustments(adjs || [])
+    setAdjValue(''); setAdjNote(''); setShowAdjPanel(false); setAdjSaving(false)
+  }
+
+  async function deleteAdjustment(id: string) {
+    if (!confirm('¿Eliminar este ajuste? Esta acción no se puede deshacer.')) return
+    await supabase.from('costo_uso_adjustments').delete().eq('id', id)
+    setAdjustments(prev => prev.filter(a => a.id !== id))
+  }
+
+  function openAdjPanel(week: string, reportId: string, category: string) {
+    setAdjWeek(week); setAdjReportId(reportId); setAdjCategory(category)
+    setAdjField('inv_previous'); setAdjValue(''); setAdjNote(''); setAdjError('')
+    setShowAdjPanel(true)
+  }
+
   const filtered = (() => {
     if (weeks.length === 0) return []
     if (shortcut === 'last1') return weeks.slice(-1)
     if (shortcut === 'last4') return weeks.slice(-4)
     if (shortcut === 'last8') return weeks.slice(-8)
     if (shortcut === 'month') {
-      const now = new Date()
-      const y = now.getFullYear(), m = now.getMonth()
-      return weeks.filter(w => {
-        const d = new Date(w.report.week_start)
-        return d.getFullYear() === y && d.getMonth() === m
-      })
+      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
+      return weeks.filter(w => { const d = new Date(w.report.week_start); return d.getFullYear() === y && d.getMonth() === m })
     }
     if (shortcut === 'custom' && customFrom && customTo) {
       const from = customFrom <= customTo ? customFrom : customTo
@@ -131,29 +196,16 @@ export default function CostoUsoPage() {
     return weeks.slice(-4)
   })()
 
-  function fmt(n: any) {
-    if (n === null || n === undefined) return '—'
-    return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 })
-  }
-
-  function fmtPct(n: any) {
-    if (n === null || n === undefined) return '—'
-    return Number(n).toFixed(1) + '%'
-  }
-
-  function pct(part: any, total: any) {
-    if (!part || !total) return null
-    return parseFloat((Number(part) / Number(total) * 100).toFixed(1))
-  }
+  function fmt(n: any) { if (n === null || n === undefined) return '—'; return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }) }
+  function fmtPct(n: any) { if (n === null || n === undefined) return '—'; return Number(n).toFixed(1) + '%' }
+  function pct(part: any, total: any) { if (!part || !total) return null; return parseFloat((Number(part) / Number(total) * 100).toFixed(1)) }
 
   function getMappedSales(categories: any[], targetType: string) {
     if (!categories || !mappings.length) return 0
-    return categories
-      .filter((cat: any) => {
-        const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
-        return mapping?.mapped_to === targetType
-      })
-      .reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
+    return categories.filter((cat: any) => {
+      const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
+      return mapping?.mapped_to === targetType
+    }).reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
   }
 
   function getInventoryByCategory(invAccounts: any[], categoryKey: string) {
@@ -172,41 +224,50 @@ export default function CostoUsoPage() {
     const salesCategories = w.sales?.categories || []
     const theoCostByCat = w.productMix?.theo_cost_by_category || {}
     const hasInventory = invAccounts.length > 0
-    const result: any = { week: w.report.week.replace('2026-', ''), netSales, hasInventory, hasProductMix: !!w.productMix }
+    const week = w.report.week
+    const result: any = { week: week.replace('2026-', ''), fullWeek: week, reportId: w.report.id, netSales, hasInventory, hasProductMix: !!w.productMix }
     let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
 
     CATEGORIES.forEach(cat => {
       const inv = getInventoryByCategory(invAccounts, cat.key)
-      const purchases = cogsCat[cat.key] || 0
-      const uso = hasInventory ? Math.max((inv.previous + purchases - inv.current), 0) : 0
+      const adjInvPrev = getAdj(week, cat.key, 'inv_previous')
+      const adjPurchases = getAdj(week, cat.key, 'purchases')
+      const adjInvCurr = getAdj(week, cat.key, 'inv_current')
+      const adjTheo = getAdj(week, cat.key, 'theo_cost')
+      const invPrevious = inv.previous + adjInvPrev
+      const purchases = (cogsCat[cat.key] || 0) + adjPurchases
+      const invCurrent = inv.current + adjInvCurr
+      const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
       const catSales = getMappedSales(salesCategories, cat.key) || 0
-      const theoCost = theoCostByCat[cat.key] || 0
+      const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
       const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
         ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
-      const diasInv = uso > 0 ? parseFloat((((inv.current + inv.previous) / 2) / uso * operatingDays).toFixed(1)) : null
+      const diasInv = uso > 0 ? parseFloat((((invCurrent + invPrevious) / 2) / uso * operatingDays).toFixed(1)) : null
+      const hasAdj = adjInvPrev !== 0 || adjPurchases !== 0 || adjInvCurr !== 0 || adjTheo !== 0
       result[cat.key + '_uso'] = uso
       result[cat.key + '_uso_pct'] = realPct || 0
       result[cat.key + '_theo_pct'] = mixPct || 0
       result[cat.key + '_variacion'] = variacionDolares
       result[cat.key + '_dias_inv'] = diasInv
-      result[cat.key + '_inv_current'] = inv.current
-      result[cat.key + '_inv_previous'] = inv.previous
+      result[cat.key + '_inv_current'] = invCurrent
+      result[cat.key + '_inv_previous'] = invPrevious
       result[cat.key + '_purchases'] = purchases
       result[cat.key + '_sales'] = catSales
+      result[cat.key + '_has_adj'] = hasAdj
+      result[cat.key + '_theo_cost'] = theoCost
       if (uso > 0) totalUsoCost += uso
       if (theoCost > 0) totalTheoCost += theoCost
       if (catSales > 0) totalABSales += catSales
     })
 
-    result.totalUsoCost = totalUsoCost
-    result.totalTheoCost = totalTheoCost
-    result.totalABSales = totalABSales
+    result.totalUsoCost = totalUsoCost; result.totalTheoCost = totalTheoCost; result.totalABSales = totalABSales
     result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
     result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
     result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
       ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
+    result.hasAnyAdj = hasAdjustments(week)
     return result
   }
 
@@ -216,58 +277,50 @@ export default function CostoUsoPage() {
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
   const isMultiWeek = filtered.length > 1
 
-  // ── Promedio ponderado del rango (Σuso / Σventas) ─────────────────────────
   const rangeSummary = (() => {
     let totalUso = 0, totalTheo = 0, totalABSales = 0, totalVariacion = 0
-    const catTotals: Record<string, { uso: number; theo: number; sales: number; variacion: number }> = {}
-    CATEGORIES.forEach(cat => { catTotals[cat.key] = { uso: 0, theo: 0, sales: 0, variacion: 0 } })
     filtered.forEach(w => {
       const d = buildWeekData(w)
       if (!d.hasInventory) return
       totalUso += d.totalUsoCost; totalTheo += d.totalTheoCost
       totalABSales += d.totalABSales
       if (d.totalVariacion !== null) totalVariacion += d.totalVariacion
-      CATEGORIES.forEach(cat => {
-        catTotals[cat.key].uso += d[cat.key + '_uso'] || 0
-        catTotals[cat.key].theo += 0
-        catTotals[cat.key].sales += d[cat.key + '_sales'] || 0
-        if (d[cat.key + '_variacion'] !== null) catTotals[cat.key].variacion += d[cat.key + '_variacion'] || 0
-      })
     })
-    const totalRealPct = totalABSales > 0 ? parseFloat((totalUso / totalABSales * 100).toFixed(1)) : null
-    const totalMixPct = totalABSales > 0 ? parseFloat((totalTheo / totalABSales * 100).toFixed(1)) : null
-    return { totalUso, totalTheo, totalABSales, totalVariacion, totalRealPct, totalMixPct, catTotals }
+    return {
+      totalUso, totalTheo, totalABSales, totalVariacion,
+      totalRealPct: totalABSales > 0 ? parseFloat((totalUso / totalABSales * 100).toFixed(1)) : null,
+      totalMixPct: totalABSales > 0 ? parseFloat((totalTheo / totalABSales * 100).toFixed(1)) : null,
+    }
   })()
 
   const SHORTCUTS: { key: Shortcut; label: string }[] = [
-    { key: 'last1', label: 'Última semana' },
-    { key: 'last4', label: 'Últimas 4 sem' },
-    { key: 'last8', label: 'Últimas 8 sem' },
-    { key: 'month', label: 'Este mes' },
-    { key: 'custom', label: 'Custom' },
+    { key: 'last1', label: 'Última semana' }, { key: 'last4', label: 'Últimas 4 sem' },
+    { key: 'last8', label: 'Últimas 8 sem' }, { key: 'month', label: 'Este mes' }, { key: 'custom', label: 'Custom' },
   ]
 
-  if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <p className="text-gray-400">Cargando costo de uso...</p>
-    </div>
-  )
+  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><p className="text-gray-400">Cargando costo de uso...</p></div>
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* ── Header + Selectores ── */}
+      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-white font-bold text-lg">📦 Costo de Uso</h1>
             <span className="bg-blue-900 text-blue-400 text-xs px-2 py-0.5 rounded-full font-medium">Inventario Real</span>
             <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">{operatingDays} días/semana</span>
+            {adjustments.length > 0 && (
+              <button onClick={() => setShowAdjLog(!showAdjLog)}
+                className="bg-yellow-900 text-yellow-400 text-xs px-2 py-0.5 rounded-full font-medium hover:bg-yellow-800 transition">
+                ✏️ {adjustments.length} ajuste{adjustments.length !== 1 ? 's' : ''} manual{adjustments.length !== 1 ? 'es' : ''}
+              </button>
+            )}
           </div>
           <p className="text-gray-500 text-xs mt-0.5">{restaurantName} · (Inv. Anterior + Compras − Inv. Actual) / Ventas</p>
         </div>
       </div>
 
-      {/* ── Shortcuts ── */}
+      {/* Shortcuts */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-3">
         <div className="flex items-center gap-2 flex-wrap">
           {SHORTCUTS.map(s => (
@@ -294,6 +347,113 @@ export default function CostoUsoPage() {
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+
+        {/* ── Modal ajuste ── */}
+        {showAdjPanel && canEdit && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md">
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h3 className="text-white font-bold text-base">✏️ Ajuste manual</h3>
+                  <p className="text-gray-500 text-xs mt-0.5">{adjWeek} · {CATEGORIES.find(c => c.key === adjCategory)?.label}</p>
+                </div>
+                <button onClick={() => setShowAdjPanel(false)} className="text-gray-500 hover:text-white">✕</button>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1">Campo a ajustar</label>
+                  <select value={adjField} onChange={e => setAdjField(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+                    {ADJUSTMENT_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1">Valor a <strong>sumar</strong> al actual (negativo para restar)</label>
+                  <input type="number" value={adjValue} onChange={e => setAdjValue(e.target.value)}
+                    placeholder="Ej: 500 o -200"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500" />
+                  <p className="text-gray-600 text-xs mt-1">Positivo = incrementar · Negativo = reducir</p>
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1">Nota explicativa <span className="text-red-400">*</span></label>
+                  <textarea value={adjNote} onChange={e => setAdjNote(e.target.value)}
+                    placeholder="Explica la razón del ajuste (ej: producto sin receta, costo inventariado por fuera)..."
+                    rows={3}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-none" />
+                </div>
+                {adjError && <p className="text-red-400 text-xs">{adjError}</p>}
+                <div className="bg-gray-800 rounded-lg px-4 py-3">
+                  <p className="text-gray-500 text-xs">⚠️ Este ajuste quedará registrado con tu usuario y fecha. Visible para todos con acceso a Costo de Uso.</p>
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={() => setShowAdjPanel(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-sm transition">Cancelar</button>
+                  <button onClick={saveAdjustment} disabled={adjSaving}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white py-2 rounded-lg text-sm font-medium transition">
+                    {adjSaving ? 'Guardando...' : 'Guardar ajuste'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Log de ajustes ── */}
+        {showAdjLog && (
+          <div className="bg-gray-900 border border-yellow-800 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-yellow-400 font-semibold">✏️ Registro completo de ajustes manuales</h3>
+              <button onClick={() => setShowAdjLog(false)} className="text-gray-500 hover:text-white text-sm">✕</button>
+            </div>
+            {adjustments.length === 0 ? (
+              <p className="text-gray-500 text-sm">No hay ajustes registrados.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-800">
+                      <th className="text-left text-gray-500 pb-2 font-medium">Semana</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Categoría</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Campo</th>
+                      <th className="text-right text-gray-500 pb-2 font-medium">Valor original</th>
+                      <th className="text-right text-gray-500 pb-2 font-medium">Ajuste</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Nota</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Por</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Fecha</th>
+                      {canEdit && <th className="pb-2" />}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adjustments.map(a => (
+                      <tr key={a.id} className="border-b border-gray-800 hover:bg-gray-800/50">
+                        <td className="py-2 text-gray-300">{a.week}</td>
+                        <td className="py-2 text-gray-300">{CATEGORIES.find(c => c.key === a.category)?.label || a.category}</td>
+                        <td className="py-2 text-gray-400">{ADJUSTMENT_FIELDS.find(f => f.key === a.field)?.label || a.field}</td>
+                        <td className="py-2 text-right text-gray-500">{fmt(a.original_value)}</td>
+                        <td className={`py-2 text-right font-bold ${Number(a.adjustment_value) > 0 ? 'text-yellow-400' : 'text-blue-400'}`}>
+                          {Number(a.adjustment_value) > 0 ? '+' : ''}{fmt(a.adjustment_value)}
+                        </td>
+                        <td className="py-2 text-gray-400 max-w-xs" style={{ maxWidth: 200 }}>
+                          <span title={a.note} className="truncate block">{a.note}</span>
+                        </td>
+                        <td className="py-2 text-gray-500">{a.created_by?.split('@')[0] || '—'}</td>
+                        <td className="py-2 text-gray-600">{new Date(a.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric', year: '2-digit' })}</td>
+                        {canEdit && (
+                          <td className="py-2">
+                            <button onClick={() => deleteAdjustment(a.id)}
+                              className="text-red-500 hover:text-red-400 text-xs px-2 py-0.5 rounded hover:bg-red-950 transition">
+                              Eliminar
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="bg-blue-950 border border-blue-900 rounded-xl px-5 py-3 flex items-start gap-3">
           <span className="text-blue-400 text-lg">ℹ️</span>
           <div>
@@ -319,10 +479,7 @@ export default function CostoUsoPage() {
             <div className="text-5xl mb-4">📦</div>
             <h2 className="text-white font-semibold text-lg mb-2">No hay datos de inventario</h2>
             <p className="text-gray-500 mb-6">Sube el <strong>Inventory Count Review</strong> de R365 para ver el costo de uso real.</p>
-            <button onClick={() => window.location.href = '/upload'}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg">
-              Subir reporte
-            </button>
+            <button onClick={() => window.location.href = '/upload'} className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg">Subir reporte</button>
           </div>
         ) : (
           <>
@@ -331,22 +488,17 @@ export default function CostoUsoPage() {
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
                   {isMultiWeek
                     ? `Promedio ponderado del período — ${filtered[0]?.report?.week} → ${latest?.report?.week} (${filtered.length} semanas)`
-                    : `Semana — ${latest?.report?.week} (${latest?.report?.week_start} al ${latest?.report?.week_end})`
-                  }
+                    : `Semana — ${latest?.report?.week} (${latest?.report?.week_start} al ${latest?.report?.week_end})`}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">% Costo Real A&B {isMultiWeek ? '(pond.)' : ''}</p>
-                    <p className="text-3xl font-bold text-blue-400">
-                      {rangeSummary.totalRealPct !== null ? rangeSummary.totalRealPct + '%' : '—'}
-                    </p>
+                    <p className="text-3xl font-bold text-blue-400">{rangeSummary.totalRealPct !== null ? rangeSummary.totalRealPct + '%' : '—'}</p>
                     <p className="text-gray-600 text-xs mt-1">{fmt(rangeSummary.totalUso)} uso {isMultiWeek ? 'acumulado' : 'real'}</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">% Costo P.Mix {isMultiWeek ? '(pond.)' : ''}</p>
-                    <p className="text-3xl font-bold text-green-400">
-                      {rangeSummary.totalMixPct !== null ? rangeSummary.totalMixPct + '%' : '—'}
-                    </p>
+                    <p className="text-3xl font-bold text-green-400">{rangeSummary.totalMixPct !== null ? rangeSummary.totalMixPct + '%' : '—'}</p>
                     <p className="text-gray-600 text-xs mt-1">{fmt(rangeSummary.totalTheo)} teórico</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -354,9 +506,7 @@ export default function CostoUsoPage() {
                     <p className={`text-3xl font-bold ${rangeSummary.totalVariacion > 0 ? 'text-red-400' : rangeSummary.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                       {rangeSummary.totalVariacion !== null ? (rangeSummary.totalVariacion > 0 ? '+' : '') + fmt(rangeSummary.totalVariacion) : '—'}
                     </p>
-                    <p className="text-gray-600 text-xs mt-1">
-                      {rangeSummary.totalVariacion > 0 ? 'sobre lo teórico' : rangeSummary.totalVariacion < 0 ? 'bajo lo teórico' : ''}
-                    </p>
+                    <p className="text-gray-600 text-xs mt-1">{rangeSummary.totalVariacion > 0 ? 'sobre lo teórico' : rangeSummary.totalVariacion < 0 ? 'bajo lo teórico' : ''}</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
@@ -365,8 +515,12 @@ export default function CostoUsoPage() {
                   </div>
                 </div>
 
+                {/* Tabla por categoría */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                  <h2 className="text-white font-semibold mb-4">Detalle por categoría — {latest?.report?.week}</h2>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-white font-semibold">Detalle por categoría — {latest?.report?.week}</h2>
+                    {latestData.hasAnyAdj && <span className="text-yellow-400 text-xs bg-yellow-950 px-2 py-1 rounded-full">✏️ Contiene ajustes manuales</span>}
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -381,6 +535,7 @@ export default function CostoUsoPage() {
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Días Inv</th>
+                          {canEdit && <th className="text-center text-gray-500 text-xs pb-3 font-medium">Ajuste</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -389,6 +544,7 @@ export default function CostoUsoPage() {
                           const mixPct = latestData[cat.key + '_theo_pct']
                           const variacion = latestData[cat.key + '_variacion']
                           const dias = latestData[cat.key + '_dias_inv']
+                          const hasAdj = latestData[cat.key + '_has_adj']
                           const overMeta = cat.meta && realPct && realPct > cat.meta
                           return (
                             <tr key={cat.key} className="border-b border-gray-800 hover:bg-gray-800 transition">
@@ -396,6 +552,7 @@ export default function CostoUsoPage() {
                                 <div className="flex items-center gap-2">
                                   <div className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color }} />
                                   <span className="text-gray-300 text-sm">{cat.label}</span>
+                                  {hasAdj && <span className="text-yellow-400 text-xs" title="Tiene ajuste manual aplicado">✏️</span>}
                                 </div>
                               </td>
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_inv_previous'])}</td>
@@ -403,9 +560,7 @@ export default function CostoUsoPage() {
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(latestData[cat.key + '_inv_current'])}</td>
                               <td className="py-3 text-right text-white text-sm font-medium">{fmt(latestData[cat.key + '_uso'])}</td>
                               <td className="py-3 text-right text-gray-400 text-sm">{fmt(latestData[cat.key + '_sales'])}</td>
-                              <td className="py-3 text-right">
-                                <span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</span>
-                              </td>
+                              <td className="py-3 text-right"><span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</span></td>
                               <td className="py-3 text-right text-blue-400 text-sm">{fmtPct(mixPct)}</td>
                               <td className="py-3 text-right">
                                 {variacion !== null ? (
@@ -415,6 +570,14 @@ export default function CostoUsoPage() {
                                 ) : <span className="text-gray-600">—</span>}
                               </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>
+                              {canEdit && (
+                                <td className="py-3 text-center">
+                                  <button onClick={() => openAdjPanel(latest.report.week, latest.report.id, cat.key)}
+                                    className="text-xs px-2 py-1 rounded-lg bg-gray-800 hover:bg-yellow-900 text-gray-400 hover:text-yellow-400 transition">
+                                    + Ajuste
+                                  </button>
+                                </td>
+                              )}
                             </tr>
                           )
                         })}
@@ -423,11 +586,7 @@ export default function CostoUsoPage() {
                           <td colSpan={3} />
                           <td className="py-3 text-right text-white font-bold">{fmt(latestData.totalUsoCost)}</td>
                           <td className="py-3 text-right text-white font-bold">{fmt(latestData.totalABSales)}</td>
-                          <td className="py-3 text-right">
-                            <span className={`font-bold ${latestData.totalRealPct && latestData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>
-                              {fmtPct(latestData.totalRealPct)}
-                            </span>
-                          </td>
+                          <td className="py-3 text-right"><span className={`font-bold ${latestData.totalRealPct && latestData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(latestData.totalRealPct)}</span></td>
                           <td className="py-3 text-right text-blue-400 font-bold">{fmtPct(latestData.totalMixPct)}</td>
                           <td className="py-3 text-right">
                             {latestData.totalVariacion !== null ? (
@@ -436,11 +595,37 @@ export default function CostoUsoPage() {
                               </span>
                             ) : '—'}
                           </td>
-                          <td />
+                          <td />{canEdit && <td />}
                         </tr>
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Ajustes inline de esta semana */}
+                  {latestData.hasAnyAdj && (
+                    <div className="mt-4 pt-4 border-t border-gray-800">
+                      <p className="text-yellow-400 text-xs font-semibold mb-2">✏️ Ajustes aplicados esta semana:</p>
+                      <div className="space-y-1">
+                        {getWeekAdjustments(latest?.report?.week).map(a => (
+                          <div key={a.id} className="flex items-center gap-3 text-xs bg-yellow-950/40 rounded-lg px-3 py-2">
+                            <span className="text-yellow-300 font-medium shrink-0">{CATEGORIES.find(c => c.key === a.category)?.label}</span>
+                            <span className="text-gray-600">·</span>
+                            <span className="text-gray-400 shrink-0">{ADJUSTMENT_FIELDS.find(f => f.key === a.field)?.label}</span>
+                            <span className={`font-bold shrink-0 ${Number(a.adjustment_value) > 0 ? 'text-yellow-400' : 'text-blue-400'}`}>
+                              {Number(a.adjustment_value) > 0 ? '+' : ''}{fmt(a.adjustment_value)}
+                            </span>
+                            <span className="text-gray-600">·</span>
+                            <span className="text-gray-400 flex-1 truncate">{a.note}</span>
+                            <span className="text-gray-600 shrink-0">{a.created_by?.split('@')[0]}</span>
+                            {canEdit && (
+                              <button onClick={() => deleteAdjustment(a.id)}
+                                className="text-red-500 hover:text-red-400 hover:bg-red-950 px-1.5 py-0.5 rounded transition shrink-0">✕</button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -456,8 +641,7 @@ export default function CostoUsoPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                         <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                          formatter={(v: any, name: any) => [v + '%', name]} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
                         <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
                         <Line type="monotone" dataKey="totalRealPct" name="% Real" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
                         <Line type="monotone" dataKey="totalMixPct" name="% P.Mix" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} />
@@ -472,14 +656,12 @@ export default function CostoUsoPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                         <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
-                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                          formatter={(v: any) => [fmt(v), 'Variación']} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
                         <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
-
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
                   <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
@@ -488,12 +670,10 @@ export default function CostoUsoPage() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                       <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                        formatter={(v: any, name: any) => [v + '%', name]} />
+                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
                       <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
                       {CATEGORIES.map(cat => (
-                        <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label}
-                          stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
+                        <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label} stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
                       ))}
                     </LineChart>
                   </ResponsiveContainer>
@@ -523,14 +703,15 @@ export default function CostoUsoPage() {
                       return (
                         <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
                           <td className="py-3">
-                            <p className="text-gray-300">{w.report.week}</p>
-                            <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
+                            <div className="flex items-center gap-2">
+                              <div>
+                                <p className="text-gray-300">{w.report.week}</p>
+                                <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
+                              </div>
+                              {d.hasAnyAdj && <span className="text-yellow-400 text-xs" title="Semana con ajustes manuales">✏️</span>}
+                            </div>
                           </td>
-                          <td className="py-3 text-right">
-                            <span className={`font-medium ${d.totalRealPct && d.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>
-                              {fmtPct(d.totalRealPct)}
-                            </span>
-                          </td>
+                          <td className="py-3 text-right"><span className={`font-medium ${d.totalRealPct && d.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(d.totalRealPct)}</span></td>
                           <td className="py-3 text-right text-blue-400">{fmtPct(d.totalMixPct)}</td>
                           <td className="py-3 text-right">
                             {d.totalVariacion !== null ? (

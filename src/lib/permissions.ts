@@ -6,13 +6,13 @@ export type Action = 'view' | 'edit' | 'create'
 export const ROLE_PERMISSIONS: Record<string, Record<Module, Action[]>> = {
   admin: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
-    costo_uso: ['view'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
+    costo_uso: ['view', 'edit'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
     historial: ['view'], upload: ['view', 'create'], settings: ['view', 'edit'],
     users: ['view', 'edit', 'create'],
   },
   owner: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
-    costo_uso: ['view'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
+    costo_uso: ['view', 'edit'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
     historial: ['view'], upload: ['view', 'create'], settings: ['view', 'edit'],
     users: ['view', 'edit', 'create'],
   },
