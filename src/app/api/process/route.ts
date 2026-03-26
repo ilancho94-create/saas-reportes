@@ -9,6 +9,7 @@ import { parseDiscountsCsv } from '@/lib/parsers/parse-discounts'
 import { parseCOGSExcel, buildCOGSDateWarning } from '@/lib/parsers/parse-cogs'
 import { parseWasteExcel, buildWasteDateWarning } from '@/lib/parsers/parse-waste'
 import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
+import { parseEmployeePerformanceExcel } from '@/lib/parsers/parse-employee-performance'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -201,6 +202,25 @@ export async function POST(request: NextRequest) {
       } catch (err: any) {
         console.error('Error processing receiving:', err)
         results['receiving'] = { error: err.message }
+      }
+    }
+
+    // ── EMPLOYEE PERFORMANCE (.xlsx) ───────────────────────────────────────
+    const employeeFile = formData.get('employee_performance') as File | null
+    if (employeeFile && employeeFile.size > 0) {
+      try {
+        const buffer = Buffer.from(await employeeFile.arrayBuffer())
+        const data = parseEmployeePerformanceExcel(buffer)
+        await supabase.from('employee_performance_data').insert({
+          report_id: report.id,
+          restaurant_id,
+          week,
+          employees: data.employees,
+        })
+        results['employee_performance'] = { employees: data.employees.length }
+      } catch (err: any) {
+        console.error('Error processing employee performance:', err)
+        results['employee_performance'] = { error: err.message }
       }
     }
 

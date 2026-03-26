@@ -1,5 +1,5 @@
 export type Module = 'dashboard' | 'ventas' | 'labor' | 'food_cost' | 'costo_uso' | 
-  'waste' | 'avt' | 'compras' | 'historial' | 'upload' | 'settings' | 'users'
+  'waste' | 'avt' | 'compras' | 'historial' | 'upload' | 'settings' | 'users' | 'employee'
 
 export type Action = 'view' | 'edit' | 'create'
 
@@ -8,25 +8,25 @@ export const ROLE_PERMISSIONS: Record<string, Record<Module, Action[]>> = {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
     costo_uso: ['view', 'edit'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
     historial: ['view'], upload: ['view', 'create'], settings: ['view', 'edit'],
-    users: ['view', 'edit', 'create'],
+    users: ['view', 'edit', 'create'], employee: ['view']
   },
   owner: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
     costo_uso: ['view', 'edit'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
     historial: ['view'], upload: ['view', 'create'], settings: ['view', 'edit'],
-    users: ['view', 'edit', 'create'],
+    users: ['view', 'edit', 'create'], employee: ['view']
   },
   gm: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
     costo_uso: ['view'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
     historial: ['view'], upload: ['view', 'create'], settings: ['view', 'edit'],
-    users: ['view'],
+    users: ['view'], employee: ['view']
   },
   manager: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
     costo_uso: ['view'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
     historial: ['view'], upload: ['view', 'create'], settings: ['view'],
-    users: [],
+    users: [], employee: ['view']
   },
   chef: {
     dashboard: ['view'], ventas: [], labor: [], food_cost: ['view'],

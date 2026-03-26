@@ -16,6 +16,7 @@ const STEPS = [
   { id: 'product_mix', label: 'Product Mix Toast', icon: '🍽️', system: 'Toast', required: false, accept: '.xlsx', acceptLabel: 'Excel (.xlsx)', where: 'Toast → Reports → Product Mix', extracts: 'Ventas por item y categoría de menú' },
   { id: 'menu_analysis', label: 'Menu Item Analysis', icon: '📋', system: 'R365', required: false, accept: '.xlsx', acceptLabel: 'Excel (.xlsx)', where: 'R365 → Reports → Menu Item Analysis', extracts: 'Costo teórico por item para calcular % P.Mix' },
   { id: 'receiving', label: 'Compras de Insumos', icon: '🧾', system: 'R365', required: false, accept: '.csv', acceptLabel: 'CSV (.csv)', where: 'R365 → Reports → Receiving by Purchased Item', extracts: 'Costo unitario por insumo, proveedor y categoría' },
+  { id: 'employee_performance', label: 'Employee Performance', icon: '🏆', system: 'Toast', required: false, accept: '.xlsx', acceptLabel: 'Excel (.xlsx)', where: 'Toast → Reports → Employee Performance', extracts: 'Ventas por servidor, ventas/hora, ticket promedio, voids y tiempo de turno' },
 ]
 
 const TABLE_MAP: Record<string, string> = {
@@ -56,10 +57,12 @@ export default function EditReportPage() {
     )
     const { data: pmData } = await supabase.from('product_mix_data').select('id').eq('report_id', reportId).single()
     const { data: recData } = await supabase.from('receiving_data').select('id').eq('report_id', reportId).limit(1)
+    const { data: empData } = await supabase.from('employee_performance_data').select('id').eq('report_id', reportId).single()
     const existingMap = Object.fromEntries(checks)
     existingMap['product_mix'] = !!pmData
     existingMap['menu_analysis'] = !!pmData
     existingMap['receiving'] = !!(recData && recData.length > 0)
+    existingMap['employee_performance'] = !!empData
     setExistingData(existingMap)
     setLoading(false)
   }
@@ -69,9 +72,7 @@ export default function EditReportPage() {
     if (!s) return null
     const allowed = s.accept.split(',').map(a => a.trim().toLowerCase())
     const ext = '.' + file.name.split('.').pop()?.toLowerCase()
-    if (!allowed.includes(ext)) {
-      return `Este paso requiere ${s.acceptLabel}. El archivo "${file.name}" no es válido.`
-    }
+    if (!allowed.includes(ext)) return `Este paso requiere ${s.acceptLabel}. El archivo "${file.name}" no es válido.`
     return null
   }
 
@@ -159,7 +160,6 @@ export default function EditReportPage() {
 
         {!isLastStep ? (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-
             <div className="px-6 py-5 border-b border-gray-800 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <span className="text-3xl">{step.icon}</span>
@@ -205,8 +205,7 @@ export default function EditReportPage() {
                   </div>
                   <label className="cursor-pointer text-gray-400 text-sm hover:text-white">
                     Cambiar
-                    <input type="file" accept={step.accept} className="hidden"
-                      onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
+                    <input type="file" accept={step.accept} className="hidden" onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
                   </label>
                 </div>
               ) : existingData[step.id] ? (
@@ -226,8 +225,7 @@ export default function EditReportPage() {
                       <p className="text-gray-500 text-xs mb-3">Arrastra aquí o</p>
                       <span className="inline-block bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-4 py-2 rounded-lg transition">Buscar archivo</span>
                       <p className="text-gray-600 text-xs mt-2">Solo se acepta: <span className="text-gray-400 font-medium">{step.acceptLabel}</span></p>
-                      <input type="file" accept={step.accept} className="hidden"
-                        onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
+                      <input type="file" accept={step.accept} className="hidden" onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
                     </label>
                   </div>
                 </div>
@@ -240,8 +238,7 @@ export default function EditReportPage() {
                     <p className="text-gray-500 text-sm mb-3">o</p>
                     <span className="inline-block bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-4 py-2 rounded-lg transition">Buscar archivo</span>
                     <p className="text-gray-600 text-xs mt-3">Solo se acepta: <span className="text-gray-400 font-medium">{step.acceptLabel}</span></p>
-                    <input type="file" accept={step.accept} className="hidden"
-                      onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
+                    <input type="file" accept={step.accept} className="hidden" onChange={e => e.target.files?.[0] && handleFileInput(e.target.files[0], step.id)} />
                   </label>
                 </div>
               )}

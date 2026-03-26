@@ -25,6 +25,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { section: 'ANALISIS', items: [
       { label: 'Ventas', icon: '💰', href: '/dashboard/ventas', module: 'ventas' },
       { label: 'Labor', icon: '👥', href: '/dashboard/labor', module: 'labor' },
+      { label: 'Employee', icon: '🏆', href: '/dashboard/employee', module: 'labor' },
       { label: 'Food Cost', icon: '🛒', href: '/dashboard/food-cost', module: 'food_cost' },
       { label: 'Costo de Uso', icon: '📦', href: '/dashboard/costo-uso', module: 'costo_uso' },
       { label: 'Waste', icon: '🗑️', href: '/dashboard/waste', module: 'waste' },
