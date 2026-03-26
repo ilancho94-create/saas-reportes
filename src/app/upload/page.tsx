@@ -88,6 +88,13 @@ const STEPS = [
     instructions: ['Abre Toast POS', 'Ve a Reports', 'Click en Employee Performance', 'Selecciona el rango de fechas de tu semana', 'Exporta como .xlsx'],
     extracts: 'Ventas por servidor, ventas/hora, ticket promedio, voids y tiempo de turno',
   },
+  {
+  id: 'kitchen_details', label: 'Kitchen Details', icon: '🍳', system: 'Toast', required: false,
+  accept: '.csv', acceptLabel: 'CSV (.csv)',
+  where: 'Toast → Reports → Kitchen Details',
+  instructions: ['Abre Toast POS', 'Ve a Reports', 'Click en Kitchen Details', 'Selecciona el rango de fechas', 'Exporta como .csv'],
+  extracts: 'Tiempos de cocina y bar por estación, día y hora',
+},
 ]
 
 export default function UploadPage() {

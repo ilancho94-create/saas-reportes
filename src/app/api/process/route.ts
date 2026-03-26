@@ -10,6 +10,7 @@ import { parseCOGSExcel, buildCOGSDateWarning } from '@/lib/parsers/parse-cogs'
 import { parseWasteExcel, buildWasteDateWarning } from '@/lib/parsers/parse-waste'
 import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
 import { parseEmployeePerformanceExcel } from '@/lib/parsers/parse-employee-performance'
+import { parseKitchenDetailsCsv } from '@/lib/parsers/parse-kitchen-details'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -212,15 +213,30 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await employeeFile.arrayBuffer())
         const data = parseEmployeePerformanceExcel(buffer)
         await supabase.from('employee_performance_data').insert({
-          report_id: report.id,
-          restaurant_id,
-          week,
-          employees: data.employees,
+          report_id: report.id, restaurant_id, week, employees: data.employees,
         })
         results['employee_performance'] = { employees: data.employees.length }
       } catch (err: any) {
         console.error('Error processing employee performance:', err)
         results['employee_performance'] = { error: err.message }
+      }
+    }
+
+    // ── KITCHEN DETAILS (.csv) ─────────────────────────────────────────────
+    const kitchenFile = formData.get('kitchen_details') as File | null
+    if (kitchenFile && kitchenFile.size > 0) {
+      try {
+        const buffer = Buffer.from(await kitchenFile.arrayBuffer())
+        const data = parseKitchenDetailsCsv(buffer.toString('utf-8'))
+        await supabase.from('kitchen_performance_data').insert({
+          report_id: report.id, restaurant_id, week,
+          tickets: data.tickets,
+          detected_stations: data.detected_stations,
+        })
+        results['kitchen_details'] = { tickets: data.tickets.length, stations: data.detected_stations.length }
+      } catch (err: any) {
+        console.error('Error processing kitchen details:', err)
+        results['kitchen_details'] = { error: err.message }
       }
     }
 

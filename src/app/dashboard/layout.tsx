@@ -31,6 +31,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       { label: 'Waste', icon: '🗑️', href: '/dashboard/waste', module: 'waste' },
       { label: 'Actual vs Teórico', icon: '📊', href: '/dashboard/avt', module: 'avt' },
       { label: 'Compras', icon: '🧾', href: '/dashboard/compras', module: 'compras' },
+      { label: 'Kitchen', icon: '🍳', href: '/dashboard/kitchen', module: 'kitchen' },
     ]},
     { section: 'REPORTES', items: [
       { label: 'Historial', icon: '📅', href: '/dashboard/history', module: 'historial' },

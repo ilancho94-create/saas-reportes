@@ -17,6 +17,7 @@ const STEPS = [
   { id: 'menu_analysis', label: 'Menu Item Analysis', icon: '📋', system: 'R365', required: false, accept: '.xlsx', acceptLabel: 'Excel (.xlsx)', where: 'R365 → Reports → Menu Item Analysis', extracts: 'Costo teórico por item para calcular % P.Mix' },
   { id: 'receiving', label: 'Compras de Insumos', icon: '🧾', system: 'R365', required: false, accept: '.csv', acceptLabel: 'CSV (.csv)', where: 'R365 → Reports → Receiving by Purchased Item', extracts: 'Costo unitario por insumo, proveedor y categoría' },
   { id: 'employee_performance', label: 'Employee Performance', icon: '🏆', system: 'Toast', required: false, accept: '.xlsx', acceptLabel: 'Excel (.xlsx)', where: 'Toast → Reports → Employee Performance', extracts: 'Ventas por servidor, ventas/hora, ticket promedio, voids y tiempo de turno' },
+  { id: 'kitchen_details', label: 'Kitchen Details', icon: '🍳', system: 'Toast', required: false, accept: '.csv', acceptLabel: 'CSV (.csv)', where: 'Toast → Reports → Kitchen Details', extracts: 'Tiempos de cocina y bar por estación, día y hora' },
 ]
 
 const TABLE_MAP: Record<string, string> = {
@@ -58,11 +59,13 @@ export default function EditReportPage() {
     const { data: pmData } = await supabase.from('product_mix_data').select('id').eq('report_id', reportId).single()
     const { data: recData } = await supabase.from('receiving_data').select('id').eq('report_id', reportId).limit(1)
     const { data: empData } = await supabase.from('employee_performance_data').select('id').eq('report_id', reportId).single()
+    const { data: kitData } = await supabase.from('kitchen_performance_data').select('id').eq('report_id', reportId).single()
     const existingMap = Object.fromEntries(checks)
     existingMap['product_mix'] = !!pmData
     existingMap['menu_analysis'] = !!pmData
     existingMap['receiving'] = !!(recData && recData.length > 0)
     existingMap['employee_performance'] = !!empData
+    existingMap['kitchen_details'] = !!kitData
     setExistingData(existingMap)
     setLoading(false)
   }

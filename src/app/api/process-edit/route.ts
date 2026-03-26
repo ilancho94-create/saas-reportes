@@ -10,6 +10,7 @@ import { parseCOGSExcel, buildCOGSDateWarning } from '@/lib/parsers/parse-cogs'
 import { parseWasteExcel, buildWasteDateWarning } from '@/lib/parsers/parse-waste'
 import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
 import { parseEmployeePerformanceExcel } from '@/lib/parsers/parse-employee-performance'
+import { parseKitchenDetailsCsv } from '@/lib/parsers/parse-kitchen-details'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -188,7 +189,6 @@ export async function POST(request: NextRequest) {
         const restaurantId = existingReport?.restaurant_id || '00000000-0000-0000-0000-000000000001'
         let productMix: any = null
         let menuAnalysis: any = null
-
         if (productMixFile && productMixFile.size > 0) {
           const buffer = Buffer.from(await productMixFile.arrayBuffer())
           productMix = parseProductMixExcel(buffer)
@@ -199,7 +199,6 @@ export async function POST(request: NextRequest) {
           menuAnalysis = parseMenuAnalysisExcel(buffer)
           results['menu_analysis'] = { items: menuAnalysis.by_item?.length, total_theo_cost: menuAnalysis.total_theo_cost }
         }
-
         if (!productMix || !menuAnalysis) {
           const { data: existing } = await supabase.from('product_mix_data').select('raw_data').eq('report_id', reportId).single()
           if (existing?.raw_data) {
@@ -207,7 +206,6 @@ export async function POST(request: NextRequest) {
             if (!menuAnalysis && existing.raw_data.menu_analysis) menuAnalysis = existing.raw_data.menu_analysis
           }
         }
-
         const { data: savedMappings } = await supabase.from('category_mappings').select('source_category, mapped_to').eq('restaurant_id', restaurantId).eq('source_system', 'r365_item')
         const combined = matchAndCombine(
           productMix || { by_item: [], by_menu: [], by_category: {}, total_net_sales: 0, total_qty: 0, date_warning: null },
@@ -240,9 +238,7 @@ export async function POST(request: NextRequest) {
         await supabase.from('receiving_data').delete().eq('report_id', reportId)
         if (items.length > 0) {
           const rows = items.map((item: any) => ({
-            report_id: reportId,
-            restaurant_id: existingReport?.restaurant_id,
-            week, ...item,
+            report_id: reportId, restaurant_id: existingReport?.restaurant_id, week, ...item,
           }))
           await supabase.from('receiving_data').insert(rows)
         }
@@ -261,15 +257,31 @@ export async function POST(request: NextRequest) {
         const data = parseEmployeePerformanceExcel(buffer)
         await supabase.from('employee_performance_data').delete().eq('report_id', reportId)
         await supabase.from('employee_performance_data').insert({
-          report_id: reportId,
-          restaurant_id: existingReport?.restaurant_id,
-          week,
-          employees: data.employees,
+          report_id: reportId, restaurant_id: existingReport?.restaurant_id, week, employees: data.employees,
         })
         results['employee_performance'] = { employees: data.employees.length }
       } catch (err: any) {
         console.error('Error processing employee performance:', err)
         results['employee_performance'] = { error: err.message }
+      }
+    }
+
+    // ── KITCHEN DETAILS (.csv) ─────────────────────────────────────────────
+    const kitchenFile = formData.get('kitchen_details') as File | null
+    if (kitchenFile && kitchenFile.size > 0) {
+      try {
+        const buffer = Buffer.from(await kitchenFile.arrayBuffer())
+        const data = parseKitchenDetailsCsv(buffer.toString('utf-8'))
+        await supabase.from('kitchen_performance_data').delete().eq('report_id', reportId)
+        await supabase.from('kitchen_performance_data').insert({
+          report_id: reportId, restaurant_id: existingReport?.restaurant_id, week,
+          tickets: data.tickets,
+          detected_stations: data.detected_stations,
+        })
+        results['kitchen_details'] = { tickets: data.tickets.length, stations: data.detected_stations.length }
+      } catch (err: any) {
+        console.error('Error processing kitchen details:', err)
+        results['kitchen_details'] = { error: err.message }
       }
     }
 
