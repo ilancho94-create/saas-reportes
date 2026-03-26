@@ -32,13 +32,13 @@ export const ROLE_PERMISSIONS: Record<string, Record<Module, Action[]>> = {
     dashboard: ['view'], ventas: [], labor: [], food_cost: ['view'],
     costo_uso: ['view'], waste: ['view', 'edit'], avt: ['view', 'edit'], compras: ['view'],
     historial: ['view'], upload: ['view', 'create'], settings: [],
-    users: [],
+    users: [], employee
   },
   supervisor: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: [],
     costo_uso: [], waste: ['view'], avt: ['view'], compras: [],
     historial: ['view'], upload: [], settings: [],
-    users: [],
+    users: [], employee
   },
 }
 
