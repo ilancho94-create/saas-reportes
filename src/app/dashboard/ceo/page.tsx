@@ -388,7 +388,7 @@ export default function CeoDashboard() {
                         if (name === 'profitPct') return [v + '%', '% Profit']
                         return [v, name]
                       }} />
-                    <Legend formatter={v => ({ ventas: 'Ventas', laborPct: '% Labor', cogsPct: '% COGS', profitPct: '% Profit' }[v] || v)} />
+                    <Legend formatter={(v: string) => ({ ventas: 'Ventas', laborPct: '% Labor', cogsPct: '% COGS', profitPct: '% Profit' }[v] || v)} />
                     <Bar yAxisId="left" dataKey="ventas" fill="#3b82f6" radius={[4, 4, 0, 0]} opacity={0.7} />
                     <Line yAxisId="right" type="monotone" dataKey="laborPct" stroke="#a855f7" strokeWidth={2} dot={{ fill: '#a855f7', r: 3 }} connectNulls />
                     <Line yAxisId="right" type="monotone" dataKey="cogsPct" stroke="#f97316" strokeWidth={2} dot={{ fill: '#f97316', r: 3 }} connectNulls />
