@@ -582,7 +582,8 @@ export default function CeoDashboard() {
                 <h2 className="text-white font-semibold mb-4">COGS por categoría — {aggregated[0]?.latest?.report?.week}</h2>
                 <div className="space-y-3">
                   {Object.entries(aggregated[0].latest.cogs.by_category).map(([cat, val]: any) => {
-                    const pct = aggregated[0].latest.sales?.net_sales > 0 ? (val / aggregated[0].latest.sales.net_sales * 100) : 0
+                    const netSales = aggregated[0].latest.sales?.net_sales || 0
+const pct = netSales > 0 ? (val / netSales * 100) : 0
                     return (
                       <div key={cat} className="flex items-center gap-4">
                         <span className="text-gray-400 text-sm w-32 capitalize">{cat}</span>
