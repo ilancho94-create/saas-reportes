@@ -22,6 +22,7 @@ interface Organization {
 interface AuthContextType {
   user: any
   loading: boolean
+  isSuperAdmin: boolean
   currentRestaurant: UserRestaurant | null
   currentOrganization: Organization | null
   restaurants: UserRestaurant[]
@@ -34,6 +35,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
+  isSuperAdmin: false,
   currentRestaurant: null,
   currentOrganization: null,
   restaurants: [],
@@ -46,6 +48,7 @@ const AuthContext = createContext<AuthContextType>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
   const [restaurants, setRestaurants] = useState<UserRestaurant[]>([])
   const [organizations, setOrganizations] = useState<Organization[]>([])
   const [currentRestaurant, setCurrentRestaurant] = useState<UserRestaurant | null>(null)
@@ -63,6 +66,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   async function loadUserRestaurants(userId: string) {
+    // Cargar perfil para obtener is_superadmin
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('restaurant_id, role, is_superadmin')
+      .eq('id', userId)
+      .single()
+
+    setIsSuperAdmin(profile?.is_superadmin === true)
+
     const { data } = await supabase
       .from('user_restaurants')
       .select(`
@@ -76,9 +88,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let mapped: UserRestaurant[] = []
 
     if (!data?.length) {
-      // Fallback a profiles
-      const { data: profile } = await supabase
-        .from('profiles').select('restaurant_id, role').eq('id', userId).single()
       if (profile?.restaurant_id) {
         const { data: rest } = await supabase
           .from('restaurants').select('id, name, organization_id, organizations(id, name)')
@@ -106,22 +115,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setRestaurants(mapped)
 
-    // Agrupar por organización
     const orgMap: Record<string, Organization> = {}
     mapped.forEach(r => {
       if (!orgMap[r.organization_id]) {
-        orgMap[r.organization_id] = {
-          id: r.organization_id,
-          name: r.organization_name,
-          restaurants: [],
-        }
+        orgMap[r.organization_id] = { id: r.organization_id, name: r.organization_name, restaurants: [] }
       }
       orgMap[r.organization_id].restaurants.push(r)
     })
     const orgs = Object.values(orgMap)
     setOrganizations(orgs)
 
-    // Restaurar selección previa
     const savedRestId = typeof window !== 'undefined' ? localStorage.getItem('xray_restaurant_id') : null
     const savedRest = mapped.find(r => r.id === savedRestId)
     const activeRest = savedRest || mapped[0]
@@ -149,7 +152,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const org = organizations.find(o => o.id === orgId)
     if (org) {
       setCurrentOrganization(org)
-      // Seleccionar primer restaurante de la org
       const firstRest = org.restaurants[0]
       if (firstRest) {
         setCurrentRestaurant(firstRest)
@@ -165,7 +167,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, loading,
+      user, loading, isSuperAdmin,
       currentRestaurant, currentOrganization,
       restaurants, organizations,
       switchRestaurant, switchOrganization,

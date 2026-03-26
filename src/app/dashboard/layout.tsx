@@ -6,7 +6,7 @@ import { useAuth } from '@/lib/auth-context'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
-  const { user, currentRestaurant: restaurant, currentOrganization, organizations, switchRestaurant, switchOrganization, can } = useAuth()
+  const { user, isSuperAdmin, currentRestaurant: restaurant, currentOrganization, organizations, switchRestaurant, switchOrganization, can } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
   const [showOrgMenu, setShowOrgMenu] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
@@ -15,9 +15,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [pwLoading, setPwLoading] = useState(false)
   const [pwError, setPwError] = useState('')
   const [pwSuccess, setPwSuccess] = useState('')
-
-  // Detect superadmin from user metadata or profile
-  const isSuperAdmin = (user as any)?.is_superadmin === true || (user as any)?.user_metadata?.is_superadmin === true
 
   const nav = [
     { section: 'GENERAL', items: [
@@ -154,7 +151,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             )
           })}
 
-          {/* Super Admin — solo visible si is_superadmin */}
+          {/* Super Admin — solo si isSuperAdmin */}
           {isSuperAdmin && (
             <div className="mb-4">
               {!collapsed && <p className="text-amber-600 text-xs font-semibold px-4 mb-1 tracking-wider">SUPER ADMIN</p>}
