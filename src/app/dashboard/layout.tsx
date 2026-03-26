@@ -10,22 +10,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [collapsed, setCollapsed] = useState(false)
   const [showOrgMenu, setShowOrgMenu] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
-  const [pwCurrent, setPwCurrent] = useState('')
   const [pwNew, setPwNew] = useState('')
   const [pwConfirm, setPwConfirm] = useState('')
   const [pwLoading, setPwLoading] = useState(false)
   const [pwError, setPwError] = useState('')
   const [pwSuccess, setPwSuccess] = useState('')
 
+  // Detect superadmin from user metadata or profile
+  const isSuperAdmin = (user as any)?.is_superadmin === true || (user as any)?.user_metadata?.is_superadmin === true
+
   const nav = [
     { section: 'GENERAL', items: [
       { label: 'Inicio', icon: '🏠', href: '/dashboard', module: 'dashboard' },
       { label: 'Dashboard CEO', icon: '👑', href: '/dashboard/ceo', module: 'dashboard' },
     ]},
-    { section: 'ANALISIS', items: [
+    { section: 'ANÁLISIS', items: [
       { label: 'Ventas', icon: '💰', href: '/dashboard/ventas', module: 'ventas' },
       { label: 'Labor', icon: '👥', href: '/dashboard/labor', module: 'labor' },
-      { label: 'Employee', icon: '🏆', href: '/dashboard/employee', module: 'labor' },
+      { label: 'Employee', icon: '🏆', href: '/dashboard/employee', module: 'employee' },
       { label: 'Food Cost', icon: '🛒', href: '/dashboard/food-cost', module: 'food_cost' },
       { label: 'Costo de Uso', icon: '📦', href: '/dashboard/costo-uso', module: 'costo_uso' },
       { label: 'Waste', icon: '🗑️', href: '/dashboard/waste', module: 'waste' },
@@ -59,13 +61,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const { error } = await supabase.auth.updateUser({ password: pwNew })
     if (error) { setPwError(error.message); setPwLoading(false); return }
     setPwSuccess('Contraseña actualizada correctamente')
-    setPwCurrent(''); setPwNew(''); setPwConfirm('')
+    setPwNew(''); setPwConfirm('')
     setPwLoading(false)
   }
 
   function closeProfile() {
     setShowProfile(false)
-    setPwCurrent(''); setPwNew(''); setPwConfirm('')
+    setPwNew(''); setPwConfirm('')
     setPwError(''); setPwSuccess('')
   }
 
@@ -74,7 +76,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return pathname.startsWith(href)
   }
 
-  // Iniciales del usuario para el avatar
   const userInitials = user?.email?.substring(0, 2).toUpperCase() || '??'
   const roleLabel = restaurant?.role ? (restaurant.role.charAt(0).toUpperCase() + restaurant.role.slice(1)) : ''
 
@@ -89,7 +90,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <p className="text-white font-bold text-sm mb-2">Restaurant X-Ray 🔬</p>
               <div className="relative">
                 <button onClick={() => setShowOrgMenu(!showOrgMenu)}
-                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition flex items-center justify-between gap-1 ${showOrgMenu ? 'bg-gray-700 border-gray-600' : 'bg-gray-800 border-gray-700 hover:border-gray-600 hover:bg-gray-750'}`}>
+                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition flex items-center justify-between gap-1 ${showOrgMenu ? 'bg-gray-700 border-gray-600' : 'bg-gray-800 border-gray-700 hover:border-gray-600'}`}>
                   <div className="min-w-0">
                     <p className="text-gray-400 text-xs leading-none mb-0.5">Organización</p>
                     <p className="text-white text-xs font-medium truncate">{currentOrganization?.name || '—'}</p>
@@ -133,13 +134,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Nav */}
         <nav className="flex-1 py-4 overflow-y-auto">
-          {nav.map(function(group) {
+          {nav.map(group => {
             const visibleItems = group.items.filter(item => item.module ? can(item.module as any, 'view') : true)
             if (visibleItems.length === 0) return null
             return (
               <div key={group.section} className="mb-4">
                 {!collapsed && <p className="text-gray-600 text-xs font-semibold px-4 mb-1 tracking-wider">{group.section}</p>}
-                {visibleItems.map(function(item) {
+                {visibleItems.map(item => {
                   const active = isActive(item.href)
                   return (
                     <a key={item.href} href={item.href} title={item.label}
@@ -152,9 +153,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </div>
             )
           })}
+
+          {/* Super Admin — solo visible si is_superadmin */}
+          {isSuperAdmin && (
+            <div className="mb-4">
+              {!collapsed && <p className="text-amber-600 text-xs font-semibold px-4 mb-1 tracking-wider">SUPER ADMIN</p>}
+              <a href="/dashboard/superadmin" title="Super Admin"
+                className={`flex items-center gap-3 px-4 py-2 text-sm transition-all ${collapsed ? 'justify-center' : ''} ${isActive('/dashboard/superadmin') ? 'bg-amber-600 text-white' : 'text-amber-500 hover:text-amber-300 hover:bg-amber-950'}`}>
+                <span className="text-base shrink-0">⚡</span>
+                {!collapsed && <span>Super Admin</span>}
+              </a>
+            </div>
+          )}
         </nav>
 
-        {/* Footer — botón de perfil */}
+        {/* Footer — perfil */}
         <div className="border-t border-gray-800 p-3">
           {!collapsed ? (
             <button onClick={() => setShowProfile(true)}
@@ -179,45 +192,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </aside>
 
-      {/* Cerrar org menu */}
       {showOrgMenu && <div className="fixed inset-0 z-40" onClick={() => setShowOrgMenu(false)} />}
 
-      {/* ── Modal de perfil ── */}
+      {/* Modal de perfil */}
       {showProfile && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md overflow-hidden">
-
-            {/* Header del modal */}
             <div className="px-6 py-5 border-b border-gray-800 flex items-center justify-between">
               <h2 className="text-white font-bold text-base">Mi perfil</h2>
               <button onClick={closeProfile} className="text-gray-500 hover:text-white transition text-lg">✕</button>
             </div>
-
             <div className="px-6 py-5 space-y-5">
-              {/* Avatar + info */}
               <div className="flex items-center gap-4">
                 <div className="w-14 h-14 rounded-full bg-blue-600 flex items-center justify-center text-white text-xl font-bold shrink-0">
                   {userInitials}
                 </div>
                 <div>
                   <p className="text-white font-medium text-sm">{user?.email}</p>
-                  {roleLabel && (
-                    <span className="inline-block mt-1 bg-gray-800 text-gray-300 text-xs px-2 py-0.5 rounded-full">
-                      {roleLabel}
-                    </span>
-                  )}
-                  {restaurant && (
-                    <p className="text-gray-500 text-xs mt-1">{restaurant.name}</p>
-                  )}
-                  {currentOrganization && (
-                    <p className="text-gray-600 text-xs">{currentOrganization.name}</p>
-                  )}
+                  {roleLabel && <span className="inline-block mt-1 bg-gray-800 text-gray-300 text-xs px-2 py-0.5 rounded-full">{roleLabel}</span>}
+                  {restaurant && <p className="text-gray-500 text-xs mt-1">{restaurant.name}</p>}
+                  {currentOrganization && <p className="text-gray-600 text-xs">{currentOrganization.name}</p>}
+                  {isSuperAdmin && <span className="inline-block mt-1 bg-amber-900 text-amber-300 text-xs px-2 py-0.5 rounded-full">⚡ Superadmin</span>}
                 </div>
               </div>
-
               <div className="border-t border-gray-800" />
-
-              {/* Cambiar contraseña */}
               <div>
                 <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">Cambiar contraseña</p>
                 <div className="space-y-3">
@@ -241,14 +239,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   </button>
                 </div>
               </div>
-
               <div className="border-t border-gray-800" />
-
-              {/* Logout */}
               <button onClick={handleLogout}
                 className="w-full flex items-center justify-center gap-2 bg-gray-800 hover:bg-red-950 border border-gray-700 hover:border-red-800 text-gray-400 hover:text-red-400 py-2.5 rounded-lg text-sm font-medium transition">
-                <span>⏻</span>
-                <span>Cerrar sesión</span>
+                <span>⏻</span><span>Cerrar sesión</span>
               </button>
             </div>
           </div>
