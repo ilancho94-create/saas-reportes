@@ -35,6 +35,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { section: 'REPORTES', items: [
       { label: 'Historial', icon: '📅', href: '/dashboard/history', module: 'historial' },
       { label: 'Subir reporte', icon: '⬆️', href: '/upload', module: 'upload' },
+      { label: 'Exportar', icon: '📤', href: '/dashboard/export', module: 'historial' },
     ]},
     { section: 'CONFIG', items: [
       { label: 'Settings', icon: '⚙️', href: '/dashboard/settings', module: 'settings' },
