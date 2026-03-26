@@ -54,6 +54,11 @@ function safeNum(n: any): number {
   return isNaN(v) ? 0 : v
 }
 
+// Recharts tooltip formatter type-safe wrapper
+function tooltipFmt(v: any, label: string): [string, string] {
+  return [String(v), label]
+}
+
 export default function CeoDashboard() {
   const { currentOrganization } = useAuth()
   const [loading, setLoading] = useState(true)
@@ -103,12 +108,8 @@ export default function CeoDashboard() {
         ])
         return {
           report: r,
-          sales: s.data ?? null,
-          labor: l.data ?? null,
-          waste: w.data ?? null,
-          cogs: c.data ?? null,
-          voids: v.data ?? null,
-          discounts: d.data ?? null,
+          sales: s.data ?? null, labor: l.data ?? null, waste: w.data ?? null,
+          cogs: c.data ?? null, voids: v.data ?? null, discounts: d.data ?? null,
           employee: ep.data ?? null,
         }
       }))
@@ -116,7 +117,6 @@ export default function CeoDashboard() {
     }))
 
     setRestaurantsData(allRestData)
-
     const weekSet = new Set<string>()
     allRestData.forEach((r: any) => r.weeks.forEach((w: any) => weekSet.add(w.report.week)))
     const sortedWeeks = Array.from(weekSet).sort().reverse()
@@ -172,11 +172,7 @@ export default function CeoDashboard() {
     const profit = totalSales - totalLabor - totalCOGS
     const profitPct = totalSales > 0 ? profit / totalSales * 100 : null
     const avgGuest = totalGuests > 0 ? totalSales / totalGuests : null
-    return {
-      restaurant: restData.restaurant, latest, fw,
-      totalSales, totalLabor, totalCOGS, totalWaste, totalOrders, totalGuests,
-      laborPct, cogsPct, profit, profitPct, avgGuest,
-    }
+    return { restaurant: restData.restaurant, latest, fw, totalSales, totalLabor, totalCOGS, totalWaste, totalOrders, totalGuests, laborPct, cogsPct, profit, profitPct, avgGuest }
   }
 
   const aggregated: any[] = activeRests.map(aggregateRestData).filter(Boolean)
@@ -202,20 +198,16 @@ export default function CeoDashboard() {
     activeRests.forEach((r: any) => {
       const w = r.weeks.find((wk: any) => wk.report.week === week)
       if (w) {
-        sales += safeNum(w.sales?.net_sales)
-        labor += safeNum(w.labor?.total_pay)
-        cogs += safeNum(w.cogs?.total)
-        waste += safeNum(w.waste?.total_cost)
+        sales += safeNum(w.sales?.net_sales); labor += safeNum(w.labor?.total_pay)
+        cogs += safeNum(w.cogs?.total); waste += safeNum(w.waste?.total_cost)
         guests += safeNum(w.sales?.guests)
       }
     })
     const profit = sales - labor - cogs
     return {
       week: week.replace('2026-', ''),
-      ventas: sales > 0 ? sales : null,
-      labor: labor > 0 ? labor : null,
-      cogs: cogs > 0 ? cogs : null,
-      profit: sales > 0 ? profit : null,
+      ventas: sales > 0 ? sales : null, labor: labor > 0 ? labor : null,
+      cogs: cogs > 0 ? cogs : null, profit: sales > 0 ? profit : null,
       waste: waste > 0 ? waste : null,
       laborPct: sales > 0 ? parseFloat((labor / sales * 100).toFixed(1)) : null,
       cogsPct: sales > 0 ? parseFloat((cogs / sales * 100).toFixed(1)) : null,
@@ -225,22 +217,17 @@ export default function CeoDashboard() {
   }).filter((d: any) => d.ventas)
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'resumen', label: '📊 Resumen' },
-    { id: 'ventas', label: '💰 Ventas' },
-    { id: 'costos', label: '💸 Costos' },
-    { id: 'labor', label: '👥 Labor' },
+    { id: 'resumen', label: '📊 Resumen' }, { id: 'ventas', label: '💰 Ventas' },
+    { id: 'costos', label: '💸 Costos' }, { id: 'labor', label: '👥 Labor' },
     { id: 'operaciones', label: '⚙️ Operaciones' },
   ]
 
-  if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <p className="text-gray-400">Cargando CEO Dashboard...</p>
-    </div>
-  )
+  const tooltipStyle = { backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }
+
+  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><p className="text-gray-400">Cargando CEO Dashboard...</p></div>
 
   return (
     <div className="min-h-screen bg-gray-950">
-      {/* Header */}
       <div className="border-b border-gray-800 bg-gray-900 px-6 py-4">
         <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
           <div>
@@ -251,9 +238,7 @@ export default function CeoDashboard() {
             <select value={selectedRestaurant} onChange={e => setSelectedRestaurant(e.target.value)}
               className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
               <option value="all">🏢 Todos ({restaurantsData.length})</option>
-              {restaurantsData.map((r: any) => (
-                <option key={r.restaurant.id} value={r.restaurant.id}>{r.restaurant.name}</option>
-              ))}
+              {restaurantsData.map((r: any) => <option key={r.restaurant.id} value={r.restaurant.id}>{r.restaurant.name}</option>)}
             </select>
             {shortcut === 'week' && allWeeks.length > 0 && (
               <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
@@ -263,8 +248,6 @@ export default function CeoDashboard() {
             )}
           </div>
         </div>
-
-        {/* Shortcuts */}
         <div className="flex items-center gap-2 flex-wrap mb-3">
           {SHORTCUTS.map(s => (
             <button key={s.key} onClick={() => setShortcut(s.key)}
@@ -274,20 +257,16 @@ export default function CeoDashboard() {
           ))}
           {shortcut === 'custom' && (
             <div className="flex items-center gap-2 ml-1">
-              <select value={customFrom} onChange={e => setCustomFrom(e.target.value)}
-                className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none">
+              <select value={customFrom} onChange={e => setCustomFrom(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none">
                 {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
               </select>
               <span className="text-gray-500 text-xs">→</span>
-              <select value={customTo} onChange={e => setCustomTo(e.target.value)}
-                className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none">
+              <select value={customTo} onChange={e => setCustomTo(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none">
                 {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
               </select>
             </div>
           )}
         </div>
-
-        {/* Tabs */}
         <div className="flex gap-1 flex-wrap">
           {tabs.map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -300,13 +279,13 @@ export default function CeoDashboard() {
 
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
 
-        {/* ══════════ RESUMEN ══════════ */}
+        {/* ══ RESUMEN ══ */}
         {activeTab === 'resumen' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
                 { label: 'Ventas Netas', icon: '💰', value: fmt(combined.totalSales), sub: `${combined.totalOrders} órdenes`, color: 'text-blue-400', light: null },
-                { label: 'Profit', icon: '📈', value: fmt(combined.profit), sub: fmtPct(combined.profitPct) + ' margen', color: (combined.profit ?? 0) >= 0 ? 'text-green-400' : 'text-red-400', light: trafficLight(combined.profitPct, 15, 5, false) },
+                { label: 'Profit', icon: '📈', value: fmt(combined.profit), sub: fmtPct(combined.profitPct) + ' margen', color: safeNum(combined.profit) >= 0 ? 'text-green-400' : 'text-red-400', light: trafficLight(combined.profitPct, 15, 5, false) },
                 { label: '% Labor', icon: '👥', value: fmtPct(combined.laborPct), sub: fmt(combined.totalLabor), color: 'text-purple-400', light: trafficLight(combined.laborPct, 28, 33) },
                 { label: '% COGS', icon: '🛒', value: fmtPct(combined.cogsPct), sub: fmt(combined.totalCOGS), color: 'text-orange-400', light: trafficLight(combined.cogsPct, 28, 33) },
               ].map((kpi, i) => (
@@ -342,7 +321,6 @@ export default function CeoDashboard() {
               ))}
             </div>
 
-            {/* Semáforos por restaurante */}
             {aggregated.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">🚦 Estado por restaurante</h2>
@@ -382,7 +360,6 @@ export default function CeoDashboard() {
               </div>
             )}
 
-            {/* Gráfica combinada */}
             {chartData.length > 1 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Ventas, Labor y COGS — tendencia</h2>
@@ -393,26 +370,17 @@ export default function CeoDashboard() {
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis yAxisId="left" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => '$' + (v / 1000).toFixed(0) + 'k'} />
                     <YAxis yAxisId="right" orientation="right" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v + '%'} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                      formatter={(v: any, name: any) => {
-                        const labels: Record<string, string> = { ventas: 'Ventas', laborPct: '% Labor', cogsPct: '% COGS', profitPct: '% Profit' }
-                        const isAmt = name === 'ventas'
-                        return [isAmt ? fmt(v) : v + '%', labels[String(name)] || String(name)]
-                      }} />
-                    <Legend formatter={(v: string) => {
-                      const labels: Record<string, string> = { ventas: 'Ventas', laborPct: '% Labor', cogsPct: '% COGS', profitPct: '% Profit' }
-                      return labels[v] || v
-                    }} />
-                    <Bar yAxisId="left" dataKey="ventas" fill="#3b82f6" radius={[4, 4, 0, 0]} opacity={0.7} />
-                    <Line yAxisId="right" type="monotone" dataKey="laborPct" stroke="#a855f7" strokeWidth={2} dot={{ fill: '#a855f7', r: 3 }} connectNulls />
-                    <Line yAxisId="right" type="monotone" dataKey="cogsPct" stroke="#f97316" strokeWidth={2} dot={{ fill: '#f97316', r: 3 }} connectNulls />
-                    <Line yAxisId="right" type="monotone" dataKey="profitPct" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} connectNulls />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [fmt(safeNum(v)), '']} />
+                    <Legend />
+                    <Bar yAxisId="left" dataKey="ventas" name="Ventas" fill="#3b82f6" radius={[4, 4, 0, 0]} opacity={0.7} />
+                    <Line yAxisId="right" type="monotone" dataKey="laborPct" name="% Labor" stroke="#a855f7" strokeWidth={2} dot={{ fill: '#a855f7', r: 3 }} connectNulls />
+                    <Line yAxisId="right" type="monotone" dataKey="cogsPct" name="% COGS" stroke="#f97316" strokeWidth={2} dot={{ fill: '#f97316', r: 3 }} connectNulls />
+                    <Line yAxisId="right" type="monotone" dataKey="profitPct" name="% Profit" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} connectNulls />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
             )}
 
-            {/* Comparativa entre restaurantes */}
             {aggregated.length > 1 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -421,7 +389,7 @@ export default function CeoDashboard() {
                     <BarChart data={aggregated.map((r: any) => ({ name: r.restaurant.name.split(' ')[0], ventas: r.totalSales }))}>
                       <XAxis dataKey="name" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => '$' + (v / 1000).toFixed(0) + 'k'} />
-                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Ventas']} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [fmt(v), 'Ventas']} />
                       <Bar dataKey="ventas" radius={[4, 4, 0, 0]}>
                         {aggregated.map((_: any, i: number) => <Cell key={i} fill={['#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ef4444'][i % 5]} />)}
                       </Bar>
@@ -434,7 +402,7 @@ export default function CeoDashboard() {
                     <BarChart data={aggregated.map((r: any) => ({ name: r.restaurant.name.split(' ')[0], profit: r.profitPct }))}>
                       <XAxis dataKey="name" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v + '%'} />
-                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmtPct(v), '% Profit']} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [fmtPct(v), '% Profit']} />
                       <ReferenceLine y={0} stroke="#374151" />
                       <Bar dataKey="profit" radius={[4, 4, 0, 0]}>
                         {aggregated.map((r: any, i: number) => <Cell key={i} fill={safeNum(r.profitPct) >= 15 ? '#22c55e' : safeNum(r.profitPct) >= 5 ? '#f59e0b' : '#ef4444'} />)}
@@ -447,7 +415,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══════════ VENTAS ══════════ */}
+        {/* ══ VENTAS ══ */}
         {activeTab === 'ventas' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -464,7 +432,6 @@ export default function CeoDashboard() {
                 </div>
               ))}
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">Ventas netas por semana</h2>
@@ -473,7 +440,7 @@ export default function CeoDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => '$' + (v / 1000).toFixed(0) + 'k'} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Ventas']} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [fmt(v), 'Ventas']} />
                     <Bar dataKey="ventas" fill="#3b82f6" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -485,13 +452,12 @@ export default function CeoDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => '$' + v} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => ['$' + Number(v).toFixed(2), 'Avg/Guest']} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => ['$' + Number(v).toFixed(2), 'Avg/Guest']} />
                     <Line type="monotone" dataKey="avgGuest" stroke="#eab308" strokeWidth={2} dot={{ fill: '#eab308', r: 3 }} connectNulls />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
             </div>
-
             {aggregated[0]?.latest?.sales?.categories && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">Ventas por categoría — {aggregated[0]?.latest?.report?.week}</h2>
@@ -509,7 +475,6 @@ export default function CeoDashboard() {
                 </div>
               </div>
             )}
-
             {aggregated[0]?.latest?.sales?.lunch_dinner && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -527,7 +492,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══════════ COSTOS ══════════ */}
+        {/* ══ COSTOS ══ */}
         {activeTab === 'costos' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -547,7 +512,6 @@ export default function CeoDashboard() {
                 </div>
               ))}
             </div>
-
             {chartData.length > 1 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Profit semanal</h2>
@@ -557,7 +521,7 @@ export default function CeoDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => '$' + (v / 1000).toFixed(0) + 'k'} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Profit']} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [fmt(v), 'Profit']} />
                     <ReferenceLine y={0} stroke="#374151" />
                     <Bar dataKey="profit" radius={[4, 4, 0, 0]}>
                       {chartData.map((d: any, i: number) => <Cell key={i} fill={safeNum(d.profit) >= 0 ? '#22c55e' : '#ef4444'} />)}
@@ -566,7 +530,6 @@ export default function CeoDashboard() {
                 </ResponsiveContainer>
               </div>
             )}
-
             {chartData.length > 1 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">% Costos por semana</h2>
@@ -576,7 +539,7 @@ export default function CeoDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v + '%'} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: string) => [v + '%', name]} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [v + '%', '']} />
                     <Legend />
                     <Line type="monotone" dataKey="laborPct" name="% Labor" stroke="#a855f7" strokeWidth={2} dot={{ fill: '#a855f7', r: 3 }} connectNulls />
                     <Line type="monotone" dataKey="cogsPct" name="% COGS" stroke="#f97316" strokeWidth={2} dot={{ fill: '#f97316', r: 3 }} connectNulls />
@@ -585,7 +548,6 @@ export default function CeoDashboard() {
                 </ResponsiveContainer>
               </div>
             )}
-
             {aggregated[0]?.latest?.cogs?.by_category && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">COGS por categoría — {aggregated[0]?.latest?.report?.week}</h2>
@@ -611,7 +573,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══════════ LABOR ══════════ */}
+        {/* ══ LABOR ══ */}
         {activeTab === 'labor' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -631,7 +593,6 @@ export default function CeoDashboard() {
                 </div>
               ))}
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">% Labor por semana</h2>
@@ -640,7 +601,7 @@ export default function CeoDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v + '%'} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [v + '%', '% Labor']} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [v + '%', '% Labor']} />
                     <ReferenceLine y={28} stroke="#22c55e" strokeDasharray="4 4" />
                     <ReferenceLine y={33} stroke="#ef4444" strokeDasharray="4 4" />
                     <Line type="monotone" dataKey="laborPct" stroke="#a855f7" strokeWidth={2} dot={{ fill: '#a855f7', r: 3 }} connectNulls />
@@ -654,13 +615,12 @@ export default function CeoDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => '$' + (v / 1000).toFixed(0) + 'k'} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Labor']} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [fmt(v), 'Labor']} />
                     <Bar dataKey="labor" fill="#a855f7" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
-
             {aggregated[0]?.latest?.labor?.by_position && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">Labor por puesto — {aggregated[0]?.latest?.report?.week}</h2>
@@ -674,9 +634,7 @@ export default function CeoDashboard() {
                           <span className="text-gray-500 text-xs">{safeNum(pos.regular_hours).toFixed(0)}h reg</span>
                           {safeNum(pos.ot_hours) > 0 && <span className="text-amber-400 text-xs">{safeNum(pos.ot_hours).toFixed(1)}h OT</span>}
                           <span className="text-white font-medium">{fmt(pos.total_pay)}</span>
-                          <span className="text-gray-500 text-xs w-10 text-right">
-                            {totalPay > 0 ? (safeNum(pos.total_pay) / totalPay * 100).toFixed(1) : 0}%
-                          </span>
+                          <span className="text-gray-500 text-xs w-10 text-right">{totalPay > 0 ? (safeNum(pos.total_pay) / totalPay * 100).toFixed(1) : 0}%</span>
                         </div>
                       </div>
                     )
@@ -687,7 +645,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══════════ OPERACIONES ══════════ */}
+        {/* ══ OPERACIONES ══ */}
         {activeTab === 'operaciones' && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -701,17 +659,16 @@ export default function CeoDashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Waste']} />
+                    <Tooltip contentStyle={tooltipStyle} formatter={(v: any) => [fmt(v), 'Waste']} />
                     <Bar dataKey="waste" fill="#ef4444" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">📊 Actual vs Teórico</h2>
                 {aggregated.map((r: any, i: number) => {
                   const a = r.latest?.avt
-                  if (!a) return <p key={i} className="text-gray-500 text-sm">Sin datos de AvT para {r.restaurant.name}</p>
+                  if (!a) return <p key={i} className="text-gray-500 text-sm">Sin datos AvT — {r.restaurant.name}</p>
                   return (
                     <div key={i} className="mb-3 pb-3 border-b border-gray-800 last:border-0">
                       <p className="text-gray-400 text-xs mb-2 font-medium">{r.restaurant.name}</p>
