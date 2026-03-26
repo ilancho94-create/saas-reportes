@@ -25,6 +25,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }
 const MAIN_CATEGORIES_FALLBACK = ['BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
 type SortKey = 'variance_dollar' | 'name' | 'unit_cost' | 'variance_qty'
 type ViewMode = 'dollar' | 'qty'
+type ActiveTab = 'dashboard' | 'seguimiento' | 'detalle'
 
 export default function AvtPage() {
   const [loading, setLoading] = useState(true)
@@ -41,26 +42,19 @@ export default function AvtPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('dollar')
   const [showAllShortages, setShowAllShortages] = useState(false)
   const [showAllOverages, setShowAllOverages] = useState(false)
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'seguimiento'>('dashboard')
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard')
   const [expandedItem, setExpandedItem] = useState<string | null>(null)
   const [activeCategories, setActiveCategories] = useState<string[]>(MAIN_CATEGORIES_FALLBACK)
 
-  useEffect(() => {
-    if (restaurantIdHook) loadData()
-  }, [restaurantIdHook])
-
-  useEffect(() => {
-    if (selectedWeek && restaurantId) {
-      loadTracking(selectedWeek)
-    }
-  }, [selectedWeek, restaurantId])
+  useEffect(() => { if (restaurantIdHook) loadData() }, [restaurantIdHook])
+  useEffect(() => { if (selectedWeek && restaurantId) loadTracking(selectedWeek) }, [selectedWeek, restaurantId])
 
   async function loadData() {
-  if (!restaurantIdHook) return
-  setLoading(true)
-  setWeeks([])
-  const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
-  setRestaurantName(rest?.name || '')
+    if (!restaurantIdHook) return
+    setLoading(true)
+    setWeeks([])
+    const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
+    setRestaurantName(rest?.name || '')
     const { data: reports } = await supabase.from('reports').select('*')
       .eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12)
     if (!reports?.length) { setLoading(false); return }
@@ -71,47 +65,30 @@ export default function AvtPage() {
     const withAvt = weeksData.filter(w => w.avt)
     setWeeks(withAvt)
     if (withAvt.length > 0) setSelectedWeek(withAvt[0].report.week)
-
-    // Cargar todo el historial de tracking
     const { data: allT } = await supabase.from('avt_tracking')
-      .select('*').eq('restaurant_id', restaurantId)
-      .order('week', { ascending: false })
+      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: false })
     setAllTracking(allT || [])
     setLoading(false)
-
-    // Cargar categorías activas del restaurante
-    const { data: cats } = await supabase
-      .from('avt_categories')
-      .select('category')
-      .eq('restaurant_id', restaurantId)
-      .eq('active', true)
-      .order('category')
-    if (cats && cats.length > 0) {
-      setActiveCategories(cats.map((c: any) => c.category))
-    }
+    const { data: cats } = await supabase.from('avt_categories')
+      .select('category').eq('restaurant_id', restaurantId).eq('active', true).order('category')
+    if (cats && cats.length > 0) setActiveCategories(cats.map((c: any) => c.category))
   }
 
   async function loadTracking(week: string) {
     const { data: weekTracking } = await supabase.from('avt_tracking')
       .select('*').eq('restaurant_id', restaurantId).eq('week', week)
-
-    // Para items sin tracking esta semana, buscar el más reciente
     const map: Record<string, any> = {}
     for (const t of weekTracking || []) map[t.item_name] = t
-
     setTracking(map)
   }
 
   async function saveTracking(item: any, updates: Record<string, any>) {
     setSavingId(item.name)
     const existing = tracking[item.name] || {}
-
-    // Detectar si recayó (estaba resuelto y vuelve a aparecer)
     const lastResolved = allTracking.find(t =>
       t.item_name === item.name && t.status === 'resolved' && t.week !== selectedWeek
     )
     const recurred = !!lastResolved && !existing.id
-
     const upsertData = {
       restaurant_id: restaurantId,
       item_name: item.name,
@@ -128,29 +105,21 @@ export default function AvtPage() {
       ...updates,
       updated_at: new Date().toISOString(),
     }
-
     await supabase.from('avt_tracking').upsert(upsertData, { onConflict: 'restaurant_id,item_name,week' })
     const newTracking = { ...existing, ...updates, recurred }
     setTracking(prev => ({ ...prev, [item.name]: newTracking }))
-
-    // Actualizar allTracking
     setAllTracking(prev => {
       const idx = prev.findIndex(t => t.item_name === item.name && t.week === selectedWeek)
-      if (idx >= 0) {
-        const updated = [...prev]
-        updated[idx] = { ...updated[idx], ...updates }
-        return updated
-      }
+      if (idx >= 0) { const updated = [...prev]; updated[idx] = { ...updated[idx], ...updates }; return updated }
       return [{ ...upsertData, ...updates }, ...prev]
     })
     setSavingId(null)
   }
 
   function getPrefillData(itemName: string): any {
-    // Buscar tracking más reciente para este item (excluyendo semana actual)
     const history = allTracking.filter(t => t.item_name === itemName && t.week !== selectedWeek)
     if (!history.length) return null
-    return history[0] // ya viene ordenado por week desc
+    return history[0]
   }
 
   function getItemHistory(itemName: string): any[] {
@@ -159,14 +128,13 @@ export default function AvtPage() {
 
   function getRecurrenceInfo(itemName: string) {
     const history = allTracking.filter(t => t.item_name === itemName)
-    const weeks = [...new Set(history.map(t => t.week))].sort().reverse()
+    const uniqueWeeks = [...new Set(history.map(t => t.week))].sort().reverse()
     const lastEntry = history[0]
     const wasResolved = history.some(t => t.status === 'resolved' && t.week !== selectedWeek)
     const currentEntry = tracking[itemName]
     const recurred = wasResolved && !currentEntry?.id
-
     return {
-      weekCount: weeks.length,
+      weekCount: uniqueWeeks.length,
       lastReason: lastEntry?.reason,
       lastStatus: lastEntry?.status,
       lastResponsible: lastEntry?.responsible,
@@ -213,39 +181,44 @@ export default function AvtPage() {
   const trendData = [...weeks].reverse().map(w => {
     const wShortages: any[] = w.avt?.shortages || []
     const wOverages: any[] = w.avt?.overages || []
-    const filtered_s = selectedCategory === 'Todas'
-      ? wShortages : wShortages.filter((i: any) => i.category === selectedCategory)
-    const filtered_o = selectedCategory === 'Todas'
-      ? wOverages : wOverages.filter((i: any) => i.category === selectedCategory)
+    const filtered_s = selectedCategory === 'Todas' ? wShortages : wShortages.filter((i: any) => i.category === selectedCategory)
+    const filtered_o = selectedCategory === 'Todas' ? wOverages : wOverages.filter((i: any) => i.category === selectedCategory)
     const faltantes = filtered_s.reduce((a: number, b: any) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
     const sobrantes = filtered_o.reduce((a: number, b: any) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
-    return {
-      week: w.report.week.replace('2026-', ''),
-      faltantes,
-      sobrantes,
-      neto: faltantes - sobrantes,
-    }
+    return { week: w.report.week.replace('2026-', ''), faltantes, sobrantes, neto: faltantes - sobrantes }
   })
 
-  // Items recurrentes con info completa
-  const recurrentItems = [...new Set([...allShortages, ...allOverages].map(i => i.name))]
-    .map(name => {
-      const info = getRecurrenceInfo(name)
-      return { name, ...info }
+  // ── ITEMS RECURRENTES (bug fix) ───────────────────────────────────────────
+  // Contar cuántas semanas aparece cada item en los datos de AvT reales,
+  // filtrando por categoría seleccionada, ordenado por impacto $ acumulado
+  const itemStatsMap: Record<string, { weekCount: number; totalDollar: number; category: string }> = {}
+  weeks.forEach(w => {
+    const s: any[] = w.avt?.shortages || []
+    const o: any[] = w.avt?.overages || []
+    const combined = [...s, ...o]
+    const filtered = selectedCategory === 'Todas' ? combined : combined.filter((i: any) => i.category === selectedCategory)
+    filtered.forEach((item: any) => {
+      if (!item.name) return
+      if (!itemStatsMap[item.name]) itemStatsMap[item.name] = { weekCount: 0, totalDollar: 0, category: item.category }
+      itemStatsMap[item.name].weekCount += 1
+      itemStatsMap[item.name].totalDollar += Math.abs(Number(item.variance_dollar || 0))
     })
-    .filter(i => i.weekCount > 1)
-    .sort((a, b) => b.weekCount - a.weekCount)
+  })
+  const recurrentItems = Object.entries(itemStatsMap)
+    .filter(([_, v]) => v.weekCount > 1)
+    .sort((a, b) => b[1].totalDollar - a[1].totalDollar)
+    .map(([name, v]) => {
+      const info = getRecurrenceInfo(name)
+      return { name, ...v, ...info }
+    })
 
   const pendingCount = Object.values(tracking).filter((t: any) => t.status === 'pending' || !t.status).length
 
-  // Top 10 por categoría para seguimiento
   const top10ByCat = activeCategories.map(cat => {
     const catShortages = [...allShortages.filter((i: any) => i.category === cat)]
-      .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
-      .slice(0, 10)
+      .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar))).slice(0, 10)
     const catOverages = [...allOverages.filter((i: any) => i.category === cat)]
-      .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
-      .slice(0, 10)
+      .sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar))).slice(0, 10)
     return { cat, shortages: catShortages, overages: catOverages }
   }).filter(c => c.shortages.length > 0 || c.overages.length > 0)
 
@@ -272,15 +245,16 @@ export default function AvtPage() {
 
       <div className="border-b border-gray-800 bg-gray-900 px-6">
         <div className="flex gap-1">
-          <button onClick={() => setActiveTab('dashboard')}
-            className={`px-4 py-3 text-sm font-medium transition border-b-2 ${activeTab === 'dashboard' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-            📊 Dashboard
-          </button>
-          <button onClick={() => setActiveTab('seguimiento')}
-            className={`px-4 py-3 text-sm font-medium transition border-b-2 ${activeTab === 'seguimiento' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
-            🔍 Seguimiento
-            {pendingCount > 0 && <span className="ml-1.5 bg-yellow-500 text-black text-xs px-1.5 py-0.5 rounded-full font-bold">{pendingCount}</span>}
-          </button>
+          {([
+            { id: 'dashboard', label: '📊 Dashboard' },
+            { id: 'detalle', label: '🔍 Detalle' },
+            { id: 'seguimiento', label: `📋 Seguimiento${pendingCount > 0 ? ` (${pendingCount})` : ''}` },
+          ] as { id: ActiveTab; label: string }[]).map(tab => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              className={`px-4 py-3 text-sm font-medium transition border-b-2 ${activeTab === tab.id ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
+              {tab.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -310,14 +284,12 @@ export default function AvtPage() {
               </div>
               <div className="flex items-center gap-2 ml-auto">
                 <span className="text-gray-500 text-xs">Ver:</span>
-                <button onClick={() => setViewMode('dollar')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${viewMode === 'dollar' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400'}`}>
-                  $ Dinero
-                </button>
-                <button onClick={() => setViewMode('qty')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${viewMode === 'qty' ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400'}`}>
-                  Qty
-                </button>
+                {(['dollar', 'qty'] as ViewMode[]).map(m => (
+                  <button key={m} onClick={() => setViewMode(m)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${viewMode === m ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400'}`}>
+                    {m === 'dollar' ? '$ Dinero' : 'Qty'}
+                  </button>
+                ))}
                 <span className="text-gray-500 text-xs ml-2">Ordenar:</span>
                 {(['variance_dollar', 'variance_qty', 'unit_cost', 'name'] as SortKey[]).map(key => (
                   <button key={key} onClick={() => setSortKey(key)}
@@ -348,10 +320,8 @@ export default function AvtPage() {
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-xs mb-1">Seguimiento</p>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-yellow-400 text-sm font-bold">{pendingCount} pend.</span>
-                </div>
-                <button onClick={() => setActiveTab('seguimiento')} className="text-blue-400 text-xs mt-1 hover:text-blue-300">Ver seguimiento →</button>
+                <span className="text-yellow-400 text-sm font-bold">{pendingCount} pend.</span>
+                <button onClick={() => setActiveTab('seguimiento')} className="block text-blue-400 text-xs mt-1 hover:text-blue-300">Ver seguimiento →</button>
               </div>
             </div>
 
@@ -362,7 +332,7 @@ export default function AvtPage() {
                 <div className="flex items-center gap-4 mb-4 flex-wrap">
                   <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-red-500 rounded"/><span className="text-gray-500 text-xs">Faltantes — lo que se perdió (positivo = malo)</span></div>
                   <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-green-500 rounded"/><span className="text-gray-500 text-xs">Sobrantes — exceso sobre teórico (bueno)</span></div>
-                  <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-yellow-500 rounded" style={{borderTop: '2px dashed #f59e0b', background: 'none'}}/><span className="text-gray-500 text-xs">Neto — diferencia real (cerca de $0 = bien)</span></div>
+                  <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-yellow-500 rounded" style={{borderTop:'2px dashed #f59e0b',background:'none'}}/><span className="text-gray-500 text-xs">Neto — diferencia real (cerca de $0 = bien)</span></div>
                 </div>
                 <ResponsiveContainer width="100%" height={180}>
                   <LineChart data={trendData}>
@@ -383,10 +353,7 @@ export default function AvtPage() {
                 <p className="text-gray-500 text-xs mb-1">Varianza neta {selectedWeek}</p>
                 <p className="text-gray-600 text-xs mb-4">Barra hacia la derecha = faltante (malo) · hacia la izquierda = sobrante (bueno)</p>
                 <ResponsiveContainer width="100%" height={180}>
-                  <BarChart data={byCategory.map((c: any) => ({
-                    category: c.category,
-                    neto: (c.total_shortage_dollar || 0) - (c.total_overage_dollar || 0)
-                  }))} layout="vertical">
+                  <BarChart data={byCategory.map((c: any) => ({ category: c.category, neto: (c.total_shortage_dollar || 0) - (c.total_overage_dollar || 0) }))} layout="vertical">
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                     <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + Math.abs(v)} />
                     <YAxis type="category" dataKey="category" tick={{ fill: '#9ca3af', fontSize: 10 }} axisLine={false} tickLine={false} width={80} />
@@ -419,55 +386,43 @@ export default function AvtPage() {
               </div>
             </div>
 
-            {/* Items recurrentes con contexto */}
+            {/* Items recurrentes — corregido */}
             {recurrentItems.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                <h2 className="text-white font-semibold mb-4">
+                <h2 className="text-white font-semibold mb-1">
                   ⚠️ Items con historial — {recurrentItems.length} items aparecen en múltiples semanas
                 </h2>
+                <p className="text-gray-500 text-xs mb-4">Ordenados por impacto $ total acumulado · {selectedCategory !== 'Todas' ? `Filtrado: ${selectedCategory}` : 'Todas las categorías'}</p>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {recurrentItems.slice(0, 12).map(item => (
                     <div key={item.name} className={`rounded-xl p-4 border ${item.recurred ? 'bg-red-950 border-red-800' : item.lastStatus === 'resolved' ? 'bg-green-950 border-green-800' : 'bg-gray-800 border-gray-700'}`}>
                       <div className="flex items-start justify-between mb-2">
                         <p className="text-white text-sm font-medium leading-tight">{item.name}</p>
-                        <span className="text-gray-400 text-xs ml-2 shrink-0">{item.weekCount} sem.</span>
+                        <div className="text-right ml-2 shrink-0">
+                          <p className="text-gray-400 text-xs">{item.weekCount} sem.</p>
+                          <p className="text-red-400 text-xs font-bold">{fmt(item.totalDollar)}</p>
+                        </div>
                       </div>
-                      {item.recurred && (
-                        <p className="text-red-400 text-xs font-semibold mb-1">🔄 Recayó — estaba resuelto</p>
-                      )}
-                      {item.lastStatus && (
-                        <p className={`text-xs mb-1 ${STATUS_LABELS[item.lastStatus]?.color}`}>
-                          Estado: {STATUS_LABELS[item.lastStatus]?.label}
-                        </p>
-                      )}
-                      {item.lastReason && (
-                        <p className="text-gray-400 text-xs mb-1">Razón: {item.lastReason}</p>
-                      )}
-                      {item.lastResponsible && (
-                        <p className="text-gray-400 text-xs mb-1">Responsable: {item.lastResponsible}</p>
-                      )}
-                      {item.lastNote && (
-                        <p className="text-gray-500 text-xs italic">"{item.lastNote}"</p>
-                      )}
-                      {!item.lastReason && !item.lastStatus && (
-                        <p className="text-gray-600 text-xs">Sin seguimiento registrado</p>
-                      )}
+                      {item.recurred && <p className="text-red-400 text-xs font-semibold mb-1">🔄 Recayó — estaba resuelto</p>}
+                      {item.lastStatus && <p className={`text-xs mb-1 ${STATUS_LABELS[item.lastStatus]?.color}`}>Estado: {STATUS_LABELS[item.lastStatus]?.label}</p>}
+                      {item.lastReason && <p className="text-gray-400 text-xs mb-1">Razón: {item.lastReason}</p>}
+                      {item.lastResponsible && <p className="text-gray-400 text-xs mb-1">Responsable: {item.lastResponsible}</p>}
+                      {item.lastNote && <p className="text-gray-500 text-xs italic">"{item.lastNote}"</p>}
+                      {!item.lastReason && !item.lastStatus && <p className="text-gray-600 text-xs">Sin seguimiento registrado</p>}
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Tablas faltantes/sobrantes */}
+            {/* Tablas */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-white font-semibold">
-                  🔴 Faltantes — {selectedWeek}
+                <h2 className="text-white font-semibold">🔴 Faltantes — {selectedWeek}
                   <span className="text-red-400 font-normal text-sm ml-2">({filteredShortages.length} items · {fmt(totalShortage)})</span>
                 </h2>
                 {filteredShortages.length > 10 && (
-                  <button onClick={() => setShowAllShortages(!showAllShortages)}
-                    className="text-blue-400 text-xs hover:text-blue-300 transition">
+                  <button onClick={() => setShowAllShortages(!showAllShortages)} className="text-blue-400 text-xs hover:text-blue-300 transition">
                     {showAllShortages ? 'Ver menos' : `Ver todos (${filteredShortages.length})`}
                   </button>
                 )}
@@ -478,13 +433,11 @@ export default function AvtPage() {
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-white font-semibold">
-                  🟢 Sobrantes — {selectedWeek}
+                <h2 className="text-white font-semibold">🟢 Sobrantes — {selectedWeek}
                   <span className="text-green-400 font-normal text-sm ml-2">({filteredOverages.length} items · ({fmt(totalOverage)}))</span>
                 </h2>
                 {filteredOverages.length > 10 && (
-                  <button onClick={() => setShowAllOverages(!showAllOverages)}
-                    className="text-blue-400 text-xs hover:text-blue-300 transition">
+                  <button onClick={() => setShowAllOverages(!showAllOverages)} className="text-blue-400 text-xs hover:text-blue-300 transition">
                     {showAllOverages ? 'Ver menos' : `Ver todos (${filteredOverages.length})`}
                   </button>
                 )}
@@ -493,6 +446,16 @@ export default function AvtPage() {
                 allTracking={allTracking} selectedWeek={selectedWeek} fmt={fmt} getRecurrenceInfo={getRecurrenceInfo} />
             </div>
           </>
+
+        ) : activeTab === 'detalle' ? (
+          <DetalleTab
+            weeks={weeks}
+            selectedWeek={selectedWeek}
+            allShortages={allShortages}
+            allOverages={allOverages}
+            fmt={fmt}
+          />
+
         ) : (
           <SeguimientoTab
             weeks={weeks}
@@ -517,6 +480,217 @@ export default function AvtPage() {
   )
 }
 
+// ── NUEVA PESTAÑA: DETALLE ─────────────────────────────────────────────────
+function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any) {
+  const [search, setSearch] = useState('')
+  const [selectedItem, setSelectedItem] = useState<string | null>(null)
+  const [catFilter, setCatFilter] = useState('Todas')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'shortage' | 'overage'>('all')
+  const [detalleView, setDetalleView] = useState<'dollar' | 'qty'>('dollar')
+
+  // Todos los items de la semana combinados
+  const allItems = [
+    ...allShortages.map((i: any) => ({ ...i, tipo: 'shortage' })),
+    ...allOverages.map((i: any) => ({ ...i, tipo: 'overage' })),
+  ].sort((a, b) => Math.abs(Number(b.variance_dollar)) - Math.abs(Number(a.variance_dollar)))
+
+  const categories = ['Todas', ...Array.from(new Set(allItems.map((i: any) => i.category).filter(Boolean)))]
+
+  const filtered = allItems.filter((i: any) => {
+    const matchSearch = !search || i.name?.toLowerCase().includes(search.toLowerCase())
+    const matchCat = catFilter === 'Todas' || i.category === catFilter
+    const matchType = typeFilter === 'all' || i.tipo === typeFilter
+    return matchSearch && matchCat && matchType
+  })
+
+  // Historial de variaciones semana a semana para un item
+  function getItemWeekHistory(itemName: string) {
+    return weeks.map((w: any) => {
+      const s = (w.avt?.shortages || []).find((i: any) => i.name === itemName)
+      const o = (w.avt?.overages || []).find((i: any) => i.name === itemName)
+      const item = s || o
+      if (!item) return null
+      return {
+        week: w.report.week.replace('2026-', ''),
+        fullWeek: w.report.week,
+        variance_dollar: s ? Math.abs(Number(item.variance_dollar)) : -Math.abs(Number(item.variance_dollar)),
+        variance_qty: s ? Math.abs(Number(item.variance_qty)) : -Math.abs(Number(item.variance_qty)),
+        tipo: s ? 'shortage' : 'overage',
+        uom: item.uom,
+      }
+    }).filter(Boolean).reverse()
+  }
+
+  const itemHistory = selectedItem ? getItemWeekHistory(selectedItem) : []
+
+  return (
+    <div className="space-y-4">
+      {/* Header + controles */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-48">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">🔍</span>
+            <input
+              type="text"
+              placeholder="Buscar item..."
+              value={search}
+              onChange={e => { setSearch(e.target.value); setSelectedItem(null) }}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <select value={catFilter} onChange={e => setCatFilter(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none">
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <div className="flex gap-1">
+            {([['all', 'Todos'], ['shortage', '🔴 Faltantes'], ['overage', '🟢 Sobrantes']] as [string, string][]).map(([v, l]) => (
+              <button key={v} onClick={() => setTypeFilter(v as any)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${typeFilter === v ? 'bg-blue-600 border-blue-500 text-white' : 'border-gray-700 text-gray-400 hover:text-white'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-1 ml-auto">
+            {(['dollar', 'qty'] as const).map(m => (
+              <button key={m} onClick={() => setDetalleView(m)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${detalleView === m ? 'bg-gray-700 border-gray-600 text-white' : 'border-gray-700 text-gray-500'}`}>
+                {m === 'dollar' ? '$ Dinero' : 'Qty'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-gray-600 text-xs mt-2">{filtered.length} items · {selectedWeek}</p>
+      </div>
+
+      {/* Panel de historial del item seleccionado */}
+      {selectedItem && itemHistory.length > 0 && (
+        <div className="bg-gray-900 border border-blue-800 rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-white font-semibold">{selectedItem}</h3>
+              <p className="text-gray-500 text-xs mt-0.5">Variación en {itemHistory.length} semana{itemHistory.length !== 1 ? 's' : ''}</p>
+            </div>
+            <button onClick={() => setSelectedItem(null)} className="text-gray-500 hover:text-white text-sm">✕</button>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            {/* Mini gráfica de tendencia */}
+            <div>
+              <p className="text-gray-500 text-xs mb-2">Tendencia varianza {detalleView === 'dollar' ? '$' : 'Qty'}</p>
+              <ResponsiveContainer width="100%" height={120}>
+                <BarChart data={itemHistory}>
+                  <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false}
+                    tickFormatter={v => detalleView === 'dollar' ? '$' + Math.abs(v) : Math.abs(v).toFixed(1)} />
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                    formatter={(v: any) => [detalleView === 'dollar' ? fmt(Math.abs(v)) : Math.abs(Number(v)).toFixed(3), v > 0 ? 'Faltante' : 'Sobrante']} />
+                  <ReferenceLine y={0} stroke="#374151" />
+                  <Bar dataKey={detalleView === 'dollar' ? 'variance_dollar' : 'variance_qty'} radius={[3, 3, 0, 0]}>
+                    {itemHistory.map((h: any, i: number) => (
+                      <Cell key={i} fill={h.tipo === 'shortage' ? '#ef4444' : '#22c55e'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            {/* Tabla de historial */}
+            <div>
+              <p className="text-gray-500 text-xs mb-2">Detalle por semana</p>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {itemHistory.map((h: any, i: number) => (
+                  <div key={i} className={`flex items-center justify-between px-3 py-1.5 rounded-lg text-xs ${h.fullWeek === selectedWeek ? 'bg-blue-950 border border-blue-800' : 'bg-gray-800'}`}>
+                    <span className="text-gray-400">{h.week}</span>
+                    <span className={`font-bold ${h.tipo === 'shortage' ? 'text-red-400' : 'text-green-400'}`}>
+                      {h.tipo === 'shortage' ? '' : '('}
+                      {detalleView === 'dollar' ? fmt(Math.abs(h.variance_dollar)) : Math.abs(h.variance_qty).toFixed(3) + ' ' + h.uom}
+                      {h.tipo === 'shortage' ? '' : ')'}
+                    </span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${h.tipo === 'shortage' ? 'bg-red-950 text-red-400' : 'bg-green-950 text-green-400'}`}>
+                      {h.tipo === 'shortage' ? 'falt.' : 'sobr.'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tabla principal */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="border-b border-gray-800">
+              <tr>
+                <th className="text-left text-gray-500 text-xs py-3 px-4 font-medium">#</th>
+                <th className="text-left text-gray-500 text-xs py-3 font-medium">Item</th>
+                <th className="text-left text-gray-500 text-xs py-3 font-medium">Cat.</th>
+                <th className="text-left text-gray-500 text-xs py-3 font-medium">Sub-cat.</th>
+                <th className="text-right text-gray-500 text-xs py-3 font-medium">UOM</th>
+                <th className="text-right text-gray-500 text-xs py-3 font-medium">Costo Unit.</th>
+                <th className="text-right text-gray-500 text-xs py-3 font-medium">Varianza Qty</th>
+                <th className="text-right text-gray-500 text-xs py-3 pr-4 font-medium">Varianza $</th>
+                <th className="text-left text-gray-500 text-xs py-3 font-medium">Tipo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((item: any, i: number) => {
+                const isShortage = item.tipo === 'shortage'
+                const varDollar = Math.abs(Number(item.variance_dollar || 0))
+                const varQty = Math.abs(Number(item.variance_qty || 0))
+                const isSelected = selectedItem === item.name
+                // Contar cuántas semanas aparece en el historial de weeks
+                const weekCount = weeks.filter((w: any) => {
+                  const s = w.avt?.shortages || []
+                  const o = w.avt?.overages || []
+                  return [...s, ...o].some((x: any) => x.name === item.name)
+                }).length
+                return (
+                  <tr key={i}
+                    onClick={() => setSelectedItem(isSelected ? null : item.name)}
+                    className={`border-b border-gray-800 cursor-pointer transition ${isSelected ? 'bg-blue-950/40' : 'hover:bg-gray-800/50'}`}>
+                    <td className="py-2.5 px-4 text-gray-600 text-xs">{i + 1}</td>
+                    <td className="py-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-sm font-medium ${isShortage ? 'text-red-300' : 'text-green-300'}`}>{item.name}</span>
+                        {weekCount > 1 && (
+                          <span className="text-orange-400 text-xs bg-orange-950 px-1.5 py-0.5 rounded">⚠️ {weekCount} sem.</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-2.5 text-gray-500 text-xs">{item.category || '—'}</td>
+                    <td className="py-2.5 text-gray-600 text-xs">{item.sub_category || '—'}</td>
+                    <td className="py-2.5 text-right text-gray-500 text-xs">{item.uom}</td>
+                    <td className="py-2.5 text-right text-gray-400 text-xs">{item.unit_cost ? fmt(item.unit_cost) : '—'}</td>
+                    <td className="py-2.5 text-right text-xs">
+                      <span className={isShortage ? 'text-red-400' : 'text-green-400'}>
+                        {isShortage ? '+' : '('}{varQty.toFixed(3)}{isShortage ? '' : ')'} {item.uom}
+                      </span>
+                    </td>
+                    <td className="py-2.5 text-right pr-4 font-bold text-sm">
+                      <span className={isShortage ? 'text-red-400' : 'text-green-400'}>
+                        {isShortage ? fmt(varDollar) : '(' + fmt(varDollar) + ')'}
+                      </span>
+                    </td>
+                    <td className="py-2.5">
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${isShortage ? 'bg-red-950 text-red-400' : 'bg-green-950 text-green-400'}`}>
+                        {isShortage ? 'Faltante' : 'Sobrante'}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan={9} className="py-10 text-center text-gray-600">No hay items que coincidan con el filtro</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── SimpleTable (sin cambios) ───────────────────────────────────────────────
 function SimpleTable({ items, type, viewMode, allTracking, selectedWeek, fmt, getRecurrenceInfo }: any) {
   const isShortage = type === 'shortage'
   return (
@@ -529,9 +703,7 @@ function SimpleTable({ items, type, viewMode, allTracking, selectedWeek, fmt, ge
             <th className="text-left text-gray-500 text-xs pb-3 font-medium">Cat.</th>
             <th className="text-right text-gray-500 text-xs pb-3 font-medium">UOM</th>
             <th className="text-right text-gray-500 text-xs pb-3 font-medium">Costo Unit.</th>
-            <th className="text-right text-gray-500 text-xs pb-3 font-medium">
-              {viewMode === 'dollar' ? 'Varianza $' : 'Varianza Qty'}
-            </th>
+            <th className="text-right text-gray-500 text-xs pb-3 font-medium">{viewMode === 'dollar' ? 'Varianza $' : 'Varianza Qty'}</th>
             <th className="text-left text-gray-500 text-xs pb-3 font-medium">Historial</th>
           </tr>
         </thead>
@@ -543,11 +715,7 @@ function SimpleTable({ items, type, viewMode, allTracking, selectedWeek, fmt, ge
             return (
               <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
                 <td className="py-2.5 text-gray-600 text-xs">{i + 1}</td>
-                <td className="py-2.5">
-                  <span className={`text-sm font-medium ${isShortage ? 'text-red-300' : 'text-green-300'}`}>
-                    {item.name}
-                  </span>
-                </td>
+                <td className="py-2.5"><span className={`text-sm font-medium ${isShortage ? 'text-red-300' : 'text-green-300'}`}>{item.name}</span></td>
                 <td className="py-2.5 text-gray-500 text-xs">{item.category || '—'}</td>
                 <td className="py-2.5 text-right text-gray-500 text-xs">{item.uom}</td>
                 <td className="py-2.5 text-right text-gray-400 text-xs">{fmt(item.unit_cost)}</td>
@@ -567,14 +735,8 @@ function SimpleTable({ items, type, viewMode, allTracking, selectedWeek, fmt, ge
                     <div className="flex items-center gap-1.5">
                       {info.recurred && <span className="text-red-400 text-xs">🔄 Recayó</span>}
                       {!info.recurred && <span className="text-orange-400 text-xs">⚠️ {info.weekCount} sem.</span>}
-                      {info.lastStatus && (
-                        <span className={`text-xs ${STATUS_LABELS[info.lastStatus]?.color}`}>
-                          · {STATUS_LABELS[info.lastStatus]?.label}
-                        </span>
-                      )}
-                      {info.lastResponsible && (
-                        <span className="text-gray-500 text-xs">· {info.lastResponsible}</span>
-                      )}
+                      {info.lastStatus && <span className={`text-xs ${STATUS_LABELS[info.lastStatus]?.color}`}>· {STATUS_LABELS[info.lastStatus]?.label}</span>}
+                      {info.lastResponsible && <span className="text-gray-500 text-xs">· {info.lastResponsible}</span>}
                     </div>
                   ) : (
                     <span className="text-gray-700 text-xs">Nuevo</span>
@@ -592,32 +754,24 @@ function SimpleTable({ items, type, viewMode, allTracking, selectedWeek, fmt, ge
   )
 }
 
+// ── SeguimientoTab (sin cambios) ────────────────────────────────────────────
 function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracking, savingId,
   restaurantId, allTracking, onSave, getPrefillData, getItemHistory, fmt, top10ByCat, expandedItem, setExpandedItem }: any) {
-
   const [seguimientoTab, setSeguimientoTab] = useState<'items' | 'responsables'>('items')
-  const [filterStatus, setFilterStatus] = useState('all')
 
-  // Status summary
   const statusCounts = { pending: 0, in_progress: 0, resolved: 0 }
   Object.values(tracking).forEach((t: any) => {
     const s = t.status || 'pending'
     if (s in statusCounts) statusCounts[s as keyof typeof statusCounts]++
   })
 
-  // Items recurrentes con recaídas
-  // Filtramos UOMs que aparecen como nombres (bug en parser de R365)
-  const KNOWN_UOMS = new Set([
-    'LB', 'Liter', 'Bottle', 'Each', 'Gallon', 'BIB', 'Pack',
-    'Case', 'Can', 'OZ', 'oz', 'Bag', 'Box', 'Keg', 'Pint', 'Quart'
-  ])
+  const KNOWN_UOMS = new Set(['LB', 'Liter', 'Bottle', 'Each', 'Gallon', 'BIB', 'Pack', 'Case', 'Can', 'OZ', 'oz', 'Bag', 'Box', 'Keg', 'Pint', 'Quart'])
   const itemWeekCount: Record<string, number> = {}
   weeks.forEach((w: any) => {
     const s = w.avt?.shortages || []
     const o = w.avt?.overages || []
     ;[...s, ...o].forEach((item: any) => {
       if (!item.name) return
-      // Ignorar si el primer token del nombre es un UOM conocido (ej: "Bottle (750 mL)", "LB")
       const firstWord = item.name.split(/[\s(]/)[0]
       if (KNOWN_UOMS.has(firstWord)) return
       itemWeekCount[item.name] = (itemWeekCount[item.name] || 0) + 1
@@ -625,7 +779,6 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
   })
   const recurrentes = Object.entries(itemWeekCount).filter(([_, c]) => c > 1).sort((a, b) => b[1] - a[1])
 
-  // To-do por responsable
   const byResponsible: Record<string, any[]> = {}
   allTracking.filter((t: any) => t.responsible && t.status !== 'resolved').forEach((t: any) => {
     if (!byResponsible[t.responsible]) byResponsible[t.responsible] = []
@@ -634,24 +787,15 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
 
   async function updateTrackingStatus(id: string, status: string, itemName: string) {
     await supabase.from('avt_tracking').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
-    // Recargar todo el tracking para sincronizar todos los componentes
-    const { data: allT } = await supabase.from('avt_tracking')
-      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: false })
+    const { data: allT } = await supabase.from('avt_tracking').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: false })
     if (allT) {
-      // Actualizar allTracking en el padre via onSave que ya tiene el mecanismo
       const item = allT.find((t: any) => t.id === id)
-      if (item) {
-        onSave(
-          { name: itemName, variance_dollar: item.variance_dollar, category: item.category, uom: item.uom, unit_cost: item.unit_cost },
-          { status }
-        )
-      }
+      if (item) onSave({ name: itemName, variance_dollar: item.variance_dollar, category: item.category, uom: item.uom, unit_cost: item.unit_cost }, { status })
     }
   }
 
   return (
     <div className="space-y-6">
-      {/* Resumen */}
       <div className="grid grid-cols-4 gap-4">
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
           <p className="text-gray-500 text-xs mb-1">Semana actual</p>
@@ -671,8 +815,7 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
         </div>
       </div>
 
-      {/* Sub-tabs */}
-      <div className="flex gap-2 border-b border-gray-800 pb-0">
+      <div className="flex gap-2 border-b border-gray-800">
         <button onClick={() => setSeguimientoTab('items')}
           className={`px-4 py-2 text-sm font-medium transition border-b-2 ${seguimientoTab === 'items' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>
           📋 Top 10 por categoría
@@ -685,7 +828,6 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
 
       {seguimientoTab === 'items' ? (
         <>
-          {/* Recurrentes con recaídas */}
           {recurrentes.length > 0 && (
             <div className="bg-orange-950 border border-orange-800 rounded-xl p-5">
               <h3 className="text-orange-300 font-semibold mb-3">⚠️ Items recurrentes ({recurrentes.length})</h3>
@@ -697,22 +839,16 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
                   const recurred = wasResolved && !currentT?.id
                   return (
                     <span key={name} className={`text-xs px-3 py-1 rounded-full ${recurred ? 'bg-red-900 text-red-300' : 'bg-orange-900 text-orange-300'}`}>
-                      {recurred ? '🔄 ' : ''}{name} · {count} semanas
-                      {lastT?.reason ? ` · ${lastT.reason}` : ''}
+                      {recurred ? '🔄 ' : ''}{name} · {count} semanas{lastT?.reason ? ` · ${lastT.reason}` : ''}
                     </span>
                   )
                 })}
               </div>
             </div>
           )}
-
-          {/* Top 10 por categoría con seguimiento y prefill */}
           {top10ByCat.map(({ cat, shortages, overages }: any) => (
             <div key={cat} className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-bold text-base mb-4">
-                {cat}
-                <span className="text-gray-500 font-normal text-sm ml-2">Top 10 de mayor impacto $</span>
-              </h2>
+              <h2 className="text-white font-bold text-base mb-4">{cat}<span className="text-gray-500 font-normal text-sm ml-2">Top 10 de mayor impacto $</span></h2>
               <div className="space-y-4">
                 {shortages.length > 0 && (
                   <div>
@@ -737,21 +873,16 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
           ))}
         </>
       ) : (
-        /* TO-DO POR RESPONSABLE */
         <div className="space-y-4">
           {Object.keys(byResponsible).length === 0 ? (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
               <p className="text-gray-500">No hay tareas asignadas a responsables aún.</p>
-              <p className="text-gray-600 text-xs mt-2">Asigna un responsable en el seguimiento por categoría.</p>
             </div>
           ) : (
             Object.entries(byResponsible).map(([responsible, tasks]) => (
               <div key={responsible} className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-white font-semibold">
-                    👤 {responsible}
-                    <span className="text-gray-500 font-normal text-sm ml-2">{tasks.length} tarea{tasks.length !== 1 ? 's' : ''} pendiente{tasks.length !== 1 ? 's' : ''}</span>
-                  </h3>
+                  <h3 className="text-white font-semibold">👤 {responsible}<span className="text-gray-500 font-normal text-sm ml-2">{tasks.length} tarea{tasks.length !== 1 ? 's' : ''} pendiente{tasks.length !== 1 ? 's' : ''}</span></h3>
                   <div className="flex gap-2">
                     <span className="text-yellow-400 text-xs">{tasks.filter((t: any) => t.status === 'pending').length} pend.</span>
                     <span className="text-blue-400 text-xs">{tasks.filter((t: any) => t.status === 'in_progress').length} proc.</span>
@@ -762,29 +893,17 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
                     <div key={task.id} className={`flex items-start gap-4 p-3 rounded-lg border ${task.status === 'in_progress' ? 'bg-blue-950 border-blue-800' : 'bg-gray-800 border-gray-700'}`}>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className={`text-sm font-medium ${Number(task.variance_dollar) > 0 ? 'text-red-300' : 'text-green-300'}`}>
-                            {task.item_name}
-                          </p>
+                          <p className={`text-sm font-medium ${Number(task.variance_dollar) > 0 ? 'text-red-300' : 'text-green-300'}`}>{task.item_name}</p>
                           <span className="text-gray-500 text-xs">{task.week}</span>
-                          <span className="text-gray-500 text-xs">·</span>
                           <span className={`text-xs font-bold ${Number(task.variance_dollar) > 0 ? 'text-red-400' : 'text-green-400'}`}>
                             {Number(task.variance_dollar) > 0 ? fmt(task.variance_dollar) : '(' + fmt(task.variance_dollar) + ')'}
                           </span>
                         </div>
-                        {task.action_required && (
-                          <p className="text-gray-400 text-xs mt-1">📋 Acción: {task.action_required}</p>
-                        )}
-                        {task.reason && (
-                          <p className="text-gray-500 text-xs">Razón: {task.reason}</p>
-                        )}
-                        {task.note && (
-                          <p className="text-gray-500 text-xs italic">"{task.note}"</p>
-                        )}
+                        {task.action_required && <p className="text-gray-400 text-xs mt-1">📋 {task.action_required}</p>}
+                        {task.reason && <p className="text-gray-500 text-xs">Razón: {task.reason}</p>}
+                        {task.note && <p className="text-gray-500 text-xs italic">"{task.note}"</p>}
                       </div>
-                      <select value={task.status} onChange={async e => {
-                        await updateTrackingStatus(task.id, e.target.value, task.item_name)
-                        task.status = e.target.value
-                      }}
+                      <select value={task.status} onChange={async e => { await updateTrackingStatus(task.id, e.target.value, task.item_name); task.status = e.target.value }}
                         className={`bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs focus:outline-none shrink-0 ${STATUS_LABELS[task.status]?.color}`}>
                         {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                       </select>
@@ -803,7 +922,6 @@ function SeguimientoTab({ weeks, selectedWeek, allShortages, allOverages, tracki
 function TrackingTable({ items, type, tracking, onSave, allTracking, getPrefillData, getItemHistory,
   fmt, savingId, itemWeekCount, expandedItem, setExpandedItem }: any) {
   const isShortage = type === 'shortage'
-
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -831,7 +949,6 @@ function TrackingTable({ items, type, tracking, onSave, allTracking, getPrefillD
             const recurred = wasResolved && !existingT?.id
             const history = getItemHistory(item.name)
             const isExpanded = expandedItem === item.name
-
             return (
               <>
                 <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/30 transition">
@@ -843,18 +960,13 @@ function TrackingTable({ items, type, tracking, onSave, allTracking, getPrefillD
                       {isPrefilled && <span className="text-gray-500 text-xs bg-gray-800 px-1.5 py-0.5 rounded">↩️ prefill</span>}
                       {isSaving && <span className="text-gray-600 text-xs">💾</span>}
                       {history.length > 0 && (
-                        <button onClick={() => setExpandedItem(isExpanded ? null : item.name)}
-                          className="text-blue-400 text-xs hover:text-blue-300 ml-1">
+                        <button onClick={() => setExpandedItem(isExpanded ? null : item.name)} className="text-blue-400 text-xs hover:text-blue-300 ml-1">
                           {isExpanded ? '▲' : '▼'} {history.length} sem. prev.
                         </button>
                       )}
                     </div>
                   </td>
-                  <td className="py-2.5 text-right">
-                    <span className={`font-bold text-sm ${isShortage ? 'text-red-400' : 'text-green-400'}`}>
-                      {isShortage ? fmt(varDollar) : '(' + fmt(varDollar) + ')'}
-                    </span>
-                  </td>
+                  <td className="py-2.5 text-right"><span className={`font-bold text-sm ${isShortage ? 'text-red-400' : 'text-green-400'}`}>{isShortage ? fmt(varDollar) : '(' + fmt(varDollar) + ')'}</span></td>
                   <td className="py-2.5 pr-2">
                     <select value={t.reason || ''} onChange={e => onSave(item, { reason: e.target.value })}
                       className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 ${t.reason ? 'border-gray-600 text-white' : 'border-gray-700 text-gray-500'}`}>
@@ -894,9 +1006,7 @@ function TrackingTable({ items, type, tracking, onSave, allTracking, getPrefillD
                         {history.map((h: any) => (
                           <div key={h.id} className={`flex items-center gap-4 p-2 rounded-lg border ${h.status === 'resolved' ? 'bg-green-950 border-green-900' : 'bg-gray-800 border-gray-700'}`}>
                             <span className="text-gray-400 text-xs w-16 shrink-0">{h.week}</span>
-                            <span className={`text-xs font-bold shrink-0 ${isShortage ? 'text-red-400' : 'text-green-400'}`}>
-                              {isShortage ? fmt(h.variance_dollar) : '(' + fmt(h.variance_dollar) + ')'}
-                            </span>
+                            <span className={`text-xs font-bold shrink-0 ${isShortage ? 'text-red-400' : 'text-green-400'}`}>{isShortage ? fmt(h.variance_dollar) : '(' + fmt(h.variance_dollar) + ')'}</span>
                             {h.reason && <span className="text-gray-400 text-xs">{h.reason}</span>}
                             {h.action_required && <span className="text-gray-500 text-xs">· {h.action_required}</span>}
                             {h.responsible && <span className="text-gray-500 text-xs">· {h.responsible}</span>}
