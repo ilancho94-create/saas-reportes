@@ -7,15 +7,23 @@ import { useRouter } from 'next/navigation'
 
 type SATab = 'orgs' | 'restaurants' | 'users' | 'reports'
 
+const ROLES = [
+  { value: 'owner', label: 'Owner / Dueño' },
+  { value: 'gm', label: 'General Manager' },
+  { value: 'manager', label: 'Manager' },
+  { value: 'chef', label: 'Chef / Jefe de Cocina' },
+  { value: 'supervisor', label: 'Supervisor' },
+]
+
 export default function SuperAdminPage() {
   const { user } = useAuth()
   const router = useRouter()
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<SATab>('orgs')
+  const [status, setStatus] = useState('')
 
   const [orgs, setOrgs] = useState<any[]>([])
   const [restaurants, setRestaurants] = useState<any[]>([])
-  const [users, setUsers] = useState<any[]>([])
   const [reports, setReports] = useState<any[]>([])
 
   const [newOrg, setNewOrg] = useState({ name: '', slug: '' })
@@ -24,34 +32,15 @@ export default function SuperAdminPage() {
   const [savingRest, setSavingRest] = useState(false)
   const [formMsg, setFormMsg] = useState('')
 
-  // Edit state — orgs
   const [editingOrgId, setEditingOrgId] = useState<string | null>(null)
   const [editOrgName, setEditOrgName] = useState('')
   const [editOrgSlug, setEditOrgSlug] = useState('')
   const [savingEditOrg, setSavingEditOrg] = useState(false)
 
-  // Edit state — restaurants
   const [editingRestId, setEditingRestId] = useState<string | null>(null)
   const [editRestName, setEditRestName] = useState('')
   const [editRestOrgId, setEditRestOrgId] = useState('')
   const [savingEditRest, setSavingEditRest] = useState(false)
-
-  const [userSearch, setUserSearch] = useState('')
-  const [foundUser, setFoundUser] = useState<any>(null)
-  const [searchingUser, setSearchingUser] = useState(false)
-  const [assignOrg, setAssignOrg] = useState('')
-  const [assignRest, setAssignRest] = useState('')
-  const [assignRole, setAssignRole] = useState('manager')
-  const [assigningUser, setAssigningUser] = useState(false)
-  const [assignMsg, setAssignMsg] = useState('')
-
-  const [newUserEmail, setNewUserEmail] = useState('')
-  const [newUserPassword, setNewUserPassword] = useState('')
-  const [newUserOrg, setNewUserOrg] = useState('')
-  const [newUserRest, setNewUserRest] = useState('')
-  const [newUserRole, setNewUserRole] = useState('manager')
-  const [creatingUser, setCreatingUser] = useState(false)
-  const [createUserMsg, setCreateUserMsg] = useState('')
 
   useEffect(() => { checkSuperAdmin() }, [user])
 
@@ -64,15 +53,13 @@ export default function SuperAdminPage() {
 
   async function loadAll() {
     setLoading(true)
-    const [orgsRes, restsRes, usersRes, reportsRes] = await Promise.all([
+    const [orgsRes, restsRes, reportsRes] = await Promise.all([
       supabase.from('organizations').select('*').order('name'),
       supabase.from('restaurants').select('*, organizations(name)').order('name'),
-      supabase.from('profiles').select('*, user_restaurants(restaurant_id, role, restaurants(name))').limit(100),
       supabase.from('reports').select('*, restaurants(name)').order('created_at', { ascending: false }).limit(50),
     ])
     setOrgs(orgsRes.data || [])
     setRestaurants(restsRes.data || [])
-    setUsers(usersRes.data || [])
     setReports(reportsRes.data || [])
     setLoading(false)
   }
@@ -89,10 +76,7 @@ export default function SuperAdminPage() {
   async function saveEditOrg(id: string) {
     if (!editOrgName) return
     setSavingEditOrg(true)
-    const { error } = await supabase.from('organizations').update({
-      name: editOrgName,
-      slug: editOrgSlug || editOrgName.toLowerCase().replace(/\s+/g, '-'),
-    }).eq('id', id)
+    const { error } = await supabase.from('organizations').update({ name: editOrgName, slug: editOrgSlug || editOrgName.toLowerCase().replace(/\s+/g, '-') }).eq('id', id)
     if (!error) { setEditingOrgId(null); loadAll() }
     setSavingEditOrg(false)
   }
@@ -114,57 +98,9 @@ export default function SuperAdminPage() {
   async function saveEditRest(id: string) {
     if (!editRestName || !editRestOrgId) return
     setSavingEditRest(true)
-    const { error } = await supabase.from('restaurants').update({
-      name: editRestName,
-      organization_id: editRestOrgId,
-    }).eq('id', id)
+    const { error } = await supabase.from('restaurants').update({ name: editRestName, organization_id: editRestOrgId }).eq('id', id)
     if (!error) { setEditingRestId(null); loadAll() }
     setSavingEditRest(false)
-  }
-
-  async function searchUser() {
-    if (!userSearch) return
-    setSearchingUser(true); setFoundUser(null); setAssignMsg('')
-    const { data } = await supabase.from('profiles').select('*, user_restaurants(*, restaurants(name, organizations(name)))').eq('email', userSearch.trim()).single()
-    setFoundUser(data || null)
-    if (!data) setAssignMsg('❌ Usuario no encontrado')
-    setSearchingUser(false)
-  }
-
-  async function assignUserToRestaurant() {
-    if (!foundUser || !assignRest || !assignRole) return
-    setAssigningUser(true); setAssignMsg('')
-    const { error } = await supabase.from('user_restaurants').upsert({
-      user_id: foundUser.id, restaurant_id: assignRest, role: assignRole, organization_id: assignOrg,
-    }, { onConflict: 'user_id,restaurant_id' })
-    if (error) { setAssignMsg('❌ ' + error.message) }
-    else { setAssignMsg('✅ Acceso asignado correctamente'); loadAll() }
-    setAssigningUser(false)
-  }
-
-  async function removeUserFromRestaurant(userId: string, restaurantId: string) {
-    await supabase.from('user_restaurants').delete().eq('user_id', userId).eq('restaurant_id', restaurantId)
-    loadAll()
-    if (foundUser?.id === userId) searchUser()
-  }
-
-  async function createNewUser() {
-    if (!newUserEmail || !newUserPassword || !newUserRest) return
-    setCreatingUser(true); setCreateUserMsg('')
-    try {
-      const res = await fetch('/api/admin/create-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: newUserEmail, password: newUserPassword, restaurant_id: newUserRest, organization_id: newUserOrg, role: newUserRole }),
-      })
-      const data = await res.json()
-      if (data.success) {
-        setCreateUserMsg('✅ Usuario creado correctamente')
-        setNewUserEmail(''); setNewUserPassword(''); setNewUserOrg(''); setNewUserRest(''); setNewUserRole('manager')
-        loadAll()
-      } else { setCreateUserMsg('❌ ' + (data.error || 'Error al crear usuario')) }
-    } catch { setCreateUserMsg('❌ Error de conexión') }
-    setCreatingUser(false)
   }
 
   const tabs: { id: SATab; label: string }[] = [
@@ -173,7 +109,7 @@ export default function SuperAdminPage() {
     { id: 'users', label: '👥 Usuarios' },
     { id: 'reports', label: '📊 Reportes' },
   ]
-  const ROLES = ['admin', 'owner', 'gm', 'manager', 'chef', 'supervisor']
+
   const inputCls = 'bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500'
 
   if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><p className="text-gray-400">Cargando Super Admin...</p></div>
@@ -199,6 +135,7 @@ export default function SuperAdminPage() {
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-6">
+        {status && <div className="bg-green-950 border border-green-800 text-green-400 px-4 py-3 rounded-lg text-sm">{status}</div>}
 
         {/* ══ ORGANIZACIONES ══ */}
         {activeTab === 'orgs' && (
@@ -360,127 +297,29 @@ export default function SuperAdminPage() {
 
         {/* ══ USUARIOS ══ */}
         {activeTab === 'users' && (
-          <>
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">➕ Crear nuevo usuario</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                <input type="email" placeholder="Email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} className={inputCls} />
-                <input type="password" placeholder="Contraseña (mín. 6 caracteres)" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} className={inputCls} />
-                <select value={newUserOrg} onChange={e => { setNewUserOrg(e.target.value); setNewUserRest('') }} className={inputCls}>
-                  <option value="">— Organización —</option>
-                  {orgs.filter(o => !o.archived).map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
-                </select>
-                <select value={newUserRest} onChange={e => setNewUserRest(e.target.value)} className={inputCls}>
-                  <option value="">— Restaurante —</option>
-                  {restaurants.filter(r => !newUserOrg || r.organization_id === newUserOrg).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
-                <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} className={inputCls}>
-                  {ROLES.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
-                </select>
-                <button onClick={createNewUser} disabled={creatingUser || !newUserEmail || !newUserPassword || !newUserRest}
-                  className="bg-amber-600 hover:bg-amber-700 disabled:bg-gray-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition">
-                  {creatingUser ? 'Creando...' : '+ Crear usuario'}
-                </button>
-              </div>
-              {createUserMsg && <p className={`text-xs ${createUserMsg.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{createUserMsg}</p>}
+          <div className="space-y-6">
+            <div className="bg-yellow-950 border border-yellow-800 rounded-xl p-5">
+              <p className="text-yellow-300 text-sm font-semibold">⚡ Modo Superadmin</p>
+              <p className="text-yellow-400 text-xs mt-1">Puedes crear y asignar usuarios a cualquier organización y restaurante de la plataforma.</p>
             </div>
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">🔍 Gestionar usuario existente</h2>
-              <div className="flex gap-3 mb-4">
-                <input type="email" placeholder="Email del usuario" value={userSearch} onChange={e => setUserSearch(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && searchUser()} className={`flex-1 ${inputCls}`} />
-                <button onClick={searchUser} disabled={searchingUser}
-                  className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm transition">
-                  {searchingUser ? 'Buscando...' : 'Buscar'}
-                </button>
-              </div>
-              {assignMsg && !foundUser && <p className="text-red-400 text-xs mb-3">{assignMsg}</p>}
-              {foundUser && (
-                <div className="space-y-4">
-                  <div className="bg-gray-800 rounded-xl p-4">
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-bold">
-                        {foundUser.email?.substring(0, 2).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className="text-white font-medium text-sm">{foundUser.email}</p>
-                        <p className="text-gray-500 text-xs">{foundUser.id}</p>
-                      </div>
-                    </div>
-                    {foundUser.user_restaurants?.length > 0 && (
-                      <div>
-                        <p className="text-gray-500 text-xs mb-2">Accesos actuales:</p>
-                        <div className="space-y-1">
-                          {foundUser.user_restaurants.map((ur: any) => (
-                            <div key={ur.restaurant_id} className="flex items-center justify-between bg-gray-700 rounded-lg px-3 py-2">
-                              <div>
-                                <p className="text-gray-300 text-sm">{ur.restaurants?.name}</p>
-                                <p className="text-gray-500 text-xs">{ur.restaurants?.organizations?.name} · {ur.role}</p>
-                              </div>
-                              <button onClick={() => removeUserFromRestaurant(foundUser.id, ur.restaurant_id)}
-                                className="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded hover:bg-red-950 transition">
-                                Eliminar
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-gray-400 text-xs font-semibold mb-2">Asignar nuevo acceso:</p>
-                    <div className="flex gap-3 flex-wrap">
-                      <select value={assignOrg} onChange={e => { setAssignOrg(e.target.value); setAssignRest('') }}
-                        className={`flex-1 min-w-40 ${inputCls}`}>
-                        <option value="">— Organización —</option>
-                        {orgs.filter(o => !o.archived).map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
-                      </select>
-                      <select value={assignRest} onChange={e => setAssignRest(e.target.value)}
-                        className={`flex-1 min-w-40 ${inputCls}`}>
-                        <option value="">— Restaurante —</option>
-                        {restaurants.filter(r => !assignOrg || r.organization_id === assignOrg).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                      </select>
-                      <select value={assignRole} onChange={e => setAssignRole(e.target.value)} className={inputCls}>
-                        {ROLES.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
-                      </select>
-                      <button onClick={assignUserToRestaurant} disabled={assigningUser || !assignRest}
-                        className="bg-amber-600 hover:bg-amber-700 disabled:bg-gray-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition">
-                        {assigningUser ? 'Asignando...' : 'Asignar acceso'}
-                      </button>
-                    </div>
-                    {assignMsg && <p className={`text-xs mt-2 ${assignMsg.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{assignMsg}</p>}
-                  </div>
-                </div>
-              )}
+              <h2 className="text-white font-semibold mb-1">Crear nuevo usuario</h2>
+              <p className="text-gray-500 text-xs mb-4">El usuario podrá entrar inmediatamente con estas credenciales</p>
+              <CreateUserForm allOrgs={orgs} onSuccess={(msg) => setStatus(msg)} />
             </div>
 
-            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-800">
-                <h2 className="text-white font-semibold">Todos los usuarios ({users.length})</h2>
-              </div>
-              <div className="divide-y divide-gray-800">
-                {users.map(u => (
-                  <div key={u.id} className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <p className="text-white text-sm font-medium">{u.email}</p>
-                      {u.is_superadmin && <span className="text-xs bg-amber-900 text-amber-400 px-2 py-0.5 rounded-full">⚡ Superadmin</span>}
-                    </div>
-                    <div className="flex gap-1 mt-1 flex-wrap">
-                      {(u.user_restaurants || []).map((ur: any) => (
-                        <span key={ur.restaurant_id} className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">
-                          {ur.restaurants?.name} · {ur.role}
-                        </span>
-                      ))}
-                      {(!u.user_restaurants || u.user_restaurants.length === 0) && (
-                        <span className="text-xs text-gray-600">Sin restaurantes asignados</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-4">Asignar usuario existente a organización</h2>
+              <AssignUserForm allOrgs={orgs} onStatus={(msg) => setStatus(msg)} />
             </div>
-          </>
+
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-1">Gestionar accesos de un usuario</h2>
+              <p className="text-gray-500 text-xs mb-4">Busca un usuario y ve/modifica todos sus accesos en la plataforma</p>
+              <ManageUserAccess allOrgs={orgs} onStatus={(msg) => setStatus(msg)} />
+            </div>
+          </div>
         )}
 
         {/* ══ REPORTES ══ */}
@@ -508,15 +347,310 @@ export default function SuperAdminPage() {
                       <td className="px-6 py-3 text-gray-600 text-xs font-mono">{r.id.substring(0, 8)}...</td>
                     </tr>
                   ))}
-                  {reports.length === 0 && (
-                    <tr><td colSpan={4} className="px-6 py-4 text-gray-500 text-sm">No hay reportes</td></tr>
-                  )}
+                  {reports.length === 0 && <tr><td colSpan={4} className="px-6 py-4 text-gray-500 text-sm">No hay reportes</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
       </main>
+    </div>
+  )
+}
+
+// ── Crear usuario ─────────────────────────────────────────────────────────────
+function CreateUserForm({ allOrgs, onSuccess }: { allOrgs: any[], onSuccess: (msg: string) => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [orgId, setOrgId] = useState('')
+  const [restaurantId, setRestaurantId] = useState('')
+  const [role, setRole] = useState('manager')
+  const [restaurants, setRestaurants] = useState<any[]>([])
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState('')
+
+  async function loadRestaurants(orgId: string) {
+    const { data } = await supabase.from('restaurants').select('id, name').eq('organization_id', orgId)
+    setRestaurants(data || [])
+    setRestaurantId('')
+  }
+
+  async function handleCreate() {
+    if (!email || !password || !orgId || !restaurantId) { setError('Completa todos los campos'); return }
+    if (password.length < 6) { setError('La contraseña debe tener al menos 6 caracteres'); return }
+    setCreating(true); setError('')
+    const { data: { user } } = await supabase.auth.getUser()
+    const res = await fetch('/api/admin/create-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, organizationId: orgId, restaurantId, role, requesterId: user?.id }),
+    })
+    const result = await res.json()
+    setCreating(false)
+    if (result.error) { setError(result.error) }
+    else {
+      onSuccess('✅ Usuario creado exitosamente — ya puede iniciar sesión')
+      setEmail(''); setPassword(''); setOrgId(''); setRestaurantId(''); setRestaurants([])
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Email</label>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="usuario@ejemplo.com"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Contraseña</label>
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Mínimo 6 caracteres"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Organización</label>
+          <select value={orgId} onChange={e => { setOrgId(e.target.value); loadRestaurants(e.target.value) }}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+            <option value="">Seleccionar...</option>
+            {allOrgs.filter(o => !o.archived).map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Restaurante</label>
+          <select value={restaurantId} onChange={e => setRestaurantId(e.target.value)} disabled={!orgId}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 disabled:opacity-50">
+            <option value="">Seleccionar...</option>
+            {restaurants.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-gray-400 text-xs mb-1 block">Rol</label>
+          <select value={role} onChange={e => setRole(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+            {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
+        </div>
+      </div>
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+      <button onClick={handleCreate} disabled={creating}
+        className="bg-green-600 hover:bg-green-700 disabled:bg-gray-800 disabled:text-gray-600 text-white px-6 py-2 rounded-lg text-sm font-medium transition">
+        {creating ? 'Creando usuario...' : '+ Crear usuario'}
+      </button>
+    </div>
+  )
+}
+
+// ── Asignar usuario existente ─────────────────────────────────────────────────
+function AssignUserForm({ allOrgs, onStatus }: { allOrgs: any[], onStatus: (msg: string) => void }) {
+  const [searchEmail, setSearchEmail] = useState('')
+  const [foundUser, setFoundUser] = useState<any>(null)
+  const [searching, setSearching] = useState(false)
+  const [assignOrgId, setAssignOrgId] = useState('')
+  const [assignRestaurantId, setAssignRestaurantId] = useState('')
+  const [assignRole, setAssignRole] = useState('manager')
+  const [allRestaurants, setAllRestaurants] = useState<any[]>([])
+
+  async function searchUserByEmail() {
+    if (!searchEmail) return
+    setSearching(true); setFoundUser(null)
+    const { data } = await supabase.rpc('find_user_by_email', { p_email: searchEmail }).single()
+    if (data) { setFoundUser(data) }
+    else {
+      for (const org of allOrgs) {
+        const { data: rests } = await supabase.from('restaurants').select('id').eq('organization_id', org.id)
+        for (const rest of rests || []) {
+          const { data: users } = await supabase.rpc('get_users_with_email', { p_restaurant_id: rest.id })
+          const match = (users || []).find((u: any) => u.email === searchEmail)
+          if (match) { setFoundUser(match); setSearching(false); return }
+        }
+      }
+    }
+    setSearching(false)
+  }
+
+  async function assignUserToOrg() {
+    if (!foundUser || !assignOrgId || !assignRestaurantId) return
+    const { error } = await supabase.from('user_restaurants').upsert({
+      user_id: foundUser.user_id, restaurant_id: assignRestaurantId,
+      organization_id: assignOrgId, role: assignRole, active: true,
+    }, { onConflict: 'user_id,restaurant_id' })
+    if (!error) {
+      onStatus('✅ Usuario asignado a la organización')
+      setFoundUser(null); setSearchEmail('')
+      setTimeout(() => onStatus(''), 3000)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="text-gray-400 text-xs mb-1 block">Buscar usuario por email</label>
+        <div className="flex gap-2">
+          <input type="email" value={searchEmail} onChange={e => setSearchEmail(e.target.value)}
+            placeholder="email@ejemplo.com" onKeyDown={e => e.key === 'Enter' && searchUserByEmail()}
+            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
+          <button onClick={searchUserByEmail} disabled={searching || !searchEmail}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 text-white px-4 py-2 rounded-lg text-sm transition">
+            {searching ? 'Buscando...' : 'Buscar'}
+          </button>
+        </div>
+      </div>
+      {foundUser && (
+        <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+          <p className="text-white text-sm font-medium">✓ Usuario encontrado: <span className="text-blue-400">{foundUser.email}</span></p>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-gray-400 text-xs mb-1 block">Organización</label>
+              <select value={assignOrgId} onChange={async e => {
+                setAssignOrgId(e.target.value); setAssignRestaurantId('')
+                const { data } = await supabase.from('restaurants').select('id, name').eq('organization_id', e.target.value)
+                setAllRestaurants(data || [])
+              }} className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+                <option value="">Seleccionar org...</option>
+                {allOrgs.filter(o => !o.archived).map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-gray-400 text-xs mb-1 block">Restaurante</label>
+              <select value={assignRestaurantId} onChange={e => setAssignRestaurantId(e.target.value)} disabled={!assignOrgId}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                <option value="">Seleccionar restaurante...</option>
+                {allRestaurants.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-gray-400 text-xs mb-1 block">Rol</label>
+              <select value={assignRole} onChange={e => setAssignRole(e.target.value)}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+                {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <button onClick={assignUserToOrg} disabled={!assignOrgId || !assignRestaurantId}
+            className="bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+            Asignar acceso
+          </button>
+        </div>
+      )}
+      {searchEmail && !foundUser && !searching && (
+        <p className="text-gray-500 text-sm">No se encontró ningún usuario con ese email.</p>
+      )}
+    </div>
+  )
+}
+
+// ── Gestionar accesos ─────────────────────────────────────────────────────────
+function ManageUserAccess({ allOrgs, onStatus }: { allOrgs: any[], onStatus: (msg: string) => void }) {
+  const [searchEmail, setSearchEmail] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [userData, setUserData] = useState<any>(null)
+  const [userAccess, setUserAccess] = useState<any[]>([])
+
+  async function searchUser() {
+    if (!searchEmail) return
+    setSearching(true); setUserData(null); setUserAccess([])
+    const { data: found } = await supabase.rpc('find_user_by_email', { p_email: searchEmail }).single()
+    if (!found) {
+      for (const org of allOrgs) {
+        const { data: rests } = await supabase.from('restaurants').select('id').eq('organization_id', org.id)
+        for (const rest of rests || []) {
+          const { data: users } = await supabase.rpc('get_users_with_email', { p_restaurant_id: rest.id })
+          const match = (users || []).find((u: any) => u.email === searchEmail)
+          if (match) { await loadUserAccess(match.user_id, match.email); setSearching(false); return }
+        }
+      }
+      setSearching(false); return
+    }
+    await loadUserAccess((found as any).user_id, (found as any).email)
+    setSearching(false)
+  }
+
+  async function loadUserAccess(userId: string, email: string) {
+    setUserData({ user_id: userId, email })
+    const { data: access } = await supabase.from('user_restaurants')
+      .select('id, role, active, restaurant_id, organization_id').eq('user_id', userId)
+    const enriched = await Promise.all((access || []).map(async (ur: any) => {
+      const { data: rest } = await supabase.from('restaurants').select('name').eq('id', ur.restaurant_id).single()
+      const org = allOrgs.find(o => o.id === ur.organization_id)
+      return { ...ur, restaurant_name: rest?.name || ur.restaurant_id, org_name: org?.name || ur.organization_id }
+    }))
+    setUserAccess(enriched)
+  }
+
+  async function toggleAccess(urId: string, active: boolean) {
+    await supabase.from('user_restaurants').update({ active: !active }).eq('id', urId)
+    setUserAccess(prev => prev.map(ur => ur.id === urId ? { ...ur, active: !active } : ur))
+    onStatus(active ? '✅ Acceso desactivado' : '✅ Acceso activado')
+    setTimeout(() => onStatus(''), 2000)
+  }
+
+  async function removeAccess(urId: string) {
+    if (!confirm('¿Eliminar completamente este acceso?')) return
+    await supabase.from('user_restaurants').delete().eq('id', urId)
+    setUserAccess(prev => prev.filter(ur => ur.id !== urId))
+    onStatus('✅ Acceso eliminado'); setTimeout(() => onStatus(''), 2000)
+  }
+
+  async function updateRole(urId: string, newRole: string) {
+    await supabase.from('user_restaurants').update({ role: newRole }).eq('id', urId)
+    setUserAccess(prev => prev.map(ur => ur.id === urId ? { ...ur, role: newRole } : ur))
+    onStatus('✅ Rol actualizado'); setTimeout(() => onStatus(''), 2000)
+  }
+
+  const byOrg: Record<string, any[]> = {}
+  userAccess.forEach(ur => { if (!byOrg[ur.org_name]) byOrg[ur.org_name] = []; byOrg[ur.org_name].push(ur) })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <input type="email" value={searchEmail} onChange={e => setSearchEmail(e.target.value)}
+          placeholder="email@ejemplo.com" onKeyDown={e => e.key === 'Enter' && searchUser()}
+          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500" />
+        <button onClick={searchUser} disabled={searching || !searchEmail}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-800 text-white px-4 py-2 rounded-lg text-sm transition">
+          {searching ? 'Buscando...' : 'Buscar'}
+        </button>
+      </div>
+      {userData && userAccess.length === 0 && <p className="text-gray-500 text-sm">Este usuario no tiene acceso a ningún restaurante.</p>}
+      {userData && userAccess.length > 0 && (
+        <div className="space-y-4">
+          <p className="text-white text-sm font-medium">{userData.email} — <span className="text-gray-400 font-normal">{userAccess.length} acceso{userAccess.length !== 1 ? 's' : ''}</span></p>
+          {Object.entries(byOrg).map(([orgName, accesses]) => (
+            <div key={orgName} className="bg-gray-800 rounded-xl p-4">
+              <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">🏢 {orgName}</p>
+              <div className="space-y-2">
+                {accesses.map((ur: any) => (
+                  <div key={ur.id} className={`flex items-center justify-between p-3 rounded-lg border ${ur.active ? 'border-gray-700' : 'border-gray-800 opacity-60'}`}>
+                    <div className="flex items-center gap-3">
+                      <span className={`w-2 h-2 rounded-full ${ur.active ? 'bg-green-400' : 'bg-gray-600'}`} />
+                      <div>
+                        <p className="text-white text-sm">{ur.restaurant_name}</p>
+                        <select value={ur.role} onChange={e => updateRole(ur.id, e.target.value)}
+                          className="mt-0.5 bg-gray-700 border border-gray-600 rounded px-2 py-0.5 text-xs text-gray-300 focus:outline-none">
+                          {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => toggleAccess(ur.id, ur.active)}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border transition ${ur.active ? 'border-yellow-800 text-yellow-400 hover:bg-yellow-950' : 'border-green-800 text-green-400 hover:bg-green-950'}`}>
+                        {ur.active ? 'Desactivar' : 'Activar'}
+                      </button>
+                      <button onClick={() => removeAccess(ur.id)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-red-900 text-red-400 hover:bg-red-950 transition">
+                        Eliminar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {searchEmail && !userData && !searching && <p className="text-gray-500 text-sm">No se encontró ningún usuario con ese email.</p>}
     </div>
   )
 }
