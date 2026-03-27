@@ -97,7 +97,7 @@ export default function CeoDashboard() {
       if (!reports?.length) return { restaurant: rest, weeks: [] }
 
       const weeksData = await Promise.all(reports.map(async (r: any) => {
-        const [s, l, w, c, v, d, ep] = await Promise.all([
+        const [s, l, w, c, v, d, ep, avt] = await Promise.all([
           supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
           supabase.from('labor_data').select('*').eq('report_id', r.id).single(),
           supabase.from('waste_data').select('*').eq('report_id', r.id).single(),
@@ -105,12 +105,13 @@ export default function CeoDashboard() {
           supabase.from('voids_data').select('*').eq('report_id', r.id).single(),
           supabase.from('discounts_data').select('*').eq('report_id', r.id).single(),
           supabase.from('employee_performance_data').select('*').eq('report_id', r.id).single(),
+          supabase.from('avt_data').select('*').eq('report_id', r.id).single(),
         ])
         return {
           report: r,
           sales: s.data ?? null, labor: l.data ?? null, waste: w.data ?? null,
           cogs: c.data ?? null, voids: v.data ?? null, discounts: d.data ?? null,
-          employee: ep.data ?? null,
+          employee: ep.data ?? null, avt: avt.data ?? null,
         }
       }))
       return { restaurant: rest, weeks: weeksData.reverse() }
