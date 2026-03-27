@@ -450,7 +450,7 @@ export default function LaborPage() {
         )}
 
         {activeTab === 'comparativa' && (
-          <ComparativaTab filtered={filtered} fmt={fmt} pct={pct} selectedWeekIdx={displayWeekIdx} />
+          <ComparativaTab filtered={filtered} allWeeks={weeks} fmt={fmt} pct={pct} selectedWeekIdx={displayWeekIdx} />
         )}
 
       </main>
@@ -458,10 +458,13 @@ export default function LaborPage() {
   )
 }
 
-function ComparativaTab({ filtered, fmt, pct, selectedWeekIdx }: any) {
+function ComparativaTab({ filtered, allWeeks, fmt, pct, selectedWeekIdx }: any) {
   const latestIdx = (selectedWeekIdx !== null && selectedWeekIdx !== undefined) ? selectedWeekIdx : filtered.length - 1
   const latest = filtered[latestIdx]
-  const prev = latestIdx > 0 ? filtered[latestIdx - 1] : null
+  // Buscar semana anterior en allWeeks (no solo en filtered)
+  const latestWeek = latest?.report?.week
+  const globalIdx = allWeeks ? allWeeks.findIndex((w: any) => w.report.week === latestWeek) : -1
+  const prev = globalIdx > 0 ? allWeeks[globalIdx - 1] : (latestIdx > 0 ? filtered[latestIdx - 1] : null)
 
   const latestEmps: any[] = latest?.labor?.by_employee || []
   const prevEmps: any[] = prev?.labor?.by_employee || []
