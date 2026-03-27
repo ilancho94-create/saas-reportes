@@ -720,7 +720,7 @@ function addCompras(pptx: any, logoUrl: string | undefined, restName: string,
     const diff = n(v.total) - pv
     const diffStr = isNew ? '★ Nuevo' : prev ? (diff>=0?'▲ +':'▼ ')+fmt$(Math.abs(diff)) : '—'
     tableRow(slide, TX, ry, TW, i, [
-      { text: (isNew ? '★ ' : '') + v.name, w: cW[0], color: isNew ? GOLD : OFF, bold: isNew },
+      { text: (isNew ? '★ ' : '') + v.name, w: cW[0], color: isNew ? GOLD : OFF, bold: !!isNew },
       { text: prev ? (pv > 0 ? fmt$(pv) : '—') : '—', w: cW[1], align: 'right', color: DGRAY },
       { text: fmt$(n(v.total)), w: cW[2], align: 'right', bold: true },
       { text: diffStr, w: cW[3], align: 'right', color: isNew ? GOLD : diff > 0 ? RED : GREEN, bold: true },
@@ -894,7 +894,7 @@ function addDescuentos(pptx: any, logoUrl: string | undefined, restName: string,
     const diff = data.total - pval
     const pct = totalC > 0 ? (data.total/totalC*100).toFixed(1)+'%' : '—'
     tableRow(slide, TX, ry, TW, i, [
-      { text: (isNew ? '★ ' : '') + name, w: cW[0], color: isNew ? GOLD : OFF, bold: isNew },
+      { text: (isNew ? '★ ' : '') + name, w: cW[0], color: isNew ? GOLD : OFF, bold: !!isNew },
       { text: String(data.aplic), w: cW[1], align: 'right', color: GRAY },
       { text: String(data.orders.size), w: cW[2], align: 'right', color: GRAY },
       { text: fmt$(data.total), w: cW[3], align: 'right', bold: true },
