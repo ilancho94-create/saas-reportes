@@ -11,7 +11,7 @@ import {
 
 const ACCOUNT_MAP: Record<string, string> = {
   'Food Inventory': 'food',
-  'Food bar Inventory': 'food',
+  'Food bar Inventory': 'liquor',
   'Beer': 'beer',
   'Alcoholic Inventory': 'liquor',
   'Beverage Inventory': 'na_beverage',
