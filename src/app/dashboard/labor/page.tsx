@@ -450,7 +450,7 @@ export default function LaborPage() {
         )}
 
         {activeTab === 'comparativa' && (
-          <ComparativaTab filtered={filtered} fmt={fmt} pct={pct} />
+          <ComparativaTab filtered={filtered} fmt={fmt} pct={pct} selectedWeekIdx={displayWeekIdx} />
         )}
 
       </main>
@@ -458,10 +458,10 @@ export default function LaborPage() {
   )
 }
 
-function ComparativaTab({ filtered, fmt, pct }: any) {
-  // Build employee comparison: current vs previous week
-  const latest = filtered[filtered.length - 1]
-  const prev = filtered[filtered.length - 2]
+function ComparativaTab({ filtered, fmt, pct, selectedWeekIdx }: any) {
+  const latestIdx = (selectedWeekIdx !== null && selectedWeekIdx !== undefined) ? selectedWeekIdx : filtered.length - 1
+  const latest = filtered[latestIdx]
+  const prev = latestIdx > 0 ? filtered[latestIdx - 1] : null
 
   const latestEmps: any[] = latest?.labor?.by_employee || []
   const prevEmps: any[] = prev?.labor?.by_employee || []
