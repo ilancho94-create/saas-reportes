@@ -1,13 +1,5 @@
 // src/lib/parsers/parse-cogs.ts
-// Parser directo para R365 COGS Analysis by Vendor (.xlsx) — sin Claude
-// Sheet: "COGS Analysis by Vendor"
-// Columna layout (row 6 = headers):
-//   col 0 = Vendor name | col 26 = Total
-//   col 5  = Food E (envelope total food)
-//   col 14 = N/A Beverage E
-//   col 16 = Liquor E
-//   col 19 = Beer E
-//   col 21 = General E
+// Busca columnas por NOMBRE de header — funciona aunque R365 cambie el layout
 
 export function parseCOGSExcel(buffer: Buffer): any {
   const XLSX = require('xlsx')
@@ -22,9 +14,9 @@ export function parseCOGSExcel(buffer: Buffer): any {
     return parseFloat(String(v).replace(/[$,]/g, '')) || 0
   }
 
-  // ── Detect date range from row 2 ──────────────────────────────────────────
+  // ── Date range from row 2 ─────────────────────────────────────────────────
   let _report_start: string | null = null
-  let _report_end:   string | null = null
+  let _report_end: string | null = null
   const dateRow = String(rows[2]?.[0] || '')
   const dateMatch = dateRow.match(/(\d+\/\d+\/\d+)\s*-\s*(\d+\/\d+\/\d+)/)
   if (dateMatch) {
@@ -36,36 +28,48 @@ export function parseCOGSExcel(buffer: Buffer): any {
     _report_end   = parseDate(dateMatch[2])
   }
 
-  // ── Find Total row (col0 === 'Total') ─────────────────────────────────────
-  const totalRow = rows.find((r: any[]) => String(r[0]).trim() === 'Total')
+  // ── Build column index from header row (índice 6) ─────────────────────────
+  const headerRow: any[] = rows[6] || []
+  const colIndex: Record<string, number> = {}
+  headerRow.forEach((h: any, i: number) => {
+    if (h) colIndex[String(h).trim()] = i
+  })
+
+  function col(row: any[], name: string): number {
+    const idx = colIndex[name]
+    return idx !== undefined ? num(row[idx]) : 0
+  }
+
+  // ── Total row ─────────────────────────────────────────────────────────────
+  const totalRow = rows.find((r: any[]) => r[0] != null && String(r[0]).trim() === 'Total')
   if (!totalRow) throw new Error('Total row not found in COGS')
 
+  // ── by_category usando Envelope columns (nombre termina en ' E') ──────────
+  // Estos son los subtotales que R365 calcula por categoría
   const by_category = {
-    food:         num(totalRow[5]),   // Food E
-    na_beverage:  num(totalRow[14]),  // N/A Beverage E
-    liquor:       num(totalRow[16]),  // Liquor E
-    beer:         num(totalRow[19]),  // Beer E
-    wine:         0,                  // R365 no separa wine en COGS — se incluye en liquor
-    general:      num(totalRow[21]),  // General E
+    food:        col(totalRow, 'Food E'),
+    na_beverage: col(totalRow, 'N/A Beverage E'),
+    liquor:      col(totalRow, 'Liquor E'),
+    beer:        col(totalRow, 'Beer E'),
+    wine:        col(totalRow, 'Wine E'),
+    general:     col(totalRow, 'General E'),
   }
-  const total = num(totalRow[26])
 
-  // ── Sub-cuentas individuales (para mapeo configurable) ───────────────────
-  // Leer headers de fila 7 (índice 6)
-  const headerRow: any[] = rows[6] || []
+  const totalIdx = colIndex['Total']
+  const total = totalIdx !== undefined ? num(totalRow[totalIdx]) : 0
+
+  // ── by_account: todos los envelopes detectados (para Settings → Mapeo COGS)
+  // Solo guarda los ' E' que tengan valor > 0
   const by_account: Record<string, number> = {}
   headerRow.forEach((h: any, i: number) => {
     if (!h) return
     const name = String(h).trim()
-    // Excluir los "E" envelopes y columnas de vendor/location
-    const isEnvelope = name.endsWith(' E') || name === '' || i < 5
-    const isTotal = name === 'Total'
-    if (!isEnvelope && !isTotal && totalRow[i] != null) {
+    if (name.endsWith(' E') && totalRow[i] != null && num(totalRow[i]) !== 0) {
       by_account[name] = num(totalRow[i])
     }
   })
 
-  // ── Per vendor rows: col0 non-null, col1 null = vendor header ─────────────
+  // ── by_vendor ─────────────────────────────────────────────────────────────
   const by_vendor = rows
     .filter((r: any[], i: number) => {
       if (i < 7) return false
@@ -75,12 +79,13 @@ export function parseCOGSExcel(buffer: Buffer): any {
     })
     .map((r: any[]) => ({
       name:        String(r[0]).trim(),
-      food:        num(r[5]),
-      na_beverage: num(r[15]),
-      liquor:      num(r[17]),
-      beer:        num(r[20]),
-      general:     num(r[22]),
-      total:       num(r[27]),
+      food:        col(r, 'Food E'),
+      na_beverage: col(r, 'N/A Beverage E'),
+      liquor:      col(r, 'Liquor E'),
+      beer:        col(r, 'Beer E'),
+      wine:        col(r, 'Wine E'),
+      general:     col(r, 'General E'),
+      total:       totalIdx !== undefined ? num(r[totalIdx]) : 0,
     }))
 
   return {
