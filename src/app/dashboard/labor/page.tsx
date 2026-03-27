@@ -469,11 +469,11 @@ function ComparativaTab({ filtered, allWeeks, fmt, pct, selectedWeekIdx }: any) 
   const latestEmps: any[] = latest?.labor?.by_employee || []
   const prevEmps: any[] = prev?.labor?.by_employee || []
   const prevMap: Record<string, any> = {}
-  prevEmps.forEach(e => { prevMap[e.name] = e })
+  prevEmps.forEach(e => { prevMap[e.name.trim()] = e })
 
   // Compare employees
   const comparison = latestEmps.map(emp => {
-    const prevEmp = prevMap[emp.name]
+    const prevEmp = prevMap[emp.name.trim()]
     const hoursDiff = prevEmp ? Number(emp.regular_hours) + Number(emp.ot_hours || 0) - (Number(prevEmp.regular_hours) + Number(prevEmp.ot_hours || 0)) : null
     const costDiff = prevEmp ? Number(emp.total_pay) - Number(prevEmp.total_pay) : null
     const otDiff = prevEmp ? Number(emp.ot_hours || 0) - Number(prevEmp.ot_hours || 0) : null
@@ -481,7 +481,7 @@ function ComparativaTab({ filtered, allWeeks, fmt, pct, selectedWeekIdx }: any) 
   }).sort((a, b) => Math.abs(b.costDiff || 0) - Math.abs(a.costDiff || 0))
 
   // Employees who left (in prev but not in latest)
-  const leftEmps = prevEmps.filter(e => !latestEmps.find(le => le.name === e.name))
+  const leftEmps = prevEmps.filter(e => !latestEmps.find(le => le.name.trim() === e.name.trim()))
 
   // Top OT across all weeks
   const otRanking: Record<string, number> = {}
