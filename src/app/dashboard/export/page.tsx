@@ -39,8 +39,7 @@ export default function ExportPage() {
   // Config state
   const [selectedRestaurants, setSelectedRestaurants] = useState<string[]>([])
   const [allWeeks, setAllWeeks] = useState<any[]>([])
-  const [weekFrom, setWeekFrom] = useState('')
-  const [weekTo, setWeekTo] = useState('')
+  const [selectedWeek, setSelectedWeek] = useState('')
   const [sections, setSections] = useState<string[]>(ALL_SECTIONS.map(s => s.key))
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [selectedTemplate, setSelectedTemplate] = useState<ExportTemplate>(SYSTEM_TEMPLATES[0])
@@ -69,8 +68,7 @@ export default function ExportPage() {
       .eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(52)
     setAllWeeks(data || [])
     if (data?.length) {
-      setWeekTo(data[0].week)
-      setWeekFrom(data[Math.min(3, data.length - 1)].week)
+      setSelectedWeek(data[0].week)
     }
   }
 
