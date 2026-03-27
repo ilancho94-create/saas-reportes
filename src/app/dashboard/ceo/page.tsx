@@ -674,7 +674,8 @@ export default function CeoDashboard() {
                     <div key={i} className="mb-3 pb-3 border-b border-gray-800 last:border-0">
                       <p className="text-gray-400 text-xs mb-2 font-medium">{r.restaurant.name}</p>
                       <div className="flex justify-between text-sm"><span className="text-gray-500">Faltantes</span><span className="text-red-400">{fmt(a.total_shortage_dollar)}</span></div>
-                      <div className="flex justify-between text-sm mt-1"><span className="text-gray-500">Neto</span><span className={safeNum(a.net_variance) > 0 ? 'text-red-400 font-bold' : 'text-green-400 font-bold'}>{fmt(a.net_variance)}</span></div>
+                      <div className="flex justify-between text-sm mt-1"><span className="text-gray-500">Sobrantes</span><span className="text-green-400">{fmt(a.total_overage_dollar)}</span></div>
+                    <div className="flex justify-between text-sm mt-1"><span className="text-gray-500">Neto</span><span className={safeNum(a.net_variance) > 0 ? 'text-red-400 font-bold' : 'text-green-400 font-bold'}>{fmt(a.net_variance)}</span></div>
                     </div>
                   )
                 })}
