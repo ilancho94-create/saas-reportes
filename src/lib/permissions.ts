@@ -13,7 +13,7 @@ export const ROLE_PERMISSIONS: Record<string, Record<Module, Action[]>> = {
   owner: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
     costo_uso: ['view', 'edit'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
-    historial: [], upload: [], settings: ['view', 'edit'],
+    historial: ['view', 'edit'], upload: ['view', 'edit'], settings: ['view', 'edit'],
     users: ['view', 'edit', 'create'], employee: ['view'], kitchen: ['view']
   },
   gm: {
