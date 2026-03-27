@@ -493,6 +493,19 @@ export default function SettingsPage() {
           />
         )}
 
+        {/* ── MAPEO COGS ── */}
+        {activeTab === 'cogs-mapeo' && (
+          <CogsMapeoTab
+            cogsMappings={cogsMappings}
+            restaurantId={restaurantId}
+            savingCogs={savingCogs}
+            setSavingCogs={setSavingCogs}
+            cogsStatus={cogsStatus}
+            setCogsStatus={setCogsStatus}
+            onReload={loadData}
+          />
+        )}
+
         {/* ── CATEGORÍAS AVT ── */}
         {activeTab === 'avt-categorias' && (
           <div className="space-y-6">
