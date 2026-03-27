@@ -50,6 +50,21 @@ export function parseCOGSExcel(buffer: Buffer): any {
   }
   const total = num(totalRow[26])
 
+  // ── Sub-cuentas individuales (para mapeo configurable) ───────────────────
+  // Leer headers de fila 7 (índice 6)
+  const headerRow: any[] = rows[6] || []
+  const by_account: Record<string, number> = {}
+  headerRow.forEach((h: any, i: number) => {
+    if (!h) return
+    const name = String(h).trim()
+    // Excluir los "E" envelopes y columnas de vendor/location
+    const isEnvelope = name.endsWith(' E') || name === '' || i < 5
+    const isTotal = name === 'Total'
+    if (!isEnvelope && !isTotal && totalRow[i] != null) {
+      by_account[name] = num(totalRow[i])
+    }
+  })
+
   // ── Per vendor rows: col0 non-null, col1 null = vendor header ─────────────
   const by_vendor = rows
     .filter((r: any[], i: number) => {
@@ -61,16 +76,17 @@ export function parseCOGSExcel(buffer: Buffer): any {
     .map((r: any[]) => ({
       name:        String(r[0]).trim(),
       food:        num(r[5]),
-      na_beverage: num(r[14]),
-      liquor:      num(r[16]),
-      beer:        num(r[19]),
-      general:     num(r[21]),
-      total:       num(r[26]),
+      na_beverage: num(r[15]),
+      liquor:      num(r[17]),
+      beer:        num(r[20]),
+      general:     num(r[22]),
+      total:       num(r[27]),
     }))
 
   return {
     total,
     by_category,
+    by_account,
     by_vendor,
     _report_start,
     _report_end,

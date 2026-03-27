@@ -61,6 +61,7 @@ export default function CostoUsoPage() {
   const [adjSaving, setAdjSaving] = useState(false)
   const [adjError, setAdjError] = useState('')
   const [showAdjLog, setShowAdjLog] = useState(false)
+  const [cogsMappings, setCogsMappings] = useState<Record<string, string>>({})
 
   const CATEGORIES = CATEGORIES_BASE.map(cat => ({
     ...cat,
@@ -121,6 +122,14 @@ export default function CostoUsoPage() {
     const { data: adjs } = await supabase.from('costo_uso_adjustments')
       .select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false })
     setAdjustments(adjs || [])
+
+    const { data: cogsMaps } = await supabase.from('cogs_account_mappings')
+      .select('source_account, mapped_to').eq('restaurant_id', restaurantId)
+    if (cogsMaps?.length) {
+      const m: Record<string, string> = {}
+      cogsMaps.forEach((cm: any) => { m[cm.source_account] = cm.mapped_to })
+      setCogsMappings(m)
+    }
 
     const newAlerts: string[] = []
     for (let i = 1; i < weeksData.length; i++) {
@@ -238,7 +247,20 @@ export default function CostoUsoPage() {
       const adjInvCurr = getAdj(week, cat.key, 'inv_current')
       const adjTheo = getAdj(week, cat.key, 'theo_cost')
       const invPrevious = inv.previous + adjInvPrev
-      const purchases = (cogsCat[cat.key] || 0) + adjPurchases
+      // Si hay by_account en cogs y mappings configurados, usar mapeo granular
+      let purchases = 0
+      const cogsByAccount = w.cogs?.by_account || {}
+      if (Object.keys(cogsByAccount).length > 0 && Object.keys(cogsMappings).length > 0) {
+        // Sumar todas las sub-cuentas mapeadas a esta categoría
+        Object.entries(cogsByAccount).forEach(([acct, val]) => {
+          const mappedTo = cogsMappings[acct]
+          if (mappedTo === cat.key) purchases += Number(val) || 0
+        })
+      } else {
+        // Fallback: usar envelope total del by_category
+        purchases = cogsCat[cat.key] || 0
+      }
+      purchases += adjPurchases
       const invCurrent = inv.current + adjInvCurr
       const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
       const catSales = getMappedSales(salesCategories, cat.key) || 0

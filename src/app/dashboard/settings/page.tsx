@@ -30,7 +30,7 @@ export default function SettingsPage() {
   const [newMappedTo, setNewMappedTo] = useState('food')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas' | 'avt-categorias'>('categorias')
+  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas' | 'avt-categorias' | 'cogs-mapeo'>('categorias')
 
   // Restaurant operational config
   const [restConfig, setRestConfig] = useState({
@@ -41,6 +41,11 @@ export default function SettingsPage() {
   })
   const [savingConfig, setSavingConfig] = useState(false)
   const [configStatus, setConfigStatus] = useState('')
+
+  // COGS account mappings
+  const [cogsMappings, setCogsMappings] = useState<any[]>([])
+  const [savingCogs, setSavingCogs] = useState(false)
+  const [cogsStatus, setCogsStatus] = useState('')
 
   // AVT categories
   const [avtCategories, setAvtCategories] = useState<any[]>([])
@@ -85,6 +90,14 @@ export default function SettingsPage() {
       tgts.forEach((t: any) => { tgtsMap[t.category] = Number(t.target_pct) })
       setTargets(prev => ({ ...prev, ...tgtsMap }))
     }
+
+    // Cargar COGS account mappings
+    const { data: cogsMaps } = await supabase
+      .from('cogs_account_mappings')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .order('source_account')
+    setCogsMappings(cogsMaps || [])
 
     // Cargar categorías AvT
     const { data: cats } = await supabase
@@ -237,6 +250,7 @@ export default function SettingsPage() {
             { key: 'mapeo-items', label: '🗂 Mapeo de Items R365' },
             { key: 'metas', label: '🎯 Metas de Costo' },
             { key: 'avt-categorias', label: '📊 Categorías AvT' },
+            { key: 'cogs-mapeo', label: '🛒 Mapeo COGS' },
           ].map(tab => (
             <button key={tab.key} onClick={() => setActiveTab(tab.key as any)}
               className={`px-4 py-3 text-sm font-medium transition border-b-2 whitespace-nowrap ${
@@ -593,6 +607,103 @@ export default function SettingsPage() {
         )}
 
       </main>
+    </div>
+  )
+}
+
+const COGS_MAPPED_TO_OPTIONS = [
+  { value: 'food', label: '🍔 Food' },
+  { value: 'na_beverage', label: '🥤 NA Beverage' },
+  { value: 'liquor', label: '🥃 Liquor' },
+  { value: 'beer', label: '🍺 Beer' },
+  { value: 'wine', label: '🍷 Wine' },
+  { value: 'general', label: '📦 General' },
+  { value: 'exclude', label: '🚫 Excluir' },
+]
+
+function CogsMapeoTab({ cogsMappings, restaurantId, savingCogs, setSavingCogs, cogsStatus, setCogsStatus, onReload }: any) {
+  async function updateMapping(id: string, mappedTo: string) {
+    await import('@/lib/supabase').then(({ supabase }) =>
+      supabase.from('cogs_account_mappings').update({ mapped_to: mappedTo }).eq('id', id)
+    )
+    setCogsStatus('✅ Guardado')
+    setTimeout(() => setCogsStatus(''), 2000)
+    onReload()
+  }
+
+  const grouped = COGS_MAPPED_TO_OPTIONS.map(opt => ({
+    ...opt,
+    accounts: cogsMappings.filter((m: any) => m.mapped_to === opt.value)
+  })).filter(g => g.accounts.length > 0)
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
+        <h2 className="text-blue-300 font-semibold mb-1">🛒 Mapeo de Cuentas COGS</h2>
+        <p className="text-blue-400 text-sm">
+          Define cómo se mapean las sub-cuentas del reporte COGS Analysis by Vendor de R365
+          a las categorías del sistema. Esto permite calcular correctamente el costo de uso por categoría.
+        </p>
+      </div>
+
+      {cogsStatus && (
+        <p className={`text-sm ${cogsStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{cogsStatus}</p>
+      )}
+
+      {cogsMappings.length === 0 ? (
+        <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-10 text-center">
+          <p className="text-gray-500">No hay mapeos de COGS configurados.</p>
+          <p className="text-gray-600 text-xs mt-2">Se crean automáticamente al subir el primer reporte COGS.</p>
+        </div>
+      ) : (
+        <>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 bg-gray-800">
+                  <th className="text-left text-gray-500 text-xs py-3 px-5 font-medium">Cuenta R365</th>
+                  <th className="text-right text-gray-500 text-xs py-3 px-5 font-medium">Mapear a</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cogsMappings.map((m: any) => (
+                  <tr key={m.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
+                    <td className="py-3 px-5">
+                      <span className="text-white text-sm font-medium">{m.source_account}</span>
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      <select
+                        value={m.mapped_to}
+                        onChange={e => updateMapping(m.id, e.target.value)}
+                        className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
+                        {COGS_MAPPED_TO_OPTIONS.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h2 className="text-white font-semibold mb-4">Vista previa del mapeo</h2>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              {grouped.map(group => (
+                <div key={group.value} className="bg-gray-800 rounded-lg p-3">
+                  <p className="text-gray-400 text-xs font-semibold mb-2">{group.label}</p>
+                  <div className="space-y-1">
+                    {group.accounts.map((a: any) => (
+                      <p key={a.id} className="text-gray-300 text-xs">• {a.source_account}</p>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
