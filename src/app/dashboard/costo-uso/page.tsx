@@ -588,6 +588,7 @@ export default function CostoUsoPage() {
               <p className="text-green-600 text-xs mt-0.5">
                 El denominador usa ventas brutas (net + descuentos) de cada categoría según el Sales Summary de Toast.
               </p>
+            </div>
           </div>
         )}
 
