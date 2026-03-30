@@ -625,7 +625,7 @@ export default function SettingsPage() {
         )}
 
         {/* ── DESCUENTOS ── */}
-        {activeTab === 'descuentos' && (
+        {activeTab === 'descuentos' && restaurantId && (
           <DiscountMappingsTab
             mappings={discountMappings}
             restaurantId={restaurantId}
