@@ -6,7 +6,7 @@ import { useRestaurantId } from '@/lib/use-restaurant'
 import { can } from '@/lib/permissions'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Legend
+  ResponsiveContainer, CartesianGrid, Legend, Cell
 } from 'recharts'
 
 const ACCOUNT_MAP: Record<string, string> = {
@@ -42,7 +42,7 @@ export default function CostoUsoPage() {
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [alerts, setAlerts] = useState<string[]>([])
-  const [shortcut, setShortcut] = useState<Shortcut>('last4')
+  const [shortcut, setShortcut] = useState<Shortcut>('week')
   const [selectedWeek, setSelectedWeek] = useState('')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
@@ -724,7 +724,7 @@ export default function CostoUsoPage() {
 
             {chartData.filter(d => d.hasInventory).length >= 1 && (
               <>
-                {chartData.filter(d => d.hasInventory).length > 1 && (
+                {true && (
                   <>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -751,7 +751,14 @@ export default function CostoUsoPage() {
                             <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                             <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
                             <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
-                            <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" />
+                            <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]}
+                              fill="#ef4444"
+                              label={false}
+                            >
+                              {chartData.filter(d => d.hasInventory).map((entry, index) => (
+                                <Cell key={index} fill={entry.totalVariacion <= 0 ? '#22c55e' : '#ef4444'} />
+                              ))}
+                            </Bar>
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
