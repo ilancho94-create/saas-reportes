@@ -26,8 +26,11 @@ export async function POST(request: NextRequest) {
     const authHeader = request.headers.get('authorization')
     const { data: { user } } = await supabase.auth.getUser(authHeader?.replace('Bearer ', '') || '')
 
-    let restaurant_id = '00000000-0000-0000-0000-000000000001'
-    if (user) {
+    // ── PRIORIDAD: restaurant_id del formulario (selector de sucursal)
+    // Si no viene en el form, fallback al perfil del usuario
+    const formRestaurantId = formData.get('restaurant_id') as string
+    let restaurant_id = formRestaurantId || '00000000-0000-0000-0000-000000000001'
+    if (!formRestaurantId && user) {
       const { data: profile } = await supabase.from('profiles').select('restaurant_id').eq('id', user.id).single()
       if (profile?.restaurant_id) restaurant_id = profile.restaurant_id
     }
@@ -357,6 +360,3 @@ function getWeekStartISO(week: string): string {
   weekStart.setDate(startOfWeek1.getDate() + (weekNum - 1) * 7)
   return weekStart.toISOString().split('T')[0]
 }
-
-function getWeekStart(week: string): string { return getWeekStartISO(week) }
-function getWeekEnd(week: string): string { return getWeekEndFromStart(getWeekStartISO(week)) }

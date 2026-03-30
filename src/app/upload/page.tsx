@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAuth } from '@/lib/auth-context'
 
 const STEPS = [
   {
@@ -89,16 +90,17 @@ const STEPS = [
     extracts: 'Ventas por servidor, ventas/hora, ticket promedio, voids y tiempo de turno',
   },
   {
-  id: 'kitchen_details', label: 'Kitchen Details', icon: '🍳', system: 'Toast', required: false,
-  accept: '.csv', acceptLabel: 'CSV (.csv)',
-  where: 'Toast → Reports → Kitchen Details',
-  instructions: ['Abre Toast POS', 'Ve a Reports', 'Click en Kitchen Details', 'Selecciona el rango de fechas', 'Exporta como .csv'],
-  extracts: 'Tiempos de cocina y bar por estación, día y hora',
-},
+    id: 'kitchen_details', label: 'Kitchen Details', icon: '🍳', system: 'Toast', required: false,
+    accept: '.csv', acceptLabel: 'CSV (.csv)',
+    where: 'Toast → Reports → Kitchen Details',
+    instructions: ['Abre Toast POS', 'Ve a Reports', 'Click en Kitchen Details', 'Selecciona el rango de fechas', 'Exporta como .csv'],
+    extracts: 'Tiempos de cocina y bar por estación, día y hora',
+  },
 ]
 
 export default function UploadPage() {
   const router = useRouter()
+  const { currentRestaurant } = useAuth()
   const [currentStep, setCurrentStep] = useState(0)
   const [week, setWeek] = useState('')
   const [files, setFiles] = useState<Record<string, File>>({})
@@ -142,12 +144,19 @@ export default function UploadPage() {
   async function handleProcess() {
     if (!week) return setStatus('Por favor selecciona la semana')
     if (!completedRequired) return setStatus('Necesitas subir al menos Ventas o Labor')
+    if (!currentRestaurant?.id) return setStatus('No hay restaurante seleccionado')
     setUploading(true); setStatus('Procesando...')
     const formData = new FormData()
     formData.append('week', week)
+    formData.append('restaurant_id', currentRestaurant.id)
     Object.entries(files).forEach(([type, file]) => formData.append(type, file))
     try {
-      const res = await fetch('/api/process', { method: 'POST', body: formData })
+      const { data: { session } } = await (await import('@/lib/supabase')).supabase.auth.getSession()
+      const res = await fetch('/api/process', {
+        method: 'POST',
+        body: formData,
+        headers: session?.access_token ? { 'Authorization': 'Bearer ' + session.access_token } : {},
+      })
       const data = await res.json()
       if (data.success) {
         const warningKeys = Object.keys(data.warnings || {})
@@ -172,6 +181,11 @@ export default function UploadPage() {
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center gap-4">
         <a href="/dashboard" className="text-gray-400 hover:text-white text-sm">← Volver al dashboard</a>
         <span className="text-white font-semibold">Subir reporte semanal</span>
+        {currentRestaurant && (
+          <span className="ml-auto text-xs text-blue-400 bg-blue-950 border border-blue-800 px-3 py-1 rounded-full">
+            {currentRestaurant.name}
+          </span>
+        )}
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-10">
@@ -285,6 +299,9 @@ export default function UploadPage() {
             <div className="px-6 py-5 border-b border-gray-800">
               <h2 className="text-white font-bold text-lg">Resumen del reporte</h2>
               <p className="text-gray-500 text-sm mt-1">Semana: {week || 'No seleccionada'}</p>
+              {currentRestaurant && (
+                <p className="text-blue-400 text-sm mt-0.5">Restaurante: {currentRestaurant.name}</p>
+              )}
             </div>
             <div className="divide-y divide-gray-800">
               {STEPS.map(s => (

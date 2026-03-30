@@ -37,7 +37,7 @@ export default function Dashboard() {
     const { data: reps } = await supabase
       .from('reports').select('*')
       .eq('restaurant_id', restaurantId)
-      .order('created_at', { ascending: false })
+      .order('week', { ascending: false })
       .limit(8)
 
     if (!reps || reps.length === 0) { setLoading(false); return }
