@@ -181,7 +181,6 @@ export default function CostoUsoPage() {
     setShowAdjPanel(true)
   }
 
-  // FIX 1: 'week' shortcut filtra por selectedWeek
   const filtered = (() => {
     if (weeks.length === 0) return []
     if (shortcut === 'week') return weeks.filter(w => w.report.week === selectedWeek)
@@ -276,98 +275,49 @@ export default function CostoUsoPage() {
 
   const chartData = filtered.map(buildWeekData)
   const latest = filtered[filtered.length - 1]
-  // isMultiWeek needs to be before detailData
   const isMultiWeek = filtered.length > 1
+  const detailWeek = shortcut === 'week' ? filtered[0] || latest : latest
 
-  // detailWeek: semana seleccionada en modo 'week', o la última del rango en multiweek
-  const detailWeek = shortcut === 'week'
-    ? filtered[0] || latest
-    : latest
-
-  // buildRangeData: agrega el rango completo para la tabla de detalle por categoría
-  // Usa buildWeekData() por semana (misma lógica que ya aplica ajustes correctamente)
-  // Lógica por categoría:
-  //   inv_anterior = inv_previous de la primera semana con inventario del rango (ya con adj)
-  //   compras      = suma de purchases de todas las semanas (ya con adj)
-  //   inv_actual   = inv_current de la última semana con inventario del rango (ya con adj)
-  //   uso          = inv_anterior + compras - inv_actual (fórmula directa del rango)
-  //   ventas       = suma de ventas de todas las semanas
-  //   días_rango   = nSemanas * operatingDays
-  //   días_inv     = ((inv_actual+inv_anterior)/2) / (uso/días_rango)
   function buildRangeData() {
     if (!filtered.length) return null
-    // Calcular datos por semana usando buildWeekData (que ya aplica todos los ajustes)
     const weeklyData = filtered.map(w => ({ raw: w, data: buildWeekData(w) }))
     const withInv = weeklyData.filter(wd => wd.data.hasInventory)
     if (!withInv.length) return null
-
     const firstWD = withInv[0]
     const lastWD = withInv[withInv.length - 1]
     const nSemanas = filtered.length
     const diasRango = nSemanas * operatingDays
-
     const result: any = {
-      fullWeek: latest?.report?.week,
-      reportId: latest?.report?.id,
-      hasInventory: true,
-      hasAnyAdj: filtered.some(w => hasAdjustments(w.report.week)),
-      diasRango,
+      fullWeek: latest?.report?.week, reportId: latest?.report?.id,
+      hasInventory: true, hasAnyAdj: filtered.some(w => hasAdjustments(w.report.week)), diasRango,
     }
-
     CATEGORIES.forEach(cat => {
-      // inv_anterior: inv_previous de la primera semana (buildWeekData ya aplicó adj)
       const invPrevious = firstWD.data[cat.key + '_inv_previous'] ?? 0
-
-      // inv_actual: inv_current de la última semana (buildWeekData ya aplicó adj)
       const invCurrent = lastWD.data[cat.key + '_inv_current'] ?? 0
-
-      // compras: suma de todas las semanas (buildWeekData ya aplicó adj)
       const purchases = weeklyData.reduce((sum, wd) => sum + (wd.data[cat.key + '_purchases'] ?? 0), 0)
-
-      // uso: fórmula directa sobre el rango (más preciso que sumar uso semanal por el max(0))
       const uso = Math.max(invPrevious + purchases - invCurrent, 0)
-
-      // ventas: suma del rango
       const catSales = weeklyData.reduce((sum, wd) => sum + (wd.data[cat.key + '_sales'] ?? 0), 0)
-
-      // theo_cost: suma del rango (buildWeekData ya aplicó adj)
       const theoCost = weeklyData.reduce((sum, wd) => sum + (wd.data[cat.key + '_theo_cost'] ?? 0), 0)
-
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
       const variacion = realPct !== null && mixPct !== null && catSales > 0
         ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
-
-      // días_inv = inv_promedio / uso_diario
-      const diasInv = uso > 0
-        ? parseFloat((((invCurrent + invPrevious) / 2) / (uso / diasRango)).toFixed(1))
-        : null
-
+      const diasInv = uso > 0 ? parseFloat((((invCurrent + invPrevious) / 2) / (uso / diasRango)).toFixed(1)) : null
       const hasAdj = weeklyData.some(wd => wd.data[cat.key + '_has_adj'])
-
-      result[cat.key + '_uso'] = uso
-      result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0
-      result[cat.key + '_variacion'] = variacion
-      result[cat.key + '_dias_inv'] = diasInv
-      result[cat.key + '_inv_current'] = invCurrent
-      result[cat.key + '_inv_previous'] = invPrevious
-      result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = catSales
-      result[cat.key + '_has_adj'] = hasAdj
+      result[cat.key + '_uso'] = uso; result[cat.key + '_uso_pct'] = realPct || 0
+      result[cat.key + '_theo_pct'] = mixPct || 0; result[cat.key + '_variacion'] = variacion
+      result[cat.key + '_dias_inv'] = diasInv; result[cat.key + '_inv_current'] = invCurrent
+      result[cat.key + '_inv_previous'] = invPrevious; result[cat.key + '_purchases'] = purchases
+      result[cat.key + '_sales'] = catSales; result[cat.key + '_has_adj'] = hasAdj
       result[cat.key + '_theo_cost'] = theoCost
     })
-
-    // totales
     let totalUso = 0, totalTheo = 0, totalSales = 0
     CATEGORIES.forEach(cat => {
       totalUso += result[cat.key + '_uso'] || 0
       totalTheo += result[cat.key + '_theo_cost'] || 0
       totalSales += result[cat.key + '_sales'] || 0
     })
-    result.totalUsoCost = totalUso
-    result.totalTheoCost = totalTheo
-    result.totalABSales = totalSales
+    result.totalUsoCost = totalUso; result.totalTheoCost = totalTheo; result.totalABSales = totalSales
     result.totalRealPct = totalSales > 0 ? pct(totalUso, totalSales) : null
     result.totalMixPct = totalSales > 0 ? pct(totalTheo, totalSales) : null
     result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
@@ -375,8 +325,6 @@ export default function CostoUsoPage() {
     return result
   }
 
-  // En modo semana única: buildWeekData de detailWeek
-  // En modo multi-semana: buildRangeData() que agrega el rango completo
   const detailData = isMultiWeek ? buildRangeData() : (detailWeek ? buildWeekData(detailWeek) : null)
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
 
@@ -396,7 +344,6 @@ export default function CostoUsoPage() {
     }
   })()
 
-  // FIX 3: 'week' en lugar de 'last1', con selector inline
   const SHORTCUTS: { key: Shortcut; label: string }[] = [
     { key: 'week', label: 'Semana' }, { key: 'last4', label: 'Últimas 4 sem' },
     { key: 'last8', label: 'Últimas 8 sem' }, { key: 'month', label: 'Este mes' }, { key: 'custom', label: 'Custom' },
@@ -433,7 +380,6 @@ export default function CostoUsoPage() {
               {s.label}
             </button>
           ))}
-          {/* FIX 3: selector de semana inline junto al botón Semana */}
           {shortcut === 'week' && weeks.length > 0 && (
             <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
               className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-blue-500">
@@ -459,7 +405,7 @@ export default function CostoUsoPage() {
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
 
-        {/* ── Modal ajuste ── */}
+        {/* Modal ajuste */}
         {showAdjPanel && canEdit && (
           <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
             <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md">
@@ -488,13 +434,13 @@ export default function CostoUsoPage() {
                 <div>
                   <label className="text-gray-400 text-xs block mb-1">Nota explicativa <span className="text-red-400">*</span></label>
                   <textarea value={adjNote} onChange={e => setAdjNote(e.target.value)}
-                    placeholder="Explica la razón del ajuste (ej: producto sin receta, costo inventariado por fuera)..."
+                    placeholder="Explica la razón del ajuste..."
                     rows={3}
                     className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-none" />
                 </div>
                 {adjError && <p className="text-red-400 text-xs">{adjError}</p>}
                 <div className="bg-gray-800 rounded-lg px-4 py-3">
-                  <p className="text-gray-500 text-xs">⚠️ Este ajuste quedará registrado con tu usuario y fecha. Visible para todos con acceso a Costo de Uso.</p>
+                  <p className="text-gray-500 text-xs">⚠️ Este ajuste quedará registrado con tu usuario y fecha.</p>
                 </div>
                 <div className="flex gap-3">
                   <button onClick={() => setShowAdjPanel(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-sm transition">Cancelar</button>
@@ -508,7 +454,7 @@ export default function CostoUsoPage() {
           </div>
         )}
 
-        {/* ── Log de ajustes ── */}
+        {/* Log de ajustes */}
         {showAdjLog && (
           <div className="bg-gray-900 border border-yellow-800 rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
@@ -543,17 +489,13 @@ export default function CostoUsoPage() {
                         <td className={`py-2 text-right font-bold ${Number(a.adjustment_value) > 0 ? 'text-yellow-400' : 'text-blue-400'}`}>
                           {Number(a.adjustment_value) > 0 ? '+' : ''}{fmt(a.adjustment_value)}
                         </td>
-                        <td className="py-2 text-gray-400 max-w-xs" style={{ maxWidth: 200 }}>
-                          <span title={a.note} className="truncate block">{a.note}</span>
-                        </td>
+                        <td className="py-2 text-gray-400 max-w-xs"><span title={a.note} className="truncate block">{a.note}</span></td>
                         <td className="py-2 text-gray-500">{a.created_by?.split('@')[0] || '—'}</td>
                         <td className="py-2 text-gray-600">{new Date(a.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric', year: '2-digit' })}</td>
                         {canEdit && (
                           <td className="py-2">
                             <button onClick={() => deleteAdjustment(a.id)}
-                              className="text-red-500 hover:text-red-400 text-xs px-2 py-0.5 rounded hover:bg-red-950 transition">
-                              Eliminar
-                            </button>
+                              className="text-red-500 hover:text-red-400 text-xs px-2 py-0.5 rounded hover:bg-red-950 transition">Eliminar</button>
                           </td>
                         )}
                       </tr>
@@ -626,13 +568,53 @@ export default function CostoUsoPage() {
                   </div>
                 </div>
 
-                {/* FIX 2: tabla usa detailData y detailWeek, no latestData/latest */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-white font-semibold">Detalle por categoría — {detailWeek?.report?.week}</h2>
                     {detailData.hasAnyAdj && <span className="text-yellow-400 text-xs bg-yellow-950 px-2 py-1 rounded-full">✏️ Contiene ajustes manuales</span>}
                   </div>
-                  <div className="overflow-x-auto">
+
+                  {/* ── MOBILE: cards por categoría ── */}
+                  <div className="md:hidden space-y-3">
+                    {CATEGORIES.map(cat => {
+                      const realPct = detailData[cat.key + '_uso_pct']
+                      const variacion = detailData[cat.key + '_variacion']
+                      const overMeta = cat.meta && realPct && realPct > cat.meta
+                      if (!detailData[cat.key + '_uso']) return null
+                      return (
+                        <div key={cat.key} className="bg-gray-800 rounded-xl px-4 py-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                            <span className="text-gray-300 text-sm font-medium">{cat.label}</span>
+                          </div>
+                          <div className="text-right">
+                            <p className={`text-sm font-bold ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</p>
+                            <p className="text-gray-500 text-xs">{fmt(detailData[cat.key + '_uso'])} uso</p>
+                            {variacion !== null && (
+                              <p className={`text-xs font-medium ${variacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                {variacion > 0 ? '+' : ''}{fmt(variacion)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                    <div className="bg-gray-700 rounded-xl px-4 py-3 flex items-center justify-between">
+                      <span className="text-white font-bold text-sm">Total A&B</span>
+                      <div className="text-right">
+                        <p className={`text-sm font-bold ${detailData.totalRealPct && detailData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(detailData.totalRealPct)}</p>
+                        <p className="text-gray-400 text-xs">{fmt(detailData.totalUsoCost)} uso</p>
+                        {detailData.totalVariacion !== null && (
+                          <p className={`text-xs font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                            {detailData.totalVariacion > 0 ? '+' : ''}{fmt(detailData.totalVariacion)}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── DESKTOP: tabla completa ── */}
+                  <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-800">
@@ -681,7 +663,6 @@ export default function CostoUsoPage() {
                                 ) : <span className="text-gray-600">—</span>}
                               </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>
-                              {/* FIX: ajuste solo en modo semana única */}
                               {canEdit && shortcut === 'week' && (
                                 <td className="py-3 text-center">
                                   <button onClick={() => openAdjPanel(detailWeek.report.week, detailWeek.report.id, cat.key)}
@@ -741,7 +722,6 @@ export default function CostoUsoPage() {
               </div>
             )}
 
-            {/* FIX 1: gráficas aparecen siempre que hay datos, no solo cuando filtered > 1 */}
             {chartData.filter(d => d.hasInventory).length >= 1 && (
               <>
                 {chartData.filter(d => d.hasInventory).length > 1 && (
