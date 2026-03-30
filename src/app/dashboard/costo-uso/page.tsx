@@ -236,6 +236,16 @@ export default function CostoUsoPage() {
     }).reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
   }
 
+
+  // Ventas brutas (net + descuentos) por categoria — para modo + Desc. Operativos
+  function getMappedGross(categories: any[], targetType: string) {
+    if (!categories || !mappings.length) return 0
+    return categories.filter((cat: any) => {
+      const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
+      return mapping?.mapped_to === targetType
+    }).reduce((sum: number, cat: any) => sum + Number(cat.gross || cat.net || 0), 0)
+  }
+
   function getInventoryByCategory(invAccounts: any[], categoryKey: string) {
     if (!invAccounts) return { current: 0, previous: 0 }
     const accounts = Object.entries(ACCOUNT_MAP).filter(([_, cat]) => cat === categoryKey).map(([acc]) => acc)
@@ -271,13 +281,9 @@ export default function CostoUsoPage() {
       const invCurrent = inv.current + adjInvCurr
       const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
       const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
-
-      // ── NUEVO: sumar descuentos operativos prorrateados por categoría ──
-      // Se prorratean proporcionalmente al peso de cada categoría en ventas totales
-      const totalMappedSales = CATEGORIES_BASE.reduce((s, c) => s + (getMappedSales(salesCategories, c.key) || 0), 0)
-      const catShare = totalMappedSales > 0 ? catSalesBase / totalMappedSales : 0
-      const catOpDisc = includeOpDiscounts ? opDiscTotal * catShare : 0
-      const catSales = catSalesBase + catOpDisc
+      // Con toggle activo: usar ventas brutas (net + descuentos) de esa categoría
+      const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
+      const catSales = includeOpDiscounts && catSalesGross > catSalesBase ? catSalesGross : catSalesBase
 
       const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
       const realPct = catSales > 0 ? pct(uso, catSales) : null
@@ -302,7 +308,8 @@ export default function CostoUsoPage() {
       if (catSales > 0) totalABSales += catSales
     })
 
-    result.totalUsoCost = totalUsoCost; result.totalTheoCost = totalTheoCost; result.totalABSales = totalABSales
+    result.totalUsoCost = totalUsoCost; result.totalTheoCost = totalTheoCost
+    result.totalABSales = totalABSales
     result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
     result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
     result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
@@ -577,11 +584,10 @@ export default function CostoUsoPage() {
           <div className="bg-green-950 border border-green-800 rounded-xl px-5 py-3 flex items-center gap-3">
             <span className="text-green-400 text-lg">✅</span>
             <div>
-              <p className="text-green-300 text-sm font-medium">Modo: Ventas + Descuentos Operativos</p>
+              <p className="text-green-300 text-sm font-medium">Modo: Ventas Brutas por categoría</p>
               <p className="text-green-600 text-xs mt-0.5">
-                Los descuentos operativos ({opDiscountMappings.join(', ') || 'ninguno configurado'}) se suman a las ventas antes de calcular el % de costo.
+                El denominador usa ventas brutas (net + descuentos) de cada categoría según el Sales Summary de Toast.
               </p>
-            </div>
           </div>
         )}
 
