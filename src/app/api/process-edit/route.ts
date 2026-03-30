@@ -5,7 +5,7 @@ import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvt
 import { parseSalesExcel, buildSalesDateWarning } from '@/lib/parsers/parse-sales'
 import { parseLaborCsv } from '@/lib/parsers/parse-labor'
 import { parseVoidsCsv } from '@/lib/parsers/parse-voids'
-import { parseDiscountsCsv } from '@/lib/parsers/parse-discounts'
+import { parseDiscountsCsv, upsertDiscountMappings } from '@/lib/parsers/parse-discounts'
 import { parseCOGSExcel, buildCOGSDateWarning } from '@/lib/parsers/parse-cogs'
 import { parseWasteExcel, buildWasteDateWarning } from '@/lib/parsers/parse-waste'
 import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
@@ -37,6 +37,7 @@ export async function POST(request: NextRequest) {
       .from('reports').select('week_start, week_end, restaurant_id').eq('id', reportId).single()
     const weekStart = existingReport?.week_start || ''
     const weekEnd   = existingReport?.week_end   || ''
+    const restaurantId = existingReport?.restaurant_id || '00000000-0000-0000-0000-000000000001'
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
@@ -117,6 +118,9 @@ export async function POST(request: NextRequest) {
         const data = parseDiscountsCsv(buffer.toString('latin1'))
         await supabase.from('discounts_data').delete().eq('report_id', reportId)
         await saveToDatabase(reportId, 'discounts', data)
+        if (data._discount_names?.length) {
+          await upsertDiscountMappings(supabase, restaurantId, data._discount_names)
+        }
         results['discounts'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing discounts:', err)
@@ -168,7 +172,6 @@ export async function POST(request: NextRequest) {
         results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
         await supabase.from('avt_data').delete().eq('report_id', reportId)
         await saveToDatabase(reportId, 'avt', avtData)
-        const restaurantId = existingReport?.restaurant_id || '00000000-0000-0000-0000-000000000001'
         const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
         for (const cat of detectedCats) {
           await supabase.from('avt_categories').upsert({
@@ -186,7 +189,6 @@ export async function POST(request: NextRequest) {
     const menuAnalysisFile = formData.get('menu_analysis') as File | null
     if (productMixFile || menuAnalysisFile) {
       try {
-        const restaurantId = existingReport?.restaurant_id || '00000000-0000-0000-0000-000000000001'
         let productMix: any = null
         let menuAnalysis: any = null
         if (productMixFile && productMixFile.size > 0) {
@@ -238,7 +240,7 @@ export async function POST(request: NextRequest) {
         await supabase.from('receiving_data').delete().eq('report_id', reportId)
         if (items.length > 0) {
           const rows = items.map((item: any) => ({
-            report_id: reportId, restaurant_id: existingReport?.restaurant_id, week, ...item,
+            report_id: reportId, restaurant_id: restaurantId, week, ...item,
           }))
           await supabase.from('receiving_data').insert(rows)
         }
@@ -257,7 +259,7 @@ export async function POST(request: NextRequest) {
         const data = parseEmployeePerformanceExcel(buffer)
         await supabase.from('employee_performance_data').delete().eq('report_id', reportId)
         await supabase.from('employee_performance_data').insert({
-          report_id: reportId, restaurant_id: existingReport?.restaurant_id, week, employees: data.employees,
+          report_id: reportId, restaurant_id: restaurantId, week, employees: data.employees,
         })
         results['employee_performance'] = { employees: data.employees.length }
       } catch (err: any) {
@@ -274,7 +276,7 @@ export async function POST(request: NextRequest) {
         const data = parseKitchenDetailsCsv(buffer.toString('utf-8'))
         await supabase.from('kitchen_performance_data').delete().eq('report_id', reportId)
         await supabase.from('kitchen_performance_data').insert({
-          report_id: reportId, restaurant_id: existingReport?.restaurant_id, week,
+          report_id: reportId, restaurant_id: restaurantId, week,
           tickets: data.tickets,
           detected_stations: data.detected_stations,
         })

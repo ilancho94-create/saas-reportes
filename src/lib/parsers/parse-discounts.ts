@@ -1,8 +1,6 @@
 // src/lib/parsers/parse-discounts.ts
-// Parser directo para Toast Discount Details (.csv) — sin Claude
-// Columnas: Order #, Opened Date, Server, Table, Discount Name,
-//   Discount Reason, Comment, Discount Amount
-// Nota: encoding latin-1
+// Parser directo para Toast Discount Details (.csv)
+// Auto-popula discount_mappings en Supabase al procesar
 
 export function parseDiscountsCsv(csvContent: string): any {
   const lines = csvContent.split('\n').filter(l => l.trim())
@@ -38,7 +36,6 @@ export function parseDiscountsCsv(csvContent: string): any {
 
   const rows = lines.slice(1).map(parseRow)
 
-  // Agrupar por nombre de descuento
   const discMap: Record<string, { orders: Set<number>; applications: number; amount: number }> = {}
   rows.forEach(r => {
     const name = (r[iDiscount] || '').trim()
@@ -72,5 +69,29 @@ export function parseDiscountsCsv(csvContent: string): any {
     total_orders,
     items,
     date_warning: null,
+    _discount_names: Object.keys(discMap), // para auto-poblar discount_mappings
   }
+}
+
+// Upsert de discount_mappings — solo inserta nombres nuevos, no toca clasificaciones existentes
+export async function upsertDiscountMappings(
+  supabase: any,
+  restaurantId: string,
+  discountNames: string[]
+): Promise<void> {
+  if (!discountNames.length) return
+  const { data: existing } = await supabase
+    .from('discount_mappings')
+    .select('discount_name')
+    .eq('restaurant_id', restaurantId)
+  const existingNames = new Set((existing || []).map((e: any) => e.discount_name))
+  const newNames = discountNames.filter(name => !existingNames.has(name))
+  if (!newNames.length) return
+  await supabase.from('discount_mappings').insert(
+    newNames.map(name => ({
+      restaurant_id: restaurantId,
+      discount_name: name,
+      is_operational: false,
+    }))
+  )
 }

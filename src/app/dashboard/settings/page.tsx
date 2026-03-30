@@ -30,9 +30,8 @@ export default function SettingsPage() {
   const [newMappedTo, setNewMappedTo] = useState('food')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas' | 'avt-categorias' | 'cogs-mapeo'>('categorias')
+  const [activeTab, setActiveTab] = useState<'categorias' | 'restaurante' | 'mapeo-items' | 'metas' | 'avt-categorias' | 'cogs-mapeo' | 'descuentos'>('categorias')
 
-  // Restaurant operational config
   const [restConfig, setRestConfig] = useState({
     operating_days: 6,
     week_start_day: 1,
@@ -42,15 +41,17 @@ export default function SettingsPage() {
   const [savingConfig, setSavingConfig] = useState(false)
   const [configStatus, setConfigStatus] = useState('')
 
-  // COGS account mappings
   const [cogsMappings, setCogsMappings] = useState<any[]>([])
   const [savingCogs, setSavingCogs] = useState(false)
   const [cogsStatus, setCogsStatus] = useState('')
 
-  // AVT categories
   const [avtCategories, setAvtCategories] = useState<any[]>([])
   const [savingAvtCat, setSavingAvtCat] = useState(false)
   const [avtCatStatus, setAvtCatStatus] = useState('')
+
+  // ── NUEVO: discount mappings ──
+  const [discountMappings, setDiscountMappings] = useState<any[]>([])
+  const [discountStatus, setDiscountStatus] = useState('')
 
   useEffect(() => {
     if (restaurantId) loadData()
@@ -91,7 +92,6 @@ export default function SettingsPage() {
       setTargets(prev => ({ ...prev, ...tgtsMap }))
     }
 
-    // Cargar COGS account mappings
     const { data: cogsMaps } = await supabase
       .from('cogs_account_mappings')
       .select('*')
@@ -99,13 +99,20 @@ export default function SettingsPage() {
       .order('source_account')
     setCogsMappings(cogsMaps || [])
 
-    // Cargar categorías AvT
     const { data: cats } = await supabase
       .from('avt_categories')
       .select('*')
       .eq('restaurant_id', restaurantId)
       .order('category')
     setAvtCategories(cats || [])
+
+    // ── NUEVO: cargar discount_mappings ──
+    const { data: discMaps } = await supabase
+      .from('discount_mappings')
+      .select('*')
+      .eq('restaurant_id', restaurantId)
+      .order('discount_name')
+    setDiscountMappings(discMaps || [])
 
     setLoading(false)
   }
@@ -251,6 +258,7 @@ export default function SettingsPage() {
             { key: 'metas', label: '🎯 Metas de Costo' },
             { key: 'avt-categorias', label: '📊 Categorías AvT' },
             { key: 'cogs-mapeo', label: '🛒 Mapeo COGS' },
+            { key: 'descuentos', label: '🏷️ Descuentos' },
           ].map(tab => (
             <button key={tab.key} onClick={() => setActiveTab(tab.key as any)}
               className={`px-4 py-3 text-sm font-medium transition border-b-2 whitespace-nowrap ${
@@ -259,6 +267,9 @@ export default function SettingsPage() {
               {tab.label}
               {tab.key === 'avt-categorias' && avtCategories.length > 0 && (
                 <span className="ml-1.5 text-xs text-gray-600">({activeAvtCount}/{avtCategories.length})</span>
+              )}
+              {tab.key === 'descuentos' && discountMappings.length > 0 && (
+                <span className="ml-1.5 text-xs text-gray-600">({discountMappings.filter(m => m.is_operational).length}/{discountMappings.length})</span>
               )}
             </button>
           ))}
@@ -513,8 +524,7 @@ export default function SettingsPage() {
               <h2 className="text-blue-300 font-semibold mb-1">📊 Categorías de Actual vs Teórico</h2>
               <p className="text-blue-400 text-sm">
                 Estas categorías se detectan automáticamente al subir reportes de AvT.
-                Activa solo las que quieres ver en los filtros del dashboard — las inactivas
-                se ocultan pero sus datos se conservan.
+                Activa solo las que quieres ver en los filtros del dashboard.
               </p>
             </div>
 
@@ -525,7 +535,6 @@ export default function SettingsPage() {
               </div>
             ) : (
               <>
-                {/* Acciones masivas */}
                 <div className="flex items-center justify-between">
                   <p className="text-gray-400 text-sm">
                     <span className="text-white font-medium">{activeAvtCount}</span> de{' '}
@@ -555,7 +564,6 @@ export default function SettingsPage() {
                   <p className={`text-sm ${avtCatStatus.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{avtCatStatus}</p>
                 )}
 
-                {/* Lista de categorías */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
                   <table className="w-full text-sm">
                     <thead>
@@ -567,7 +575,7 @@ export default function SettingsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {avtCategories.map((cat, i) => (
+                      {avtCategories.map((cat) => (
                         <tr key={cat.category} className={`border-b border-gray-800 hover:bg-gray-800/50 transition ${!cat.active ? 'opacity-50' : ''}`}>
                           <td className="py-3 px-5">
                             <span className="text-white text-sm font-medium">{cat.category}</span>
@@ -580,7 +588,6 @@ export default function SettingsPage() {
                             </span>
                           </td>
                           <td className="py-3 px-4 text-center">
-                            {/* Toggle switch */}
                             <button onClick={() => toggleAvtCategory(cat.category, cat.active)}
                               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
                                 cat.active ? 'bg-blue-600' : 'bg-gray-700'
@@ -592,7 +599,7 @@ export default function SettingsPage() {
                           </td>
                           <td className="py-3 px-5 text-right">
                             <button onClick={() => {
-                              if (confirm(`¿Eliminar la categoría "${cat.category}"? Se eliminará permanentemente.`)) {
+                              if (confirm(`¿Eliminar la categoría "${cat.category}"?`)) {
                                 deleteAvtCategory(cat.category)
                               }
                             }}
@@ -608,10 +615,8 @@ export default function SettingsPage() {
 
                 <div className="bg-yellow-950 border border-yellow-800 rounded-xl p-4">
                   <p className="text-yellow-400 text-xs">
-                    <strong>Tip:</strong> Desactiva categorías como <code className="bg-yellow-900 px-1 rounded">CHEMICALS</code>,{' '}
-                    <code className="bg-yellow-900 px-1 rounded">None</code> o{' '}
-                    <code className="bg-yellow-900 px-1 rounded">RESTAURANT SUPPLIES</code> si no quieres verlas en los filtros del AvT.
-                    Sus datos seguirán existiendo pero no aparecerán en el dashboard.
+                    <strong>Tip:</strong> Desactiva categorías como <code className="bg-yellow-900 px-1 rounded">CHEMICALS</code> o{' '}
+                    <code className="bg-yellow-900 px-1 rounded">None</code> si no quieres verlas en los filtros del AvT.
                   </p>
                 </div>
               </>
@@ -619,11 +624,167 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* ── DESCUENTOS ── */}
+        {activeTab === 'descuentos' && (
+          <DiscountMappingsTab
+            mappings={discountMappings}
+            restaurantId={restaurantId}
+            status={discountStatus}
+            setStatus={setDiscountStatus}
+            onReload={loadData}
+          />
+        )}
+
       </main>
     </div>
   )
 }
 
+// ── COMPONENTE: Descuentos ────────────────────────────────────────────────────
+function DiscountMappingsTab({ mappings, restaurantId, status, setStatus, onReload }: {
+  mappings: any[]
+  restaurantId: string
+  status: string
+  setStatus: (s: string) => void
+  onReload: () => void
+}) {
+  const [saving, setSaving] = useState<string | null>(null)
+
+  async function toggle(id: string, current: boolean) {
+    setSaving(id)
+    await supabase
+      .from('discount_mappings')
+      .update({ is_operational: !current, updated_at: new Date().toISOString() })
+      .eq('id', id)
+    setSaving(null)
+    setStatus('✅ Guardado')
+    setTimeout(() => setStatus(''), 2000)
+    onReload()
+  }
+
+  async function markAll(value: boolean) {
+    if (!restaurantId) return
+    await supabase
+      .from('discount_mappings')
+      .update({ is_operational: value, updated_at: new Date().toISOString() })
+      .eq('restaurant_id', restaurantId)
+    setStatus('✅ Guardado')
+    setTimeout(() => setStatus(''), 2000)
+    onReload()
+  }
+
+  const operativos = mappings.filter(m => m.is_operational)
+  const noOperativos = mappings.filter(m => !m.is_operational)
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
+        <h2 className="text-blue-300 font-semibold mb-1">🏷️ Clasificación de Descuentos</h2>
+        <p className="text-blue-400 text-sm">
+          Marca cada descuento como <strong>Operativo</strong> (comida empleados, cortesías autorizadas, marketing)
+          o <strong>No Operativo</strong>. Los operativos se suman a las ventas en Costo de Uso
+          para no inflar el porcentaje de costo.
+        </p>
+      </div>
+
+      {mappings.length === 0 ? (
+        <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-10 text-center">
+          <p className="text-4xl mb-3">🏷️</p>
+          <p className="text-gray-400 font-medium mb-1">No hay descuentos registrados aún</p>
+          <p className="text-gray-600 text-sm">Se poblan automáticamente al subir el primer reporte de descuentos.</p>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <p className="text-gray-500 text-xs mb-1">Total tipos</p>
+              <p className="text-2xl font-bold text-white">{mappings.length}</p>
+            </div>
+            <div className="bg-green-950 border border-green-800 rounded-xl p-5">
+              <p className="text-green-500 text-xs mb-1">Operativos</p>
+              <p className="text-2xl font-bold text-green-400">{operativos.length}</p>
+              <p className="text-green-700 text-xs mt-1">Suman a ventas en Costo de Uso</p>
+            </div>
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <p className="text-gray-500 text-xs mb-1">No Operativos</p>
+              <p className="text-2xl font-bold text-white">{noOperativos.length}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <p className="text-gray-500 text-xs">Toggle verde = Operativo (suma a ventas en Costo de Uso)</p>
+            <div className="flex gap-2">
+              <button onClick={() => markAll(true)}
+                className="bg-green-900 hover:bg-green-800 text-green-300 px-4 py-1.5 rounded-lg text-xs font-medium transition">
+                Todos operativos
+              </button>
+              <button onClick={() => markAll(false)}
+                className="bg-gray-800 hover:bg-gray-700 text-gray-400 px-4 py-1.5 rounded-lg text-xs font-medium transition">
+                Ninguno operativo
+              </button>
+            </div>
+          </div>
+
+          {status && (
+            <p className={`text-sm ${status.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>{status}</p>
+          )}
+
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 bg-gray-800">
+                  <th className="text-left text-gray-500 text-xs py-3 px-5 font-medium">Nombre del descuento</th>
+                  <th className="text-center text-gray-500 text-xs py-3 px-5 font-medium w-44">Clasificación</th>
+                  <th className="text-center text-gray-500 text-xs py-3 px-5 font-medium w-28">Operativo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mappings.map((m: any) => (
+                  <tr key={m.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
+                    <td className="py-3 px-5">
+                      <p className="text-white text-sm font-medium">{m.discount_name}</p>
+                    </td>
+                    <td className="py-3 px-5 text-center">
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1 rounded-full ${
+                        m.is_operational
+                          ? 'bg-green-900 text-green-400'
+                          : 'bg-gray-800 text-gray-500'
+                      }`}>
+                        {m.is_operational ? '✓ Operativo' : '— No operativo'}
+                      </span>
+                    </td>
+                    <td className="py-3 px-5 text-center">
+                      <button
+                        onClick={() => toggle(m.id, m.is_operational)}
+                        disabled={saving === m.id}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50 ${
+                          m.is_operational ? 'bg-green-600' : 'bg-gray-700'
+                        }`}>
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          m.is_operational ? 'translate-x-6' : 'translate-x-1'
+                        }`} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="bg-yellow-950 border border-yellow-800 rounded-xl p-4">
+            <p className="text-yellow-400 text-xs">
+              <strong>¿Cómo funciona?</strong> En Costo de Uso, activa el modo
+              <span className="bg-yellow-900 px-1.5 py-0.5 rounded mx-1 font-medium">+ Desc. Operativos</span>
+              para que el sistema sume estos montos a las ventas antes de calcular el % de costo.
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── COMPONENTE: COGS Mapeo ────────────────────────────────────────────────────
 const COGS_MAPPED_TO_OPTIONS = [
   { value: 'food', label: '🍔 Food' },
   { value: 'na_beverage', label: '🥤 NA Beverage' },
@@ -636,9 +797,7 @@ const COGS_MAPPED_TO_OPTIONS = [
 
 function CogsMapeoTab({ cogsMappings, restaurantId, savingCogs, setSavingCogs, cogsStatus, setCogsStatus, onReload }: any) {
   async function updateMapping(id: string, mappedTo: string) {
-    await import('@/lib/supabase').then(({ supabase }) =>
-      supabase.from('cogs_account_mappings').update({ mapped_to: mappedTo }).eq('id', id)
-    )
+    await supabase.from('cogs_account_mappings').update({ mapped_to: mappedTo }).eq('id', id)
     setCogsStatus('✅ Guardado')
     setTimeout(() => setCogsStatus(''), 2000)
     onReload()
@@ -655,7 +814,7 @@ function CogsMapeoTab({ cogsMappings, restaurantId, savingCogs, setSavingCogs, c
         <h2 className="text-blue-300 font-semibold mb-1">🛒 Mapeo de Cuentas COGS</h2>
         <p className="text-blue-400 text-sm">
           Define cómo se mapean las sub-cuentas del reporte COGS Analysis by Vendor de R365
-          a las categorías del sistema. Esto permite calcular correctamente el costo de uso por categoría.
+          a las categorías del sistema.
         </p>
       </div>
 
@@ -685,9 +844,7 @@ function CogsMapeoTab({ cogsMappings, restaurantId, savingCogs, setSavingCogs, c
                       <span className="text-white text-sm font-medium">{m.source_account}</span>
                     </td>
                     <td className="py-3 px-5 text-right">
-                      <select
-                        value={m.mapped_to}
-                        onChange={e => updateMapping(m.id, e.target.value)}
+                      <select value={m.mapped_to} onChange={e => updateMapping(m.id, e.target.value)}
                         className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
                         {COGS_MAPPED_TO_OPTIONS.map(opt => (
                           <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -721,6 +878,7 @@ function CogsMapeoTab({ cogsMappings, restaurantId, savingCogs, setSavingCogs, c
   )
 }
 
+// ── COMPONENTE: Metas ─────────────────────────────────────────────────────────
 const COST_CATEGORIES = [
   { key: 'food', label: 'Food', color: '#f97316', icon: '🍔', description: 'Costo de alimentos vs ventas de food' },
   { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', icon: '🥤', description: 'Bebidas no alcohólicas vs ventas de beverage' },

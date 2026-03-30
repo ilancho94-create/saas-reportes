@@ -5,7 +5,7 @@ import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvt
 import { parseSalesExcel, buildSalesDateWarning } from '@/lib/parsers/parse-sales'
 import { parseLaborCsv } from '@/lib/parsers/parse-labor'
 import { parseVoidsCsv } from '@/lib/parsers/parse-voids'
-import { parseDiscountsCsv } from '@/lib/parsers/parse-discounts'
+import { parseDiscountsCsv, upsertDiscountMappings } from '@/lib/parsers/parse-discounts'
 import { parseCOGSExcel, buildCOGSDateWarning } from '@/lib/parsers/parse-cogs'
 import { parseWasteExcel, buildWasteDateWarning } from '@/lib/parsers/parse-waste'
 import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
@@ -26,8 +26,6 @@ export async function POST(request: NextRequest) {
     const authHeader = request.headers.get('authorization')
     const { data: { user } } = await supabase.auth.getUser(authHeader?.replace('Bearer ', '') || '')
 
-    // ── PRIORIDAD: restaurant_id del formulario (selector de sucursal)
-    // Si no viene en el form, fallback al perfil del usuario
     const formRestaurantId = formData.get('restaurant_id') as string
     let restaurant_id = formRestaurantId || '00000000-0000-0000-0000-000000000001'
     if (!formRestaurantId && user) {
@@ -119,6 +117,9 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await discountsFile.arrayBuffer())
         const data = parseDiscountsCsv(buffer.toString('latin1'))
         await saveToDatabase(report.id, 'discounts', data)
+        if (data._discount_names?.length) {
+          await upsertDiscountMappings(supabase, restaurant_id, data._discount_names)
+        }
         results['discounts'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing discounts:', err)
