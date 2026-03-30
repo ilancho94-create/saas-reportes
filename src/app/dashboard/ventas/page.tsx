@@ -31,6 +31,9 @@ export default function VentasPage() {
   const [rangeTo, setRangeTo] = useState('')
   const [activeTab, setActiveTab] = useState<Tab>('resumen')
 
+  // ── NUEVO: nombres de descuentos operativos ───────────────────────────────
+  const [opDiscountNames, setOpDiscountNames] = useState<Set<string>>(new Set())
+
   useEffect(() => {
     if (restaurantId) loadData()
   }, [restaurantId])
@@ -41,6 +44,14 @@ export default function VentasPage() {
     const { data: rest } = await supabase
       .from('restaurants').select('name').eq('id', restaurantId).single()
     setRestaurantName(rest?.name || '')
+
+    // ── NUEVO: cargar discount_mappings operativos ─────────────────────────
+    const { data: discMaps } = await supabase
+      .from('discount_mappings')
+      .select('discount_name')
+      .eq('restaurant_id', restaurantId)
+      .eq('is_operational', true)
+    setOpDiscountNames(new Set((discMaps || []).map((d: any) => d.discount_name)))
 
     const { data: reports } = await supabase
       .from('reports').select('*')
@@ -79,7 +90,6 @@ export default function VentasPage() {
     return Number(n).toFixed(1) + '%'
   }
 
-  // ── Filtered weeks (rango activo) ─────────────────────────────────────────
   const filtered = (() => {
     if (viewMode === 'single') {
       const w = weeks.find(w => w.report.week === selectedWeek)
@@ -91,7 +101,6 @@ export default function VentasPage() {
     return weeks.slice(-range)
   })()
 
-  // ── Rango anterior (mismo número de semanas, inmediatamente antes) ─────────
   const prevRange = (() => {
     if (filtered.length === 0) return []
     const firstIdx = weeks.findIndex(w => w.report.week === filtered[0].report.week)
@@ -99,7 +108,6 @@ export default function VentasPage() {
     return weeks.slice(start, firstIdx)
   })()
 
-  // ── KPIs sumados del rango ─────────────────────────────────────────────────
   function sumRange(arr: any[], field: string) {
     return arr.reduce((acc, w) => acc + (Number(w.sales?.[field]) || 0), 0)
   }
@@ -133,7 +141,6 @@ export default function VentasPage() {
   const diffDescuentos = diffPct(totalDescuentos, prevTotalDescuentos)
   const diffAvgGuest = diffPct(avgGuest, prevAvgGuest)
 
-  // ── Chart data ─────────────────────────────────────────────────────────────
   const chartData = filtered.map(w => ({
     week: w.report.week.replace('2026-', ''),
     ventas: w.sales?.net_sales || 0,
@@ -143,12 +150,11 @@ export default function VentasPage() {
     descuentos: w.sales?.discounts || 0,
   }))
 
-  // ── Latest week para detalles ──────────────────────────────────────────────
   const latest = filtered[filtered.length - 1]
   const latestCategories = latest?.sales?.categories || []
   const latestRevenueCenters = latest?.sales?.revenue_centers || []
 
-  // ── Descuentos: agregar todos los items del rango ─────────────────────────
+  // ── Descuentos: agrupar por nombre con clasificación operativo/no operativo
   const discountItems = (() => {
     const map: Record<string, { name: string; applications: number; orders: number; amount: number }> = {}
     filtered.forEach(w => {
@@ -166,7 +172,17 @@ export default function VentasPage() {
 
   const totalDiscountAmount = discountItems.reduce((s, i) => s + i.amount, 0)
 
-  // ── Voids: agregar todos los items del rango ───────────────────────────────
+  // ── NUEVO: separar operativos y no operativos ─────────────────────────────
+  const discountItemsWithType = discountItems.map(item => ({
+    ...item,
+    isOperational: opDiscountNames.has(item.name),
+  }))
+  const operativosItems = discountItemsWithType.filter(i => i.isOperational)
+  const noOperativosItems = discountItemsWithType.filter(i => !i.isOperational)
+  const totalOperativos = operativosItems.reduce((s, i) => s + i.amount, 0)
+  const totalNoOperativos = noOperativosItems.reduce((s, i) => s + i.amount, 0)
+  const hasOpConfig = opDiscountNames.size > 0
+
   const voidsByReason = (() => {
     const map: Record<string, { reason: string; count: number; total: number }> = {}
     filtered.forEach(w => {
@@ -186,7 +202,6 @@ export default function VentasPage() {
       const items = w.voids?.items || w.voids?.raw_data?.items || []
       items.forEach((item: any) => all.push(item))
     })
-    // Agrupar por servidor
     const map: Record<string, { server: string; count: number; total: number }> = {}
     all.forEach((item: any) => {
       const key = item.server || 'Desconocido'
@@ -200,7 +215,6 @@ export default function VentasPage() {
   const totalVoids = filtered.reduce((s, w) => s + (Number(w.voids?.total) || Number(w.voids?.raw_data?.total) || 0), 0)
   const totalVoidItems = filtered.reduce((s, w) => s + (Number(w.voids?.total_items) || Number(w.voids?.raw_data?.total_items) || 0), 0)
 
-  // ── Lunch/Dinner del rango ─────────────────────────────────────────────────
   const lunchDinnerData = filtered.map(w => {
     const ld = w.sales?.lunch_dinner || w.sales?.raw_data?.lunch_dinner || {}
     return {
@@ -210,7 +224,6 @@ export default function VentasPage() {
     }
   })
 
-  // ── Diff badge ────────────────────────────────────────────────────────────
   function DiffBadge({ diff, invert = false }: { diff: string | null; invert?: boolean }) {
     if (!diff) return null
     const n = Number(diff)
@@ -284,7 +297,7 @@ export default function VentasPage() {
 
       <main className="max-w-6xl mx-auto px-6 py-6 space-y-6">
 
-        {/* ── KPIs sumados del rango ── */}
+        {/* ── KPIs ── */}
         <div>
           <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
             {filtered.length > 1 ? `Período — ${periodLabel} (${filtered.length} semanas)` : `Semana — ${periodLabel} (${latest?.report?.week_start} al ${latest?.report?.week_end})`}
@@ -345,7 +358,6 @@ export default function VentasPage() {
         {/* ══════════════════════════════════════════════════════════ */}
         {activeTab === 'resumen' && (
           <div className="space-y-6">
-            {/* Ventas por semana */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-1">Ventas netas por semana</h2>
               <p className="text-gray-500 text-xs mb-4">Últimas {filtered.length} semanas</p>
@@ -362,7 +374,6 @@ export default function VentasPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Avg/Guest */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Avg / Guest por semana</h2>
                 <p className="text-gray-500 text-xs mb-4">Tendencia del ticket promedio</p>
@@ -378,7 +389,6 @@ export default function VentasPage() {
                 </ResponsiveContainer>
               </div>
 
-              {/* Órdenes y Guests */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Órdenes y Guests por semana</h2>
                 <p className="text-gray-500 text-xs mb-4">Volumen de servicio</p>
@@ -396,7 +406,6 @@ export default function VentasPage() {
               </div>
             </div>
 
-            {/* Lunch vs Dinner */}
             {lunchDinnerData.some(d => d.lunch > 0 || d.dinner > 0) && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Lunch vs Dinner por semana</h2>
@@ -416,7 +425,6 @@ export default function VentasPage() {
               </div>
             )}
 
-            {/* Categorías + Revenue Centers */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {latestCategories.length > 0 && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -472,7 +480,6 @@ export default function VentasPage() {
               )}
             </div>
 
-            {/* Tabla comparativo semana vs semana */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Comparativo semana vs semana</h2>
               <div className="overflow-x-auto">
@@ -522,7 +529,6 @@ export default function VentasPage() {
                         </tr>
                       )
                     })}
-                    {/* Fila totales */}
                     {filtered.length > 1 && (
                       <tr className="border-t-2 border-gray-700 bg-gray-800">
                         <td className="py-3 text-white font-semibold text-xs uppercase tracking-wider">Total período</td>
@@ -557,33 +563,85 @@ export default function VentasPage() {
         {/* ══════════════════════════════════════════════════════════ */}
         {activeTab === 'descuentos' && (
           <div className="space-y-6">
-            {/* KPIs descuentos */}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-xs mb-1">Total Descuentos</p>
-                <p className="text-2xl font-bold text-red-400">{fmt(totalDiscountAmount)}</p>
-                <p className="text-gray-600 text-xs mt-1">
-                  {totalVentas ? (totalDiscountAmount / totalVentas * 100).toFixed(1) + '% de ventas netas' : ''}
-                </p>
+
+            {/* ── NUEVO: Resumen operativos vs no operativos ── */}
+            {hasOpConfig ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <p className="text-gray-500 text-xs mb-1">Total Descuentos</p>
+                  <p className="text-2xl font-bold text-red-400">{fmt(totalDiscountAmount)}</p>
+                  <p className="text-gray-600 text-xs mt-1">
+                    {totalVentas ? (totalDiscountAmount / totalVentas * 100).toFixed(1) + '% de ventas netas' : ''}
+                  </p>
+                </div>
+                <div className="bg-green-950 border border-green-800 rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-green-500 text-xs">Operativos</p>
+                    <span className="text-green-700 text-xs bg-green-900 px-2 py-0.5 rounded-full">
+                      {operativosItems.length} tipo{operativosItems.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <p className="text-2xl font-bold text-green-400">{fmt(totalOperativos)}</p>
+                  <p className="text-green-700 text-xs mt-1">
+                    {totalDiscountAmount > 0 ? (totalOperativos / totalDiscountAmount * 100).toFixed(1) + '% del total' : '—'}
+                    {totalVentas > 0 ? ' · ' + (totalOperativos / totalVentas * 100).toFixed(1) + '% de ventas' : ''}
+                  </p>
+                </div>
+                <div className="bg-gray-900 border border-red-900 rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-gray-500 text-xs">No Operativos</p>
+                    <span className="text-gray-600 text-xs bg-gray-800 px-2 py-0.5 rounded-full">
+                      {noOperativosItems.length} tipo{noOperativosItems.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <p className="text-2xl font-bold text-red-400">{fmt(totalNoOperativos)}</p>
+                  <p className="text-gray-600 text-xs mt-1">
+                    {totalDiscountAmount > 0 ? (totalNoOperativos / totalDiscountAmount * 100).toFixed(1) + '% del total' : '—'}
+                    {totalVentas > 0 ? ' · ' + (totalNoOperativos / totalVentas * 100).toFixed(1) + '% de ventas' : ''}
+                  </p>
+                </div>
               </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-xs mb-1">Tipos de descuento</p>
-                <p className="text-2xl font-bold text-white">{discountItems.length}</p>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <p className="text-gray-500 text-xs mb-1">Total Descuentos</p>
+                  <p className="text-2xl font-bold text-red-400">{fmt(totalDiscountAmount)}</p>
+                  <p className="text-gray-600 text-xs mt-1">
+                    {totalVentas ? (totalDiscountAmount / totalVentas * 100).toFixed(1) + '% de ventas netas' : ''}
+                  </p>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <p className="text-gray-500 text-xs mb-1">Tipos de descuento</p>
+                  <p className="text-2xl font-bold text-white">{discountItems.length}</p>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <p className="text-gray-500 text-xs mb-1">Total aplicaciones</p>
+                  <p className="text-2xl font-bold text-white">
+                    {discountItems.reduce((s, i) => s + i.applications, 0).toLocaleString()}
+                  </p>
+                </div>
               </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-500 text-xs mb-1">Total aplicaciones</p>
-                <p className="text-2xl font-bold text-white">
-                  {discountItems.reduce((s, i) => s + i.applications, 0).toLocaleString()}
-                </p>
+            )}
+
+            {/* ── NUEVO: aviso si no hay config ── */}
+            {!hasOpConfig && (
+              <div className="bg-gray-900 border border-gray-700 border-dashed rounded-xl px-5 py-4 flex items-center gap-3">
+                <span className="text-gray-500 text-lg">🏷️</span>
+                <div>
+                  <p className="text-gray-400 text-sm font-medium">Clasificación no configurada</p>
+                  <p className="text-gray-600 text-xs mt-0.5">
+                    Ve a <strong className="text-gray-400">Settings → Descuentos</strong> para marcar cuáles son operativos y cuáles no.
+                  </p>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Gráfica */}
             {discountItems.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">Descuentos por tipo</h2>
                 <ResponsiveContainer width="100%" height={Math.max(180, discountItems.length * 36)}>
-                  <BarChart data={discountItems} layout="vertical">
+                  <BarChart data={discountItemsWithType} layout="vertical">
                     <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" horizontal={false} />
                     <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false}
                       tickFormatter={v => '$' + (v / 1000).toFixed(1) + 'k'} />
@@ -591,13 +649,29 @@ export default function VentasPage() {
                       tickLine={false} width={180} />
                     <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
                       formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Monto']} />
-                    <Bar dataKey="amount" fill="#ef4444" radius={[0, 4, 4, 0]} />
+                    <Bar dataKey="amount" radius={[0, 4, 4, 0]}>
+                      {discountItemsWithType.map((item, i) => (
+                        <Cell key={i} fill={item.isOperational ? '#22c55e' : '#ef4444'} />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+                {hasOpConfig && (
+                  <div className="flex items-center gap-4 mt-3">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded bg-green-500" />
+                      <span className="text-gray-400 text-xs">Operativo</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded bg-red-500" />
+                      <span className="text-gray-400 text-xs">No operativo</span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Tabla ranking */}
+            {/* Tabla ranking con clasificación */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Ranking de descuentos</h2>
               <div className="overflow-x-auto">
@@ -606,19 +680,32 @@ export default function VentasPage() {
                     <tr className="border-b border-gray-800">
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">#</th>
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">Tipo</th>
+                      {hasOpConfig && <th className="text-center text-gray-500 text-xs pb-3 font-medium">Clasificación</th>}
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Monto</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">% de ventas</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Aplicaciones</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Órdenes</th>
                       <th className="text-right text-gray-500 text-xs pb-3 font-medium">Promedio</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {discountItems.map((item, i) => (
-                      <tr key={item.name} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                    {discountItemsWithType.map((item, i) => (
+                      <tr key={item.name} className={`border-b border-gray-800 hover:bg-gray-800 transition ${item.isOperational ? 'bg-green-950/10' : ''}`}>
                         <td className="py-3 text-gray-600 text-xs">{i + 1}</td>
-                        <td className="py-3 text-gray-300">{item.name}</td>
-                        <td className="py-3 text-right text-red-400 font-semibold">{fmt(item.amount)}</td>
+                        <td className="py-3 text-gray-300 font-medium">{item.name}</td>
+                        {hasOpConfig && (
+                          <td className="py-3 text-center">
+                            <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+                              item.isOperational
+                                ? 'bg-green-900 text-green-400'
+                                : 'bg-gray-800 text-gray-500'
+                            }`}>
+                              {item.isOperational ? '✓ Operativo' : '— No op.'}
+                            </span>
+                          </td>
+                        )}
+                        <td className="py-3 text-right font-semibold" style={{ color: item.isOperational && hasOpConfig ? '#22c55e' : '#f87171' }}>
+                          {fmt(item.amount)}
+                        </td>
                         <td className="py-3 text-right">
                           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                             totalVentas && item.amount / totalVentas > 0.03
@@ -629,26 +716,42 @@ export default function VentasPage() {
                           </span>
                         </td>
                         <td className="py-3 text-right text-gray-400">{item.applications.toLocaleString()}</td>
-                        <td className="py-3 text-right text-gray-400">{item.orders.toLocaleString()}</td>
                         <td className="py-3 text-right text-gray-400">
                           {item.applications ? fmt(item.amount / item.applications) : '—'}
                         </td>
                       </tr>
                     ))}
+                    {/* Fila totales por clasificación si hay config */}
+                    {hasOpConfig && (
+                      <>
+                        <tr className="border-t border-green-900 bg-green-950/20">
+                          <td colSpan={2} className="py-2 px-1 text-green-400 text-xs font-semibold">Subtotal Operativos</td>
+                          <td className="py-2 text-center"><span className="text-xs text-green-600">{operativosItems.length} tipos</span></td>
+                          <td className="py-2 text-right text-green-400 font-bold">{fmt(totalOperativos)}</td>
+                          <td className="py-2 text-right text-green-700 text-xs">{totalVentas ? (totalOperativos / totalVentas * 100).toFixed(1) + '%' : '—'}</td>
+                          <td colSpan={2} />
+                        </tr>
+                        <tr className="border-t border-gray-800 bg-gray-800/30">
+                          <td colSpan={2} className="py-2 px-1 text-gray-400 text-xs font-semibold">Subtotal No Operativos</td>
+                          <td className="py-2 text-center"><span className="text-xs text-gray-600">{noOperativosItems.length} tipos</span></td>
+                          <td className="py-2 text-right text-red-400 font-bold">{fmt(totalNoOperativos)}</td>
+                          <td className="py-2 text-right text-gray-600 text-xs">{totalVentas ? (totalNoOperativos / totalVentas * 100).toFixed(1) + '%' : '—'}</td>
+                          <td colSpan={2} />
+                        </tr>
+                      </>
+                    )}
                   </tbody>
                 </table>
               </div>
             </div>
 
-            {/* Descuentos por semana */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <h2 className="text-white font-semibold mb-4">Descuentos por semana</h2>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                   <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false}
-                    tickFormatter={v => '$' + v} />
+                  <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
                   <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
                     formatter={(v: any) => ['$' + Number(v).toLocaleString(), 'Descuentos']} />
                   <Bar dataKey="descuentos" fill="#ef4444" radius={[4, 4, 0, 0]} />
@@ -663,7 +766,6 @@ export default function VentasPage() {
         {/* ══════════════════════════════════════════════════════════ */}
         {activeTab === 'voids' && (
           <div className="space-y-6">
-            {/* KPIs voids */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-500 text-xs mb-1">Total Voids</p>
@@ -683,7 +785,6 @@ export default function VentasPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Por razón */}
               {voidsByReason.length > 0 && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-4">Voids por razón</h2>
@@ -693,10 +794,7 @@ export default function VentasPage() {
                         <span className="text-gray-400 text-sm w-40 truncate">{r.reason}</span>
                         <div className="flex-1 bg-gray-800 rounded-full h-2">
                           <div className="h-2 rounded-full"
-                            style={{
-                              width: `${Math.min((r.total / (voidsByReason[0]?.total || 1)) * 100, 100)}%`,
-                              backgroundColor: COLORS[i % COLORS.length]
-                            }} />
+                            style={{ width: `${Math.min((r.total / (voidsByReason[0]?.total || 1)) * 100, 100)}%`, backgroundColor: COLORS[i % COLORS.length] }} />
                         </div>
                         <span className="text-white text-sm font-medium w-20 text-right">{fmt(r.total)}</span>
                         <span className="text-gray-500 text-xs w-12 text-right">{r.count} items</span>
@@ -706,7 +804,6 @@ export default function VentasPage() {
                 </div>
               )}
 
-              {/* Por servidor */}
               {voidItems.length > 0 && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-4">Voids por servidor</h2>
@@ -728,7 +825,6 @@ export default function VentasPage() {
               )}
             </div>
 
-            {/* Tabla detalle voids */}
             {voidsByReason.length === 0 && voidItems.length === 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
                 <p className="text-gray-500">No hay datos de voids para el período seleccionado.</p>
@@ -810,7 +906,6 @@ export default function VentasPage() {
                     )}
                   </div>
 
-                  {/* Lunch / Dinner */}
                   {(ld.lunch?.net > 0 || ld.dinner?.net > 0) && (
                     <div className="grid grid-cols-2 gap-4 mb-5 p-4 bg-gray-800 rounded-lg">
                       <div>
@@ -826,7 +921,6 @@ export default function VentasPage() {
                     </div>
                   )}
 
-                  {/* Categorías */}
                   {(s.categories || []).length > 0 && (
                     <div>
                       <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">Categorías</p>
