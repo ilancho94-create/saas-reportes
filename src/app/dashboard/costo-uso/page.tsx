@@ -62,6 +62,11 @@ export default function CostoUsoPage() {
   const [adjError, setAdjError] = useState('')
   const [showAdjLog, setShowAdjLog] = useState(false)
 
+  // ── NUEVO: descuentos operativos ──────────────────────────────────────────
+  const [includeOpDiscounts, setIncludeOpDiscounts] = useState(false)
+  const [opDiscountMappings, setOpDiscountMappings] = useState<string[]>([]) // nombres operativos
+  const [discountsDataByWeek, setDiscountsDataByWeek] = useState<Record<string, number>>({}) // semana → total operativos
+
   const CATEGORIES = CATEGORIES_BASE.map(cat => ({
     ...cat,
     meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
@@ -97,22 +102,34 @@ export default function CostoUsoPage() {
       setCostTargets(m)
     }
 
+    // ── NUEVO: cargar nombres de descuentos operativos ─────────────────────
+    const { data: discMaps } = await supabase
+      .from('discount_mappings')
+      .select('discount_name')
+      .eq('restaurant_id', restaurantId)
+      .eq('is_operational', true)
+    setOpDiscountMappings((discMaps || []).map((d: any) => d.discount_name))
+
     const { data: reports } = await supabase.from('reports').select('*')
       .eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52)
 
     if (!reports || reports.length === 0) { setLoading(false); return }
 
     const weeksData = await Promise.all(reports.map(async (r) => {
-      const [s, c, inv, pm] = await Promise.all([
+      const [s, c, inv, pm, disc] = await Promise.all([
         supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
         supabase.from('cogs_data').select('*').eq('report_id', r.id).single(),
         supabase.from('inventory_data').select('*').eq('report_id', r.id).single(),
         supabase.from('product_mix_data').select('*').eq('report_id', r.id).single(),
+        supabase.from('discounts_data').select('total, items').eq('report_id', r.id).single(),
       ])
-      return { report: r, sales: s.data, cogs: c.data, inventory: inv.data, productMix: pm.data }
+      return { report: r, sales: s.data, cogs: c.data, inventory: inv.data, productMix: pm.data, discounts: disc.data }
     }))
 
     setWeeks(weeksData)
+
+    // ── NUEVO: calcular total de descuentos operativos por semana ──────────
+    // Se recalcula dinámicamente en getOpDiscountTotal() usando opDiscountMappings
     const last = weeksData[weeksData.length - 1]
     setSelectedWeek(last?.report.week || '')
     setCustomFrom(weeksData.length >= 4 ? weeksData[weeksData.length - 4].report.week : weeksData[0].report.week)
@@ -132,6 +149,15 @@ export default function CostoUsoPage() {
     }
     setAlerts(newAlerts)
     setLoading(false)
+  }
+
+  // ── NUEVO: calcular total descuentos operativos de una semana ─────────────
+  function getOpDiscountTotal(w: any): number {
+    if (!includeOpDiscounts || !opDiscountMappings.length) return 0
+    const items: any[] = w.discounts?.items || []
+    return items
+      .filter((item: any) => opDiscountMappings.includes(item.name))
+      .reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0)
   }
 
   function getAdj(week: string, category: string, field: string): number {
@@ -227,7 +253,11 @@ export default function CostoUsoPage() {
     const theoCostByCat = w.productMix?.theo_cost_by_category || {}
     const hasInventory = invAccounts.length > 0
     const week = w.report.week
-    const result: any = { week: week.replace('2026-', ''), fullWeek: week, reportId: w.report.id, netSales, hasInventory, hasProductMix: !!w.productMix }
+
+    // ── NUEVO: total descuentos operativos de la semana ───────────────────
+    const opDiscTotal = getOpDiscountTotal(w)
+
+    const result: any = { week: week.replace('2026-', ''), fullWeek: week, reportId: w.report.id, netSales, hasInventory, hasProductMix: !!w.productMix, opDiscTotal }
     let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
 
     CATEGORIES.forEach(cat => {
@@ -240,7 +270,15 @@ export default function CostoUsoPage() {
       const purchases = (cogsCat[cat.key] || 0) + adjPurchases
       const invCurrent = inv.current + adjInvCurr
       const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
-      const catSales = getMappedSales(salesCategories, cat.key) || 0
+      const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
+
+      // ── NUEVO: sumar descuentos operativos prorrateados por categoría ──
+      // Se prorratean proporcionalmente al peso de cada categoría en ventas totales
+      const totalMappedSales = CATEGORIES_BASE.reduce((s, c) => s + (getMappedSales(salesCategories, c.key) || 0), 0)
+      const catShare = totalMappedSales > 0 ? catSalesBase / totalMappedSales : 0
+      const catOpDisc = includeOpDiscounts ? opDiscTotal * catShare : 0
+      const catSales = catSalesBase + catOpDisc
+
       const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
@@ -368,6 +406,33 @@ export default function CostoUsoPage() {
             )}
           </div>
           <p className="text-gray-500 text-xs mt-0.5">{restaurantName} · (Inv. Anterior + Compras − Inv. Actual) / Ventas</p>
+        </div>
+
+        {/* ── NUEVO: Toggle descuentos operativos ── */}
+        <div className="flex items-center gap-3 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5">
+          <div className="text-right">
+            <p className="text-gray-400 text-xs font-medium">Ventas base</p>
+            <p className="text-gray-600 text-xs">% Real estándar</p>
+          </div>
+          <button
+            onClick={() => setIncludeOpDiscounts(!includeOpDiscounts)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+              includeOpDiscounts ? 'bg-green-600' : 'bg-gray-600'
+            }`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+              includeOpDiscounts ? 'translate-x-6' : 'translate-x-1'
+            }`} />
+          </button>
+          <div className="text-left">
+            <p className={`text-xs font-medium ${includeOpDiscounts ? 'text-green-400' : 'text-gray-400'}`}>
+              + Desc. Operativos
+            </p>
+            <p className="text-gray-600 text-xs">
+              {opDiscountMappings.length > 0
+                ? opDiscountMappings.length + ' tipo' + (opDiscountMappings.length !== 1 ? 's' : '') + ' configurado' + (opDiscountMappings.length !== 1 ? 's' : '')
+                : 'Sin configurar en Settings'}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -507,12 +572,25 @@ export default function CostoUsoPage() {
           </div>
         )}
 
+        {/* ── NUEVO: banner cuando toggle activo ── */}
+        {includeOpDiscounts && (
+          <div className="bg-green-950 border border-green-800 rounded-xl px-5 py-3 flex items-center gap-3">
+            <span className="text-green-400 text-lg">✅</span>
+            <div>
+              <p className="text-green-300 text-sm font-medium">Modo: Ventas + Descuentos Operativos</p>
+              <p className="text-green-600 text-xs mt-0.5">
+                Los descuentos operativos ({opDiscountMappings.join(', ') || 'ninguno configurado'}) se suman a las ventas antes de calcular el % de costo.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="bg-blue-950 border border-blue-900 rounded-xl px-5 py-3 flex items-start gap-3">
           <span className="text-blue-400 text-lg">ℹ️</span>
           <div>
             <p className="text-blue-300 text-sm font-medium">Costo de Uso de Inventario</p>
             <p className="text-blue-400 text-xs mt-0.5">
-              <strong>% Real</strong> = (Inv. Anterior + Compras − Inv. Actual) / Ventas ·
+              <strong>% Real</strong> = (Inv. Anterior + Compras − Inv. Actual) / Ventas{includeOpDiscounts ? ' (+Desc. Op.)' : ''} ·
               <strong> % P.Mix</strong> = Costo teórico según lo vendido ·
               <strong> Variación $</strong> = (% Real − % P.Mix) × Ventas ·
               <strong> Días Inv</strong> = ((Inv. Final + Inv. Inicial) / 2) / Uso × {operatingDays} días
@@ -571,7 +649,14 @@ export default function CostoUsoPage() {
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-white font-semibold">Detalle por categoría — {detailWeek?.report?.week}</h2>
-                    {detailData.hasAnyAdj && <span className="text-yellow-400 text-xs bg-yellow-950 px-2 py-1 rounded-full">✏️ Contiene ajustes manuales</span>}
+                    <div className="flex items-center gap-2">
+                      {includeOpDiscounts && detailData.opDiscTotal > 0 && (
+                        <span className="text-green-400 text-xs bg-green-950 px-2 py-1 rounded-full">
+                          +{fmt(detailData.opDiscTotal)} desc. op. incluidos
+                        </span>
+                      )}
+                      {detailData.hasAnyAdj && <span className="text-yellow-400 text-xs bg-yellow-950 px-2 py-1 rounded-full">✏️ Contiene ajustes manuales</span>}
+                    </div>
                   </div>
 
                   {/* ── MOBILE: cards por categoría ── */}
@@ -623,7 +708,9 @@ export default function CostoUsoPage() {
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Compras</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Inv. Act.</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Uso $</th>
-                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">
+                            Ventas{includeOpDiscounts ? ' (+D.Op)' : ''}
+                          </th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">% Real</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
@@ -724,63 +811,56 @@ export default function CostoUsoPage() {
 
             {chartData.filter(d => d.hasInventory).length >= 1 && (
               <>
-                {true && (
-                  <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                        <h2 className="text-white font-semibold mb-1">% Real vs % P.Mix por semana</h2>
-                        <p className="text-gray-500 text-xs mb-4">Total A&B</p>
-                        <ResponsiveContainer width="100%" height={200}>
-                          <LineChart data={chartData.filter(d => d.hasInventory)}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                            <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                            <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                            <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
-                            <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
-                            <Line type="monotone" dataKey="totalRealPct" name="% Real" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
-                            <Line type="monotone" dataKey="totalMixPct" name="% P.Mix" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                        <h2 className="text-white font-semibold mb-1">Variación $ por semana</h2>
-                        <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno)</p>
-                        <ResponsiveContainer width="100%" height={200}>
-                          <BarChart data={chartData.filter(d => d.hasInventory)}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                            <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                            <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
-                            <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
-                            <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]}
-                              fill="#ef4444"
-                              label={false}
-                            >
-                              {chartData.filter(d => d.hasInventory).map((entry, index) => (
-                                <Cell key={index} fill={entry.totalVariacion <= 0 ? '#22c55e' : '#ef4444'} />
-                              ))}
-                            </Bar>
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-                    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                      <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
-                      <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
-                      <ResponsiveContainer width="100%" height={220}>
-                        <LineChart data={chartData.filter(d => d.hasInventory)}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-                          <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                          <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
-                          <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
-                          <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
-                          {CATEGORIES.map(cat => (
-                            <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label} stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                    <h2 className="text-white font-semibold mb-1">% Real vs % P.Mix por semana</h2>
+                    <p className="text-gray-500 text-xs mb-4">Total A&B</p>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={chartData.filter(d => d.hasInventory)}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                        <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                        <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
+                        <Line type="monotone" dataKey="totalRealPct" name="% Real" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 3 }} />
+                        <Line type="monotone" dataKey="totalMixPct" name="% P.Mix" stroke="#22c55e" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#22c55e', r: 3 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                    <h2 className="text-white font-semibold mb-1">Variación $ por semana</h2>
+                    <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno)</p>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={chartData.filter(d => d.hasInventory)}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                        <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
+                        <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
+                        <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" label={false}>
+                          {chartData.filter(d => d.hasInventory).map((entry, index) => (
+                            <Cell key={index} fill={entry.totalVariacion <= 0 ? '#22c55e' : '#ef4444'} />
                           ))}
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </>
-                )}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                  <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
+                  <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart data={chartData.filter(d => d.hasInventory)}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                      <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
+                      <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any, name: any) => [v + '%', name]} />
+                      <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
+                      {CATEGORIES.map(cat => (
+                        <Line key={cat.key} type="monotone" dataKey={cat.key + '_uso_pct'} name={cat.label} stroke={cat.color} strokeWidth={2} dot={{ fill: cat.color, r: 3 }} />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
 
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-4">Histórico por semana</h2>
