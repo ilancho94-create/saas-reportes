@@ -8,6 +8,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname()
   const { user, isSuperAdmin, currentRestaurant: restaurant, currentOrganization, organizations, switchRestaurant, switchOrganization, can } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [showOrgMenu, setShowOrgMenu] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [pwNew, setPwNew] = useState('')
@@ -77,118 +78,157 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const userInitials = user?.email?.substring(0, 2).toUpperCase() || '??'
   const roleLabel = restaurant?.role ? (restaurant.role.charAt(0).toUpperCase() + restaurant.role.slice(1)) : ''
 
+  // Sidebar content — mismo para desktop y mobile drawer
+  const sidebarContent = (
+    <>
+      {/* Header */}
+      <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between gap-2">
+        {!collapsed && (
+          <div className="min-w-0 flex-1">
+            <p className="text-white font-bold text-sm mb-2">Restaurant X-Ray 🔬</p>
+            <div className="relative">
+              <button onClick={() => setShowOrgMenu(!showOrgMenu)}
+                className={`w-full text-left px-2.5 py-2 rounded-lg border transition flex items-center justify-between gap-1 ${showOrgMenu ? 'bg-gray-700 border-gray-600' : 'bg-gray-800 border-gray-700 hover:border-gray-600'}`}>
+                <div className="min-w-0">
+                  <p className="text-gray-400 text-xs leading-none mb-0.5">Organización</p>
+                  <p className="text-white text-xs font-medium truncate">{currentOrganization?.name || '—'}</p>
+                </div>
+                <span className="text-gray-500 text-xs shrink-0">{showOrgMenu ? '▲' : '▼'}</span>
+              </button>
+              {showOrgMenu && organizations.length > 1 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                  {organizations.map(org => (
+                    <button key={org.id} onClick={() => { switchOrganization(org.id); setShowOrgMenu(false) }}
+                      className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between ${currentOrganization?.id === org.id ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
+                      <span>{org.name}</span>
+                      <span className={`text-xs ${currentOrganization?.id === org.id ? 'text-blue-200' : 'text-gray-500'}`}>{org.restaurants.length} rest.</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="mt-1.5">
+              {currentOrganization && currentOrganization.restaurants.length > 1 ? (
+                <select value={restaurant?.id || ''} onChange={e => switchRestaurant(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 hover:border-gray-600 rounded-lg px-2.5 py-2 text-white text-xs focus:outline-none focus:border-blue-500 cursor-pointer">
+                  {currentOrganization.restaurants.map(r => (
+                    <option key={r.id} value={r.id} className="bg-gray-900">{r.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <div className="px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg">
+                  <p className="text-gray-400 text-xs leading-none mb-0.5">Restaurante</p>
+                  <p className="text-white text-xs font-medium truncate">{restaurant?.name || '—'}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {collapsed && <div className="w-full flex justify-center"><span className="text-white font-bold text-sm">X</span></div>}
+        {/* Botón collapse — solo en desktop */}
+        <button onClick={() => setCollapsed(!collapsed)} className="hidden md:block text-gray-500 hover:text-white transition p-1 rounded shrink-0">
+          {collapsed ? '→' : '←'}
+        </button>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 py-4 overflow-y-auto">
+        {nav.map(group => {
+          const visibleItems = group.items.filter(item => item.module ? can(item.module as any, 'view') : true)
+          if (visibleItems.length === 0) return null
+          return (
+            <div key={group.section} className="mb-4">
+              {!collapsed && <p className="text-gray-600 text-xs font-semibold px-4 mb-1 tracking-wider">{group.section}</p>}
+              {visibleItems.map(item => {
+                const active = isActive(item.href)
+                return (
+                  <a key={item.href} href={item.href} title={item.label}
+                    onClick={() => setMobileOpen(false)}
+                    className={`flex items-center gap-3 px-4 py-2 text-sm transition-all ${collapsed ? 'justify-center' : ''} ${active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
+                    <span className="text-base shrink-0">{item.icon}</span>
+                    {!collapsed && <span>{item.label}</span>}
+                  </a>
+                )
+              })}
+            </div>
+          )
+        })}
+
+        {isSuperAdmin && (
+          <div className="mb-4">
+            {!collapsed && <p className="text-amber-600 text-xs font-semibold px-4 mb-1 tracking-wider">SUPER ADMIN</p>}
+            <a href="/dashboard/superadmin" title="Super Admin"
+              onClick={() => setMobileOpen(false)}
+              className={`flex items-center gap-3 px-4 py-2 text-sm transition-all ${collapsed ? 'justify-center' : ''} ${isActive('/dashboard/superadmin') ? 'bg-amber-600 text-white' : 'text-amber-500 hover:text-amber-300 hover:bg-amber-950'}`}>
+              <span className="text-base shrink-0">⚡</span>
+              {!collapsed && <span>Super Admin</span>}
+            </a>
+          </div>
+        )}
+      </nav>
+
+      {/* Footer — perfil */}
+      <div className="border-t border-gray-800 p-3">
+        {!collapsed ? (
+          <button onClick={() => setShowProfile(true)}
+            className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-gray-800 transition group text-left">
+            <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+              {userInitials}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-gray-300 text-xs truncate">{user?.email}</p>
+              {roleLabel && <p className="text-gray-600 text-xs truncate">{roleLabel}</p>}
+            </div>
+            <span className="text-gray-600 group-hover:text-gray-400 text-xs shrink-0">⚙️</span>
+          </button>
+        ) : (
+          <button onClick={() => setShowProfile(true)}
+            className="w-full flex justify-center py-1 hover:bg-gray-800 rounded-lg transition" title="Mi perfil">
+            <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
+              {userInitials}
+            </div>
+          </button>
+        )}
+      </div>
+    </>
+  )
+
   return (
     <div className="min-h-screen bg-gray-950 flex">
-      <aside className={(collapsed ? 'w-16' : 'w-56') + ' min-h-screen bg-gray-900 border-r border-gray-800 flex flex-col transition-all duration-200 shrink-0'}>
 
-        {/* Header */}
-        <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between gap-2">
-          {!collapsed && (
-            <div className="min-w-0 flex-1">
-              <p className="text-white font-bold text-sm mb-2">Restaurant X-Ray 🔬</p>
-              <div className="relative">
-                <button onClick={() => setShowOrgMenu(!showOrgMenu)}
-                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition flex items-center justify-between gap-1 ${showOrgMenu ? 'bg-gray-700 border-gray-600' : 'bg-gray-800 border-gray-700 hover:border-gray-600'}`}>
-                  <div className="min-w-0">
-                    <p className="text-gray-400 text-xs leading-none mb-0.5">Organización</p>
-                    <p className="text-white text-xs font-medium truncate">{currentOrganization?.name || '—'}</p>
-                  </div>
-                  <span className="text-gray-500 text-xs shrink-0">{showOrgMenu ? '▲' : '▼'}</span>
-                </button>
-                {showOrgMenu && organizations.length > 1 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
-                    {organizations.map(org => (
-                      <button key={org.id} onClick={() => { switchOrganization(org.id); setShowOrgMenu(false) }}
-                        className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between ${currentOrganization?.id === org.id ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
-                        <span>{org.name}</span>
-                        <span className={`text-xs ${currentOrganization?.id === org.id ? 'text-blue-200' : 'text-gray-500'}`}>{org.restaurants.length} rest.</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="mt-1.5">
-                {currentOrganization && currentOrganization.restaurants.length > 1 ? (
-                  <select value={restaurant?.id || ''} onChange={e => switchRestaurant(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 hover:border-gray-600 rounded-lg px-2.5 py-2 text-white text-xs focus:outline-none focus:border-blue-500 cursor-pointer">
-                    {currentOrganization.restaurants.map(r => (
-                      <option key={r.id} value={r.id} className="bg-gray-900">{r.name}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <div className="px-2.5 py-2 bg-gray-800 border border-gray-700 rounded-lg">
-                    <p className="text-gray-400 text-xs leading-none mb-0.5">Restaurante</p>
-                    <p className="text-white text-xs font-medium truncate">{restaurant?.name || '—'}</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-          {collapsed && <div className="w-full flex justify-center"><span className="text-white font-bold text-sm">X</span></div>}
-          <button onClick={() => setCollapsed(!collapsed)} className="text-gray-500 hover:text-white transition p-1 rounded shrink-0">
-            {collapsed ? '→' : '←'}
-          </button>
-        </div>
-
-        {/* Nav */}
-        <nav className="flex-1 py-4 overflow-y-auto">
-          {nav.map(group => {
-            const visibleItems = group.items.filter(item => item.module ? can(item.module as any, 'view') : true)
-            if (visibleItems.length === 0) return null
-            return (
-              <div key={group.section} className="mb-4">
-                {!collapsed && <p className="text-gray-600 text-xs font-semibold px-4 mb-1 tracking-wider">{group.section}</p>}
-                {visibleItems.map(item => {
-                  const active = isActive(item.href)
-                  return (
-                    <a key={item.href} href={item.href} title={item.label}
-                      className={`flex items-center gap-3 px-4 py-2 text-sm transition-all ${collapsed ? 'justify-center' : ''} ${active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
-                      <span className="text-base shrink-0">{item.icon}</span>
-                      {!collapsed && <span>{item.label}</span>}
-                    </a>
-                  )
-                })}
-              </div>
-            )
-          })}
-
-          {/* Super Admin — solo si isSuperAdmin */}
-          {isSuperAdmin && (
-            <div className="mb-4">
-              {!collapsed && <p className="text-amber-600 text-xs font-semibold px-4 mb-1 tracking-wider">SUPER ADMIN</p>}
-              <a href="/dashboard/superadmin" title="Super Admin"
-                className={`flex items-center gap-3 px-4 py-2 text-sm transition-all ${collapsed ? 'justify-center' : ''} ${isActive('/dashboard/superadmin') ? 'bg-amber-600 text-white' : 'text-amber-500 hover:text-amber-300 hover:bg-amber-950'}`}>
-                <span className="text-base shrink-0">⚡</span>
-                {!collapsed && <span>Super Admin</span>}
-              </a>
-            </div>
-          )}
-        </nav>
-
-        {/* Footer — perfil */}
-        <div className="border-t border-gray-800 p-3">
-          {!collapsed ? (
-            <button onClick={() => setShowProfile(true)}
-              className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-gray-800 transition group text-left">
-              <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                {userInitials}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-gray-300 text-xs truncate">{user?.email}</p>
-                {roleLabel && <p className="text-gray-600 text-xs truncate">{roleLabel}</p>}
-              </div>
-              <span className="text-gray-600 group-hover:text-gray-400 text-xs shrink-0">⚙️</span>
-            </button>
-          ) : (
-            <button onClick={() => setShowProfile(true)}
-              className="w-full flex justify-center py-1 hover:bg-gray-800 rounded-lg transition" title="Mi perfil">
-              <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
-                {userInitials}
-              </div>
-            </button>
-          )}
-        </div>
+      {/* ── DESKTOP sidebar (igual que antes) ── */}
+      <aside className={(collapsed ? 'w-16' : 'w-56') + ' hidden md:flex min-h-screen bg-gray-900 border-r border-gray-800 flex-col transition-all duration-200 shrink-0'}>
+        {sidebarContent}
       </aside>
+
+      {/* ── MOBILE: top bar con hamburger ── */}
+      <div className="md:hidden fixed top-0 left-0 right-0 z-40 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-4 py-3">
+        <button onClick={() => setMobileOpen(true)} className="text-gray-400 hover:text-white p-1">
+          <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <line x1="3" y1="6" x2="19" y2="6"/><line x1="3" y1="12" x2="19" y2="12"/><line x1="3" y1="18" x2="19" y2="18"/>
+          </svg>
+        </button>
+        <span className="text-white font-bold text-sm">Restaurant X-Ray 🔬</span>
+        <button onClick={() => setShowProfile(true)} className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
+          {userInitials}
+        </button>
+      </div>
+
+      {/* ── MOBILE: drawer overlay ── */}
+      {mobileOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex">
+          <div className="w-64 bg-gray-900 border-r border-gray-800 flex flex-col overflow-y-auto">
+            {/* Close button */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+              <span className="text-white font-bold text-sm">Restaurant X-Ray 🔬</span>
+              <button onClick={() => setMobileOpen(false)} className="text-gray-500 hover:text-white text-xl">✕</button>
+            </div>
+            {sidebarContent}
+          </div>
+          {/* Backdrop */}
+          <div className="flex-1 bg-black/60" onClick={() => setMobileOpen(false)} />
+        </div>
+      )}
 
       {showOrgMenu && <div className="fixed inset-0 z-40" onClick={() => setShowOrgMenu(false)} />}
 
@@ -247,7 +287,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       )}
 
-      <div className="flex-1 min-w-0">{children}</div>
+      {/* Contenido principal */}
+      <div className="flex-1 min-w-0 md:mt-0 mt-12">
+        {children}
+      </div>
     </div>
   )
 }
