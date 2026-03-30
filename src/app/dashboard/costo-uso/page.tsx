@@ -31,6 +31,7 @@ const ADJUSTMENT_FIELDS = [
   { key: 'purchases', label: 'Compras' },
   { key: 'inv_current', label: 'Inv. Final' },
   { key: 'theo_cost', label: 'Costo Teórico adicional' },
+  { key: 'sales_adjustment', label: 'Ajuste de Ventas (+Desc. Op.)' },
 ]
 
 type Shortcut = 'week' | 'last4' | 'last8' | 'month' | 'custom'
@@ -180,6 +181,7 @@ export default function CostoUsoPage() {
       else if (adjField === 'purchases') originalValue = d[adjCategory + '_purchases'] || 0
       else if (adjField === 'inv_current') originalValue = d[adjCategory + '_inv_current'] || 0
       else if (adjField === 'theo_cost') originalValue = d[adjCategory + '_theo_cost'] || 0
+      else if (adjField === 'sales_adjustment') originalValue = d[adjCategory + '_sales'] || 0
     }
     const { data: { user } } = await supabase.auth.getUser()
     const { error } = await supabase.from('costo_uso_adjustments').insert({
@@ -281,9 +283,12 @@ export default function CostoUsoPage() {
       const invCurrent = inv.current + adjInvCurr
       const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
       const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
-      // Con toggle activo: usar ventas brutas (net + descuentos) de esa categoría
+      // Con toggle activo: usar ventas brutas (net + descuentos) + ajuste manual de ventas
       const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
-      const catSales = includeOpDiscounts && catSalesGross > catSalesBase ? catSalesGross : catSalesBase
+      const adjSales = getAdj(week, cat.key, 'sales_adjustment')
+      const catSales = includeOpDiscounts && catSalesGross > catSalesBase
+        ? catSalesGross + adjSales
+        : catSalesBase
 
       const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
       const realPct = catSales > 0 ? pct(uso, catSales) : null
