@@ -223,7 +223,8 @@ async function addEjecutivo(pptx: any, logoUrl: string|undefined, restName: stri
   kpiCard(slide,kW*2,   0.85,kW,1.28,'% Labor',fmtPct(lpC),fmt$(lC),prev?dPp(lpC,lpP):'',dC(lpC,lpP,true),PURPLE)
   kpiCard(slide,kW*3,   0.85,kW,1.28,'% COGS',fmtPct(cpC),fmt$(cC),prev?dPp(cpC,cpP):'',dC(cpC,cpP,true),ORANGE)
   kpiCard(slide,kW*4,   0.85,kW,1.28,'Waste $',fmt$(wC),'',prev?d$(wC,wP):'',dC(wC,wP,true),RED)
-  kpiCard(slide,kW*5,   0.85,kW,1.28,'Avg/Guest',agC>0?'$'+agC.toFixed(2):'—',String(gC)+' guests','',GRAY,GOLD)
+  const agStr=agC>0?'$'+agC.toFixed(2):'—'
+  kpiCard(slide,kW*5,   0.85,kW,1.28,'Avg/Guest',agStr,String(gC)+' guests','',GRAY,GOLD)
 
   // Charts row
   const hist=data.weeks.slice(-6)
@@ -280,11 +281,15 @@ async function addVentas(pptx: any, logoUrl: string|undefined, restName: string,
   pageHdr(slide,'VENTAS', restName+' · '+wL(cur.week), BLUE)
 
   const kW=13.33/5
+  const agCStr=agC>0?'$'+agC.toFixed(2):'—'
+  const agPStr=prev?wL(prev.week)+': $'+agP.toFixed(2):''
+  const agDelta=prev&&agP>0?(agC>agP?'+$':'-$')+Math.abs(agC-agP).toFixed(2):''
   kpiCard(slide,0,     0.85,kW,1.25,'Ventas Netas',fmt$(sC),prev?wL(prev.week)+': '+fmt$(sP):'',prev?d$(sC,sP):'',dC(sC,sP),BLUE)
   kpiCard(slide,kW,    0.85,kW,1.25,'Órdenes',String(oC),prev?wL(prev.week)+': '+String(oP):'',prev?d$(oC,oP):'',dC(oC,oP))
   kpiCard(slide,kW*2,  0.85,kW,1.25,'Guests',String(gC),prev?wL(prev.week)+': '+String(gP):'',prev?d$(gC,gP):'',dC(gC,gP),PURPLE)
-  kpiCard(slide,kW*3,  0.85,kW,1.25,'Avg/Guest',agC>0?'$'+agC.toFixed(2):'—',prev?wL(prev.week)+': $'+agP.toFixed(2):'',prev&&agP>0?(agC>agP?'+$':'-$')+Math.abs(agC-agP).toFixed(2):'',dC(agC,agP),GOLD)
-  kpiCard(slide,kW*4,  0.85,kW,1.25,'Descuentos',fmt$(dC2),sC>0?(dC2/sC*100).toFixed(1)+'% de ventas',prev?d$(dC2,dP):'',dC(dC2,dP,true),RED)
+  kpiCard(slide,kW*3,  0.85,kW,1.25,'Avg/Guest',agCStr,agPStr,agDelta,dC(agC,agP),GOLD)
+  const descPctStr = sC>0 ? (dC2/sC*100).toFixed(1)+'% de ventas' : ''
+  kpiCard(slide,kW*4,  0.85,kW,1.25,'Descuentos',fmt$(dC2),descPctStr,prev?d$(dC2,dP):'',dC(dC2,dP,true),RED)
 
   // Gráfica barras ventas
   const hist=data.weeks.slice(-6)
@@ -346,8 +351,12 @@ async function addLabor(pptx: any, logoUrl: string|undefined, restName: string, 
 
   const kW=13.33/4
   kpiCard(slide,0,     0.85,kW,1.25,'% Labor Cost',fmtPct(lpC),fmt$(lC),prev?dPp(lpC,lpP):'',dC(lpC,lpP,true),PURPLE)
-  kpiCard(slide,kW,    0.85,kW,1.25,'Horas Regulares',hC.toFixed(0)+'h',prev?wL(prev.week)+': '+hP.toFixed(0)+'h':'',prev?d$(hC,hP):'',dC(hC,hP,true))
-  kpiCard(slide,kW*2,  0.85,kW,1.25,'Overtime',otC.toFixed(1)+'h',prev?wL(prev.week)+': '+otP.toFixed(1)+'h':'','',otC>0?RED:GREEN,otC>0?RED:GREEN)
+  const hcStr=hC.toFixed(0)+'h'
+  const hpStr=prev?wL(prev.week)+': '+hP.toFixed(0)+'h':''
+  const otcStr=otC.toFixed(1)+'h'
+  const otpStr=prev?wL(prev.week)+': '+otP.toFixed(1)+'h':''
+  kpiCard(slide,kW,    0.85,kW,1.25,'Horas Regulares',hcStr,hpStr,prev?d$(hC,hP):'',dC(hC,hP,true))
+  kpiCard(slide,kW*2,  0.85,kW,1.25,'Overtime',otcStr,otpStr,'',otC>0?RED:GREEN,otC>0?RED:GREEN)
   kpiCard(slide,kW*3,  0.85,kW,1.25,'Costo Total',fmt$(lC),String(cur?.labor?.by_employee?.length||0)+' empleados',prev?d$(lC,lP):'',dC(lC,lP,true))
 
   // % Labor trend
@@ -493,8 +502,12 @@ async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: strin
   pageHdr(slide,'COSTO DE USO', restName+' · '+wL(cur.week), TEAL)
 
   const kW=13.33/4
-  kpiCard(slide,0,     0.85,kW,1.25,'% Costo Real A&B',totalRealPct?totalRealPct.toFixed(1)+'%':'—',fmt$(totalUso)+' uso','',GRAY,BLUE)
-  kpiCard(slide,kW,    0.85,kW,1.25,'% Costo P.Mix',totalMixPct?totalMixPct.toFixed(1)+'%':'—',fmt$(totalTheo)+' teórico','',GRAY,GREEN)
+  const realPctStr=totalRealPct?totalRealPct.toFixed(1)+'%':'—'
+  const mixPctStr=totalMixPct?totalMixPct.toFixed(1)+'%':'—'
+  const usoSubStr=fmt$(totalUso)+' uso'
+  const theoSubStr=fmt$(totalTheo)+' teórico'
+  kpiCard(slide,0,     0.85,kW,1.25,'% Costo Real A&B',realPctStr,usoSubStr,'',GRAY,BLUE)
+  kpiCard(slide,kW,    0.85,kW,1.25,'% Costo P.Mix',mixPctStr,theoSubStr,'',GRAY,GREEN)
   kpiCard(slide,kW*2,  0.85,kW,1.25,'Variación $',(totalVariacion>0?'+':'')+fmt$(totalVariacion),'','',(totalVariacion>0?RED:GREEN),totalVariacion>0?RED:GREEN)
   kpiCard(slide,kW*3,  0.85,kW,1.25,'Inv. Actual',fmt$(cur?.inventory?.grand_total_current||0),'cierre semana','',GRAY)
 
@@ -665,7 +678,8 @@ async function addDescuentos(pptx: any, logoUrl: string|undefined, restName: str
   const applic=items.length
   const kW=13.33/5
   kpiCard(slide,0,     0.85,kW,1.25,'Total Descuentos',fmt$(totalC),'',prev?d$(totalC,totalP):'',dC(totalC,totalP,true),RED)
-  kpiCard(slide,kW,    0.85,kW,1.25,'% de Ventas',sC>0?(totalC/sC*100).toFixed(1)+'%':'—','','',GRAY)
+  const discPctA = sC>0 ? (totalC/sC*100).toFixed(1)+'%' : '—'
+  kpiCard(slide,kW,    0.85,kW,1.25,'% de Ventas',discPctA,'','',GRAY)
   kpiCard(slide,kW*2,  0.85,kW,1.25,'Aplicaciones',String(applic),'','',GRAY)
   kpiCard(slide,kW*3,  0.85,kW,1.25,wL(prev?.week||'')+' Total',prev?fmt$(totalP):'—','','',GRAY)
   kpiCard(slide,kW*4,  0.85,kW,1.25,'Δ',prev?d$(totalC,totalP):'—','','',prev?dC(totalC,totalP,true):GRAY)
@@ -720,7 +734,8 @@ async function addVoids(pptx: any, logoUrl: string|undefined, restName: string, 
 
   const kW=13.33/5
   kpiCard(slide,0,     0.85,kW,1.25,'Total Voids',fmt$(totalC),'',prev?d$(totalC,totalP):'',dC(totalC,totalP,true),AMBER)
-  kpiCard(slide,kW,    0.85,kW,1.25,'% de Ventas',sC>0?(totalC/sC*100).toFixed(2)+'%':'—','','',GRAY)
+  const voidPctStr = sC>0 ? (totalC/sC*100).toFixed(2)+'%' : '—'
+  kpiCard(slide,kW,    0.85,kW,1.25,'% de Ventas',voidPctStr,'','',GRAY)
   kpiCard(slide,kW*2,  0.85,kW,1.25,'Items',String(items.length),'','',GRAY)
   kpiCard(slide,kW*3,  0.85,kW,1.25,'86ed $',fmt$(e86),'','',e86>0?ORANGE:GRAY,e86>0?ORANGE:GRAY)
   kpiCard(slide,kW*4,  0.85,kW,1.25,'Server Error $',fmt$(serverErr),'','',serverErr>0?RED:GRAY,serverErr>0?RED:GRAY)
