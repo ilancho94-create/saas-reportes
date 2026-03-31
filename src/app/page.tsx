@@ -32,7 +32,7 @@ export default function Home() {
     <main className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="Restaurant X-Ray" className="h-36 mx-auto object-contain" />
+          <img src="/logo.png" alt="Restaurant X-Ray" className="h-64 mx-auto object-contain" />
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
           <h2 className="text-xl font-semibold text-white mb-6">
