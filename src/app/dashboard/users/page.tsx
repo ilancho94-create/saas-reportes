@@ -14,14 +14,16 @@ const ROLES = [
 ]
 
 const MODULES = [
-  { key: 'dashboard', label: 'Dashboard' },
+  { key: 'dashboard', label: 'CEO Dashboard' },
   { key: 'ventas', label: 'Ventas' },
   { key: 'labor', label: 'Labor' },
+  { key: 'employee', label: 'Employee' },
   { key: 'food_cost', label: 'Food Cost' },
   { key: 'costo_uso', label: 'Costo de Uso' },
   { key: 'waste', label: 'Waste' },
   { key: 'avt', label: 'Actual vs Teórico' },
   { key: 'compras', label: 'Compras' },
+  { key: 'kitchen', label: 'Kitchen' },
   { key: 'historial', label: 'Historial' },
   { key: 'upload', label: 'Subir reportes' },
   { key: 'settings', label: 'Settings' },
