@@ -9,16 +9,6 @@ import {
 } from 'recharts'
 
 type Tab = 'resumen' | 'ventas' | 'costos' | 'labor' | 'operaciones'
-type Shortcut = 'week' | 'last4' | 'month' | 'ytd' | 'custom'
-
-const SHORTCUTS: { key: Shortcut; label: string }[] = [
-  { key: 'week', label: 'Esta semana' },
-  { key: 'last4', label: 'Últimas 4 sem' },
-  { key: 'month', label: 'Este mes' },
-  { key: 'ytd', label: 'Year to date' },
-  { key: 'custom', label: 'Custom' },
-]
-
 function trafficLight(value: number | null | undefined, metaGreen: number, metaYellow: number, higherIsBad = true): string {
   if (value === null || value === undefined) return 'gray'
   if (higherIsBad) {
@@ -60,9 +50,6 @@ export default function CeoDashboard() {
   const [restaurantsData, setRestaurantsData] = useState<any[]>([])
   const [selectedRestaurant, setSelectedRestaurant] = useState<string>('all')
   const [activeTab, setActiveTab] = useState<Tab>('resumen')
-  const [shortcut, setShortcut] = useState<Shortcut>('week')
-  const [customFrom, setCustomFrom] = useState('')
-  const [customTo, setCustomTo] = useState('')
   const [allWeeks, setAllWeeks] = useState<string[]>([])
   const [selectedWeek, setSelectedWeek] = useState('')
 
@@ -119,8 +106,6 @@ export default function CeoDashboard() {
     setAllWeeks(sortedWeeks)
     if (sortedWeeks.length > 0) {
       setSelectedWeek(sortedWeeks[0])
-      setCustomFrom(sortedWeeks[sortedWeeks.length - 1])
-      setCustomTo(sortedWeeks[0])
     }
     setLoading(false)
   }
@@ -132,25 +117,7 @@ export default function CeoDashboard() {
   function getFilteredWeeks(restData: any): any[] {
     const weeks: any[] = restData.weeks
     if (!weeks.length) return []
-    if (shortcut === 'week') return weeks.filter((w: any) => w.report.week === selectedWeek)
-    if (shortcut === 'last4') return weeks.slice(-4)
-    if (shortcut === 'month') {
-      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
-      return weeks.filter((w: any) => {
-        const d = new Date(w.report.week_start || w.report.week)
-        return d.getFullYear() === y && d.getMonth() === m
-      })
-    }
-    if (shortcut === 'ytd') {
-      const y = new Date().getFullYear()
-      return weeks.filter((w: any) => w.report.week.startsWith(String(y)))
-    }
-    if (shortcut === 'custom' && customFrom && customTo) {
-      const from = customFrom <= customTo ? customFrom : customTo
-      const to = customFrom <= customTo ? customTo : customFrom
-      return weeks.filter((w: any) => w.report.week >= from && w.report.week <= to)
-    }
-    return weeks.slice(-1)
+    return weeks.filter((w: any) => w.report.week === selectedWeek)
   }
 
   function aggregateRestData(restData: any): any | null {
@@ -188,28 +155,11 @@ export default function CeoDashboard() {
   combined.profitPct = combined.totalSales > 0 ? combined.profit / combined.totalSales * 100 : null
   combined.avgGuest = combined.totalGuests > 0 ? combined.totalSales / combined.totalGuests : null
 
-  // ── FIX: chartData usa las semanas del filtro activo ──────────────────────
+  // Semana seleccionada + las 11 anteriores para gráficas de tendencia
   const chartWeeks = (() => {
-    if (shortcut === 'week') {
-      // Semana seleccionada y las 7 anteriores para contexto
-      const idx = allWeeks.indexOf(selectedWeek)
-      return allWeeks.slice(idx, idx + 8).reverse()
-    }
-    if (shortcut === 'last4') return allWeeks.slice(0, 4).reverse()
-    if (shortcut === 'month') {
-      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
-      return allWeeks.filter(w => {
-        const d = new Date(w)
-        return d.getFullYear() === y && d.getMonth() === m
-      }).reverse()
-    }
-    if (shortcut === 'ytd') return allWeeks.filter(w => w.startsWith(String(new Date().getFullYear()))).reverse()
-    if (shortcut === 'custom' && customFrom && customTo) {
-      const from = customFrom <= customTo ? customFrom : customTo
-      const to = customFrom <= customTo ? customTo : customFrom
-      return allWeeks.filter(w => w >= from && w <= to).reverse()
-    }
-    return allWeeks.slice(0, 8).reverse()
+    const idx = allWeeks.indexOf(selectedWeek)
+    if (idx === -1) return [...allWeeks].reverse()
+    return allWeeks.slice(idx, idx + 12).reverse()
   })()
 
   const chartData = chartWeeks.map((week: string) => {
@@ -265,29 +215,14 @@ export default function CeoDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap mb-3">
-          {SHORTCUTS.map(s => (
-            <button key={s.key} onClick={() => setShortcut(s.key)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${shortcut === s.key ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-              {s.label}
-            </button>
-          ))}
-          {shortcut === 'custom' && (
-            <div className="flex items-center gap-2 ml-1">
-              <select value={customFrom} onChange={e => setCustomFrom(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none">
-                {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
-              </select>
-              <span className="text-gray-500 text-xs">→</span>
-              <select value={customTo} onChange={e => setCustomTo(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none">
-                {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
-              </select>
-            </div>
-          )}
-          {shortcut === 'week' && allWeeks.length > 0 && (
+          <span className="text-gray-500 text-xs">Semana:</span>
+          {allWeeks.length > 0 && (
             <select value={selectedWeek} onChange={e => setSelectedWeek(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-blue-500">
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
               {allWeeks.map((w: string) => <option key={w} value={w}>{w}</option>)}
             </select>
           )}
+          <span className="text-gray-600 text-xs ml-2">Las gráficas muestran hasta la semana seleccionada</span>
         </div>
         <div className="flex gap-1 flex-wrap">
           {tabs.map(tab => (
