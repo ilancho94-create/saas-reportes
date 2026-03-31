@@ -54,11 +54,6 @@ function safeNum(n: any): number {
   return isNaN(v) ? 0 : v
 }
 
-// Recharts tooltip formatter type-safe wrapper
-function tooltipFmt(v: any, label: string): [string, string] {
-  return [String(v), label]
-}
-
 export default function CeoDashboard() {
   const { currentOrganization } = useAuth()
   const [loading, setLoading] = useState(true)
@@ -93,7 +88,7 @@ export default function CeoDashboard() {
 
     const allRestData = await Promise.all(rests.map(async (rest: any) => {
       const { data: reports } = await supabase.from('reports').select('*')
-        .eq('restaurant_id', rest.id).order('week', { ascending: false }).limit(12)
+        .eq('restaurant_id', rest.id).order('week', { ascending: false }).limit(52)
       if (!reports?.length) return { restaurant: rest, weeks: [] }
 
       const weeksData = await Promise.all(reports.map(async (r: any) => {
@@ -193,8 +188,31 @@ export default function CeoDashboard() {
   combined.profitPct = combined.totalSales > 0 ? combined.profit / combined.totalSales * 100 : null
   combined.avgGuest = combined.totalGuests > 0 ? combined.totalSales / combined.totalGuests : null
 
-  const trendWeeks = shortcut === 'week' ? allWeeks.slice(0, 8).reverse() : allWeeks.slice(0, 12).reverse()
-  const chartData = trendWeeks.map((week: string) => {
+  // ── FIX: chartData usa las semanas del filtro activo ──────────────────────
+  const chartWeeks = (() => {
+    if (shortcut === 'week') {
+      // Semana seleccionada y las 7 anteriores para contexto
+      const idx = allWeeks.indexOf(selectedWeek)
+      return allWeeks.slice(idx, idx + 8).reverse()
+    }
+    if (shortcut === 'last4') return allWeeks.slice(0, 4).reverse()
+    if (shortcut === 'month') {
+      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
+      return allWeeks.filter(w => {
+        const d = new Date(w)
+        return d.getFullYear() === y && d.getMonth() === m
+      }).reverse()
+    }
+    if (shortcut === 'ytd') return allWeeks.filter(w => w.startsWith(String(new Date().getFullYear()))).reverse()
+    if (shortcut === 'custom' && customFrom && customTo) {
+      const from = customFrom <= customTo ? customFrom : customTo
+      const to = customFrom <= customTo ? customTo : customFrom
+      return allWeeks.filter(w => w >= from && w <= to).reverse()
+    }
+    return allWeeks.slice(0, 8).reverse()
+  })()
+
+  const chartData = chartWeeks.map((week: string) => {
     let sales = 0, labor = 0, cogs = 0, waste = 0, guests = 0
     activeRests.forEach((r: any) => {
       const w = r.weeks.find((wk: any) => wk.report.week === week)
@@ -216,6 +234,9 @@ export default function CeoDashboard() {
       avgGuest: guests > 0 ? parseFloat((sales / guests).toFixed(2)) : null,
     }
   }).filter((d: any) => d.ventas)
+
+  // ── FIX: semana de detalle = última semana del filtro activo ──────────────
+  const detailWeekData = aggregated[0]?.latest  // latest ya es la última del filtro
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'resumen', label: '📊 Resumen' }, { id: 'ventas', label: '💰 Ventas' },
@@ -280,7 +301,7 @@ export default function CeoDashboard() {
 
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
 
-        {/* ══ RESUMEN ══ */}
+        {/* RESUMEN */}
         {activeTab === 'resumen' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -303,7 +324,6 @@ export default function CeoDashboard() {
                 </div>
               ))}
             </div>
-
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
                 { label: 'Avg / Guest', icon: '🧾', value: combined.avgGuest ? '$' + Number(combined.avgGuest).toFixed(2) : '—', sub: `${combined.totalGuests} comensales`, color: 'text-yellow-400' },
@@ -321,7 +341,6 @@ export default function CeoDashboard() {
                 </div>
               ))}
             </div>
-
             {aggregated.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">🚦 Estado por restaurante</h2>
@@ -360,7 +379,6 @@ export default function CeoDashboard() {
                 <p className="text-gray-600 text-xs mt-3">🟢 &lt;28% labor/COGS, &gt;15% profit · 🟡 Atención · 🔴 Acción requerida</p>
               </div>
             )}
-
             {chartData.length > 1 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-1">Ventas, Labor y COGS — tendencia</h2>
@@ -381,7 +399,6 @@ export default function CeoDashboard() {
                 </ResponsiveContainer>
               </div>
             )}
-
             {aggregated.length > 1 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -416,7 +433,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══ VENTAS ══ */}
+        {/* VENTAS */}
         {activeTab === 'ventas' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -493,7 +510,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══ COSTOS ══ */}
+        {/* COSTOS */}
         {activeTab === 'costos' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -574,7 +591,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══ LABOR ══ */}
+        {/* LABOR */}
         {activeTab === 'labor' && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -622,6 +639,7 @@ export default function CeoDashboard() {
                 </ResponsiveContainer>
               </div>
             </div>
+            {/* FIX: Labor por puesto usa latest que ya es la semana filtrada */}
             {aggregated[0]?.latest?.labor?.by_position && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                 <h2 className="text-white font-semibold mb-4">Labor por puesto — {aggregated[0]?.latest?.report?.week}</h2>
@@ -646,7 +664,7 @@ export default function CeoDashboard() {
           </>
         )}
 
-        {/* ══ OPERACIONES ══ */}
+        {/* OPERACIONES */}
         {activeTab === 'operaciones' && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -675,16 +693,17 @@ export default function CeoDashboard() {
                       <p className="text-gray-400 text-xs mb-2 font-medium">{r.restaurant.name}</p>
                       <div className="flex justify-between text-sm"><span className="text-gray-500">Faltantes</span><span className="text-red-400">{fmt(a.total_shortage_dollar)}</span></div>
                       <div className="flex justify-between text-sm mt-1"><span className="text-gray-500">Sobrantes</span><span className="text-green-400">{fmt(a.total_overage_dollar)}</span></div>
-                    <div className="flex justify-between text-sm mt-1"><span className="text-gray-500">Neto</span><span className={safeNum(a.net_variance) > 0 ? 'text-red-400 font-bold' : 'text-green-400 font-bold'}>{fmt(a.net_variance)}</span></div>
+                      <div className="flex justify-between text-sm mt-1"><span className="text-gray-500">Neto</span><span className={safeNum(a.net_variance) > 0 ? 'text-red-400 font-bold' : 'text-green-400 font-bold'}>{fmt(a.net_variance)}</span></div>
                     </div>
                   )
                 })}
               </div>
             </div>
 
+            {/* FIX: Employee performers usa latest que ya es la semana filtrada */}
             {aggregated.some((r: any) => (r.latest?.employee?.employees?.length ?? 0) > 0) && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                <h2 className="text-white font-semibold mb-4">🏆 Top Employee Performers</h2>
+                <h2 className="text-white font-semibold mb-4">🏆 Top Employee Performers — {aggregated[0]?.latest?.report?.week}</h2>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
@@ -717,11 +736,12 @@ export default function CeoDashboard() {
               </div>
             )}
 
+            {/* FIX: Voids y Discounts usan latest que ya es la semana filtrada */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {aggregated[0]?.latest?.voids && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-white font-semibold">❌ Top Voids</h2>
+                    <h2 className="text-white font-semibold">❌ Top Voids — {aggregated[0]?.latest?.report?.week}</h2>
                     <span className="text-red-400 font-bold">{fmt(aggregated[0].latest.voids?.total)}</span>
                   </div>
                   {((aggregated[0].latest.voids?.items ?? []) as any[]).slice(0, 5).map((item: any, i: number) => (
@@ -735,7 +755,7 @@ export default function CeoDashboard() {
               {aggregated[0]?.latest?.discounts && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-white font-semibold">🏷️ Top Descuentos</h2>
+                    <h2 className="text-white font-semibold">🏷️ Top Descuentos — {aggregated[0]?.latest?.report?.week}</h2>
                     <span className="text-orange-400 font-bold">{fmt(aggregated[0].latest.discounts?.total)}</span>
                   </div>
                   {((aggregated[0].latest.discounts?.items ?? []) as any[]).slice(0, 5).map((item: any, i: number) => (
