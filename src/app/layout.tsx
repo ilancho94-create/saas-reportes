@@ -13,7 +13,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-<img src="/lupa.png" alt="X-Ray" className="h-7 w-7 object-contain" />
+export const metadata: Metadata = {
+  title: "Restaurant X-Ray",
+  description: "Plataforma de reportes y análisis operacional para restaurantes",
+  icons: { icon: "/lupa.png" },
 };
 
 export default function RootLayout({
