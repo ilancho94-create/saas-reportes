@@ -410,7 +410,7 @@ export default function ProductMixPage() {
   // ── Save thresholds ────────────────────────────────────────────────────────
 
   function handleSaveThresholds() {
-    saveThresholds(restaurantId, threshEdit)
+    if (restaurantId) saveThresholds(restaurantId, threshEdit)
     setThresholds(threshEdit)
     setShowConfig(false)
   }
