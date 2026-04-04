@@ -32,6 +32,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       { label: 'Actual vs Teórico', icon: '📊', href: '/dashboard/avt', module: 'avt' },
       { label: 'Compras', icon: '🧾', href: '/dashboard/compras', module: 'compras' },
       { label: 'Kitchen', icon: '🍳', href: '/dashboard/kitchen', module: 'kitchen' },
+      { label: 'Product Mix', icon: '🍽️', href: '/dashboard/product-mix', module: 'ventas' },
     ]},
     { section: 'REPORTES', items: [
       { label: 'Historial', icon: '📅', href: '/dashboard/history', module: 'historial' },
