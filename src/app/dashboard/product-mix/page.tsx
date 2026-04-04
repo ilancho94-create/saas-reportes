@@ -356,14 +356,16 @@ export default function ProductMixPage() {
   const pareto = useMemo(() => {
     const sorted = [...filteredItems].sort((a, b) => b.net_sales - a.net_sales)
     const total  = sorted.reduce((s, i) => s + i.net_sales, 0)
+    // Paso 1: calcular cumPct para cada ítem
     let acc = 0
-    const cross80 = { crossed: false, idx: -1 }
-    return sorted.map((it, idx) => {
+    const withCum = sorted.map(it => {
       acc += it.net_sales
-      const cumPct = total > 0 ? acc / total : 0
-      if (!cross80.crossed && cumPct >= 0.8) { cross80.crossed = true; cross80.idx = idx }
-      return { ...it, cumPct, is80: idx <= cross80.idx }
+      return { ...it, cumPct: total > 0 ? acc / total : 0 }
     })
+    // Paso 2: encontrar el índice donde se cruza el 80%
+    const cutIdx = withCum.findIndex(it => it.cumPct >= 0.8)
+    // Paso 3: marcar is80 — todos hasta el cutIdx inclusive
+    return withCum.map((it, idx) => ({ ...it, is80: cutIdx === -1 ? false : idx <= cutIdx }))
   }, [filteredItems])
 
   const items80 = useMemo(() => pareto.filter(i => i.is80).length, [pareto])
