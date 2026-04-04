@@ -755,6 +755,33 @@ export default function ProductMixPage() {
         {/* ══════════════════════════════════════════════════════════════ */}
         {activeTab === 'costo' && (
           <div className="space-y-4">
+            {/* KPIs de ganancia */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <p className="text-gray-500 text-xs mb-1">Net Sales (con costo)</p>
+                <p className="text-lg font-bold text-white">{fmt(costItems.reduce((s, i) => s + i.net_sales, 0))}</p>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <p className="text-gray-500 text-xs mb-1">Theo Cost Total</p>
+                <p className="text-lg font-bold text-red-400">{fmt(costItems.reduce((s, i) => s + i.theo_cost_total, 0))}</p>
+              </div>
+              <div className="bg-green-950 border border-green-800 rounded-xl p-4">
+                <p className="text-green-500 text-xs mb-1">Ganancia Total período</p>
+                <p className="text-lg font-bold text-green-400">
+                  {fmt(costItems.reduce((s, i) => s + (i.net_sales - i.theo_cost_total), 0))}
+                </p>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <p className="text-gray-500 text-xs mb-1">% Costo real</p>
+                <p className="text-lg font-bold text-white">
+                  {(() => {
+                    const sales = costItems.reduce((s, i) => s + i.net_sales, 0)
+                    const cost  = costItems.reduce((s, i) => s + i.theo_cost_total, 0)
+                    return sales > 0 ? (cost / sales * 100).toFixed(1) + '%' : '—'
+                  })()}
+                </p>
+              </div>
+            </div>
             <div className="flex items-center justify-between">
               <p className="text-gray-500 text-xs">{costItems.length} ítems con costo registrado</p>
               <div className="flex items-center gap-2 text-xs text-gray-600">
@@ -792,6 +819,9 @@ export default function ProductMixPage() {
                       <th className="text-right text-gray-500 text-xs p-4 font-medium cursor-pointer hover:text-gray-300" onClick={() => toggleSort('net_sales')}>
                         Net Sales <SortIcon col="net_sales" />
                       </th>
+                      <th className="text-right text-gray-500 text-xs p-4 font-medium cursor-pointer hover:text-gray-300" onClick={() => toggleSort('net_sales')}>
+                        Ganancia Total <SortIcon col="net_sales" />
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -825,6 +855,15 @@ export default function ProductMixPage() {
                           </span>
                         </td>
                         <td className="p-4 text-right text-white font-semibold">{fmt(it.net_sales)}</td>
+                        <td className="p-4 text-right">
+                          {it.theo_cost_total > 0 ? (
+                            <span className={(it.net_sales - it.theo_cost_total) >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                              {fmt(it.net_sales - it.theo_cost_total)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-600 text-xs">—</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
