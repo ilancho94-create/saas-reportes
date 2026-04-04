@@ -415,13 +415,14 @@ export default function ProductMixPage() {
   // ── KPIs ───────────────────────────────────────────────────────────────────
 
   const kpis = useMemo(() => {
-    const topItem    = allItems[0]
-    const topCat     = Object.entries(filtered[filtered.length - 1]?.pm?.by_category || {}).sort((a, b) => b[1] - a[1])[0]
-    const withCostI  = allItems.filter(i => i.unit_cost > 0)
-    const avgCost    = withCostI.length > 0
-      ? withCostI.reduce((s, i) => s + i.cost_pct, 0) / withCostI.length
-      : 0
-    return { topItem, topCat, avgCost }
+    const topItem  = allItems[0]
+    const topCat   = Object.entries(filtered[filtered.length - 1]?.pm?.by_category || {}).sort((a, b) => b[1] - a[1])[0]
+    // % costo real ponderado = Theo Cost Total de TODOS los ítems / Net Sales totales
+    // Incluye ítems con precio $0 (AYCE, cortesías) que sí tienen costo
+    const totalTheoCost = allItems.reduce((s, i) => s + i.theo_cost_total, 0)
+    const totalNetSales = allItems.reduce((s, i) => s + i.net_sales, 0)
+    const realCostPct   = totalNetSales > 0 ? totalTheoCost / totalNetSales : 0
+    return { topItem, topCat, realCostPct, totalTheoCost, totalNetSales }
   }, [allItems, filtered])
 
   const periodLabel = filtered.length > 1
@@ -611,9 +612,11 @@ export default function ProductMixPage() {
               <p className="text-gray-600 text-xs mt-1">{kpis.topCat ? fmt(kpis.topCat[1]) : ''}</p>
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <p className="text-gray-500 text-xs mb-1">Costo prom. ponderado</p>
-              <p className="text-2xl font-bold text-purple-400">{pct(kpis.avgCost)}</p>
-              <p className="text-gray-600 text-xs mt-1">Sobre ítems con costo</p>
+              <p className="text-gray-500 text-xs mb-1">% Costo P.Mix real</p>
+              <p className="text-2xl font-bold text-purple-400">{pct(kpis.realCostPct)}</p>
+              <p className="text-gray-600 text-xs mt-1">
+                {fmt(kpis.totalTheoCost)} gastado / {fmt(kpis.totalNetSales)} vendido
+              </p>
             </div>
           </div>
         </div>
@@ -758,21 +761,24 @@ export default function ProductMixPage() {
             {/* KPIs de ganancia */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <p className="text-gray-500 text-xs mb-1">Net Sales (con costo)</p>
-                <p className="text-lg font-bold text-white">{fmt(costItems.reduce((s, i) => s + i.net_sales, 0))}</p>
+                <p className="text-gray-500 text-xs mb-1">Net Sales totales</p>
+                <p className="text-lg font-bold text-white">{fmt(totalSales)}</p>
+                <p className="text-gray-600 text-xs mt-0.5">100% del período</p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <p className="text-gray-500 text-xs mb-1">Theo Cost Total</p>
+                <p className="text-gray-500 text-xs mb-1">Theo Cost (ítems con costo)</p>
                 <p className="text-lg font-bold text-red-400">{fmt(costItems.reduce((s, i) => s + i.theo_cost_total, 0))}</p>
+                <p className="text-gray-600 text-xs mt-0.5">{costItems.length} de {filteredItems.length} ítems</p>
               </div>
               <div className="bg-green-950 border border-green-800 rounded-xl p-4">
-                <p className="text-green-500 text-xs mb-1">Ganancia Total período</p>
+                <p className="text-green-500 text-xs mb-1">Ganancia estimada</p>
                 <p className="text-lg font-bold text-green-400">
                   {fmt(costItems.reduce((s, i) => s + (i.net_sales - i.theo_cost_total), 0))}
                 </p>
+                <p className="text-green-900 text-xs mt-0.5">Solo ítems con costo registrado</p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                <p className="text-gray-500 text-xs mb-1">% Costo real</p>
+                <p className="text-gray-500 text-xs mb-1">% Costo P.Mix</p>
                 <p className="text-lg font-bold text-white">
                   {(() => {
                     const sales = costItems.reduce((s, i) => s + i.net_sales, 0)
@@ -780,6 +786,7 @@ export default function ProductMixPage() {
                     return sales > 0 ? (cost / sales * 100).toFixed(1) + '%' : '—'
                   })()}
                 </p>
+                <p className="text-gray-600 text-xs mt-0.5">Sobre ítems con costo</p>
               </div>
             </div>
             <div className="flex items-center justify-between">
