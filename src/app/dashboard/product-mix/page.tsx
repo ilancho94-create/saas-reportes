@@ -114,6 +114,18 @@ function saveThresholds(restaurantId: string, t: CostThresholds) {
   localStorage.setItem(`pm_thresholds_${restaurantId}`, JSON.stringify(t))
 }
 
+function loadHiddenItems(restaurantId: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(`pm_hidden_${restaurantId}`)
+    if (raw) return new Set(JSON.parse(raw))
+  } catch {}
+  return new Set()
+}
+
+function saveHiddenItems(restaurantId: string, hidden: Set<string>) {
+  localStorage.setItem(`pm_hidden_${restaurantId}`, JSON.stringify(Array.from(hidden)))
+}
+
 // Merge ítems de múltiples semanas sumando qty y net_sales
 function mergeToastItems(weeks: WeekData[]): ToastItem[] {
   const map: Record<string, ToastItem> = {}
@@ -230,6 +242,8 @@ export default function ProductMixPage() {
   const [showConfig, setShowConfig] = useState(false)
   const [thresholds, setThresholds] = useState<CostThresholds>(DEFAULT_THRESHOLDS)
   const [threshEdit, setThreshEdit] = useState<CostThresholds>(DEFAULT_THRESHOLDS)
+  const [hiddenItems, setHiddenItems] = useState<Set<string>>(new Set())
+  const [showHidden,  setShowHidden]  = useState(false)
 
   // ── Load ───────────────────────────────────────────────────────────────────
 
@@ -237,6 +251,7 @@ export default function ProductMixPage() {
     if (restaurantId) {
       setThresholds(loadThresholds(restaurantId))
       setThreshEdit(loadThresholds(restaurantId))
+      setHiddenItems(loadHiddenItems(restaurantId))
       loadData()
     }
   }, [restaurantId])
@@ -295,10 +310,14 @@ export default function ProductMixPage() {
   const totalSales = useMemo(() => allItems.reduce((s, i) => s + i.net_sales, 0), [allItems])
   const totalQty   = useMemo(() => allItems.reduce((s, i) => s + i.qty,       0), [allItems])
 
+  const visibleItems = useMemo(() => allItems.filter(i => !hiddenItems.has(i.item)), [allItems, hiddenItems])
+  const hiddenList   = useMemo(() => allItems.filter(i =>  hiddenItems.has(i.item)), [allItems, hiddenItems])
+
   const filteredItems = useMemo(() => {
-    if (catFilter === 'all') return allItems
-    return allItems.filter(i => i.menu_category === catFilter)
-  }, [allItems, catFilter])
+    const base = showHidden ? allItems : visibleItems
+    if (catFilter === 'all') return base
+    return base.filter(i => i.menu_category === catFilter)
+  }, [allItems, visibleItems, catFilter, showHidden])
 
   const categories = useMemo(() => {
     const cats = new Set(allItems.map(i => i.menu_category))
@@ -413,6 +432,16 @@ export default function ProductMixPage() {
     if (restaurantId) saveThresholds(restaurantId, threshEdit)
     setThresholds(threshEdit)
     setShowConfig(false)
+  }
+
+  function toggleHide(itemName: string) {
+    setHiddenItems(prev => {
+      const next = new Set(prev)
+      if (next.has(itemName)) next.delete(itemName)
+      else next.add(itemName)
+      if (restaurantId) saveHiddenItems(restaurantId, next)
+      return next
+    })
   }
 
   // ── Loading ────────────────────────────────────────────────────────────────
@@ -587,20 +616,33 @@ export default function ProductMixPage() {
           </div>
         </div>
 
-        {/* ── Filtro categoría (pills) ── */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-gray-600 text-xs font-medium">Filtrar:</span>
-          <button onClick={() => setCatFilter('all')}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition ${catFilter === 'all' ? 'bg-white text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
-            Todos
-          </button>
-          {categories.map(cat => (
-            <button key={cat} onClick={() => setCatFilter(cat)}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition ${catFilter === cat ? 'text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
-              style={catFilter === cat ? { backgroundColor: CAT_COLORS[cat] || '#6b7280' } : {}}>
-              {CAT_LABELS[cat] || cat}
+        {/* ── Filtro categoría (pills) + control de ocultos ── */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-gray-600 text-xs font-medium">Filtrar:</span>
+            <button onClick={() => setCatFilter('all')}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition ${catFilter === 'all' ? 'bg-white text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+              Todos
             </button>
-          ))}
+            {categories.map(cat => (
+              <button key={cat} onClick={() => setCatFilter(cat)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition ${catFilter === cat ? 'text-gray-900' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+                style={catFilter === cat ? { backgroundColor: CAT_COLORS[cat] || '#6b7280' } : {}}>
+                {CAT_LABELS[cat] || cat}
+              </button>
+            ))}
+          </div>
+          {hiddenList.length > 0 && (
+            <button onClick={() => setShowHidden(v => !v)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition border ${
+                showHidden
+                  ? 'bg-orange-900 border-orange-700 text-orange-300'
+                  : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300'
+              }`}>
+              <span>{showHidden ? '👁️' : '🙈'}</span>
+              <span>{showHidden ? 'Mostrando ocultos' : `${hiddenList.length} oculto${hiddenList.length !== 1 ? 's' : ''}`}</span>
+            </button>
+          )}
         </div>
 
         {/* ── Tabs ── */}
@@ -649,11 +691,12 @@ export default function ProductMixPage() {
                     <th className="text-right text-gray-500 text-xs p-4 font-medium">Net Sales</th>
                     <th className="text-right text-gray-500 text-xs p-4 font-medium">% del total</th>
                     <th className="text-center text-gray-500 text-xs p-4 font-medium">Clasificación</th>
+                    <th className="text-center text-gray-500 text-xs p-4 font-medium">Ocultar</th>
                   </tr>
                 </thead>
                 <tbody>
                   {displayItems.map((it, i) => (
-                    <tr key={it.item} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                    <tr key={it.item} className={`border-b border-gray-800 hover:bg-gray-800 transition ${hiddenItems.has(it.item) ? 'opacity-40' : ''}`}>
                       <td className="p-4 text-gray-600 text-xs">{i + 1}</td>
                       <td className="p-4">
                         <span className="text-gray-300 font-medium">{it.item}</span>
@@ -685,6 +728,17 @@ export default function ProductMixPage() {
                         ) : (
                           <span className="text-gray-700 text-xs">Sin costo</span>
                         )}
+                      </td>
+                      <td className="p-4 text-center">
+                        <button onClick={() => toggleHide(it.item)}
+                          title={hiddenItems.has(it.item) ? 'Mostrar ítem' : 'Ocultar del reporte'}
+                          className={`text-xs px-2 py-1 rounded-lg transition font-medium ${
+                            hiddenItems.has(it.item)
+                              ? 'bg-orange-900 text-orange-400 hover:bg-orange-800'
+                              : 'bg-gray-800 text-gray-600 hover:text-gray-300 hover:bg-gray-700'
+                          }`}>
+                          {hiddenItems.has(it.item) ? '👁 Mostrar' : '🙈 Ocultar'}
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -782,90 +836,133 @@ export default function ProductMixPage() {
         {/* TAB: REGLA 80/20                                              */}
         {/* ══════════════════════════════════════════════════════════════ */}
         {activeTab === '8020' && (
-          <div className="space-y-4">
-            {/* Counter chip */}
-            <div className="flex items-center gap-4 flex-wrap">
-              <div className="bg-blue-950 border border-blue-800 rounded-xl px-5 py-3 flex items-center gap-3">
-                <span className="text-blue-400 text-2xl font-bold">{items80}</span>
-                <div>
-                  <p className="text-blue-300 text-sm font-medium">ítems generan el 80% de tus ventas</p>
-                  <p className="text-blue-600 text-xs">de {filteredItems.length} totales en el filtro activo</p>
+          <div className="space-y-5">
+
+            {/* ── KPIs 80/20 ── */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-blue-950 border border-blue-800 rounded-xl p-5">
+                <p className="text-blue-400 text-xs font-semibold uppercase tracking-wider mb-1">Regla 80/20</p>
+                <div className="flex items-end gap-2">
+                  <span className="text-4xl font-bold text-white">{items80}</span>
+                  <span className="text-blue-400 text-sm mb-1">de {filteredItems.length} ítems</span>
                 </div>
+                <p className="text-blue-300 text-sm mt-1">generan el <strong>80%</strong> de tus ventas</p>
               </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl px-5 py-3">
-                <p className="text-gray-500 text-xs mb-0.5">Concentración</p>
-                <p className="text-white font-bold">{filteredItems.length > 0 ? ((items80 / filteredItems.length) * 100).toFixed(0) : 0}% de ítems</p>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-1">Concentración</p>
+                <p className="text-3xl font-bold text-white">
+                  {filteredItems.length > 0 ? ((items80 / filteredItems.length) * 100).toFixed(0) : 0}%
+                </p>
+                <p className="text-gray-500 text-sm mt-1">del catálogo es tu motor</p>
               </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl px-5 py-3">
-                <p className="text-gray-500 text-xs mb-0.5">Ventas Top {items80}</p>
-                <p className="text-white font-bold">{fmt(pareto.filter(i => i.is80).reduce((s, i) => s + i.net_sales, 0))}</p>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-1">Ventas top {items80}</p>
+                <p className="text-3xl font-bold text-green-400">
+                  {fmt(pareto.filter(i => i.is80).reduce((s, i) => s + i.net_sales, 0))}
+                </p>
+                <p className="text-gray-500 text-sm mt-1">de {fmt(totalSales)} totales</p>
               </div>
             </div>
 
+            {/* ── Barra visual de proporción ── */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-gray-400 text-sm font-medium">Distribución de ventas</p>
+                <div className="flex items-center gap-4 text-xs">
+                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-500 inline-block" />Top {items80} ítems</span>
+                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-gray-700 inline-block" />Resto ({filteredItems.length - items80} ítems)</span>
+                </div>
+              </div>
+              <div className="w-full bg-gray-800 rounded-full h-6 overflow-hidden flex">
+                <div className="h-full bg-blue-600 flex items-center justify-center transition-all"
+                  style={{ width: `${Math.min((pareto.filter(i => i.is80).reduce((s, i) => s + i.net_sales, 0) / (totalSales || 1)) * 100, 100)}%` }}>
+                  <span className="text-white text-xs font-bold px-2 truncate">
+                    {totalSales > 0 ? ((pareto.filter(i => i.is80).reduce((s, i) => s + i.net_sales, 0) / totalSales) * 100).toFixed(0) : 0}%
+                  </span>
+                </div>
+                <div className="h-full flex-1 flex items-center justify-center">
+                  <span className="text-gray-500 text-xs px-2">
+                    {totalSales > 0 ? (100 - (pareto.filter(i => i.is80).reduce((s, i) => s + i.net_sales, 0) / totalSales) * 100).toFixed(0) : 0}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Tabla ── */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-gray-800">
-                      <th className="text-left text-gray-500 text-xs p-4 font-medium">#</th>
-                      <th className="text-left text-gray-500 text-xs p-4 font-medium">Ítem</th>
-                      <th className="text-left text-gray-500 text-xs p-4 font-medium">Cat.</th>
-                      <th className="text-right text-gray-500 text-xs p-4 font-medium">Qty</th>
-                      <th className="text-right text-gray-500 text-xs p-4 font-medium">Net Sales</th>
-                      <th className="text-right text-gray-500 text-xs p-4 font-medium">% semana</th>
-                      <th className="text-right text-gray-500 text-xs p-4 font-medium">% acumulado</th>
+                    <tr className="border-b border-gray-800 bg-gray-900/80">
+                      <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">#</th>
+                      <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Ítem</th>
+                      <th className="text-left text-gray-500 text-xs px-4 py-3 font-medium">Cat.</th>
+                      <th className="text-right text-gray-500 text-xs px-4 py-3 font-medium">Qty</th>
+                      <th className="text-right text-gray-500 text-xs px-4 py-3 font-medium">Net Sales</th>
+                      <th className="text-right text-gray-500 text-xs px-4 py-3 font-medium">% del total</th>
+                      <th className="text-right text-gray-500 text-xs px-4 py-3 font-medium w-40">Acumulado</th>
                     </tr>
                   </thead>
                   <tbody>
                     {pareto.map((it, i) => {
-                      const isDiv = i > 0 && it.is80 !== pareto[i - 1].is80
+                      const isFirstBelow = i > 0 && !it.is80 && pareto[i - 1].is80
                       return (
-                        <tr key={it.item}
-                          className={`border-b border-gray-800 transition ${
-                            it.is80 ? 'bg-blue-950/20 hover:bg-blue-950/40' : 'opacity-50 hover:opacity-70'
-                          } ${isDiv ? 'border-t-2 border-blue-700' : ''}`}>
-                          <td className="p-3 pl-4">
-                            {isDiv && (
-                              <div className="absolute -mt-3 left-4 right-4">
-                                <div className="flex items-center gap-2">
+                        <>
+                          {isFirstBelow && (
+                            <tr key={`divider-${i}`} className="bg-gray-800">
+                              <td colSpan={7} className="px-4 py-2">
+                                <div className="flex items-center gap-3">
                                   <div className="flex-1 h-px bg-blue-700" />
-                                  <span className="text-blue-500 text-xs font-bold whitespace-nowrap">── 80% ──</span>
+                                  <span className="text-blue-400 text-xs font-bold whitespace-nowrap bg-blue-950 border border-blue-800 px-3 py-1 rounded-full">
+                                    ✂️ 80% de ventas — {items80} ítems arriba de esta línea
+                                  </span>
                                   <div className="flex-1 h-px bg-blue-700" />
                                 </div>
-                              </div>
-                            )}
-                            <span className={`text-xs ${it.is80 ? 'text-blue-400 font-semibold' : 'text-gray-600'}`}>{i + 1}</span>
-                          </td>
-                          <td className="p-3">
-                            <div className="flex items-center gap-2">
-                              {it.is80 && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />}
-                              <span className={it.is80 ? 'text-white font-medium' : 'text-gray-600'}>{it.item}</span>
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            <span className="text-xs" style={{ color: it.is80 ? (CAT_COLORS[it.menu_category] || '#6b7280') : '#4b5563' }}>
-                              {CAT_LABELS[it.menu_category] || it.menu_category}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right text-xs text-gray-400">{it.qty.toLocaleString()}</td>
-                          <td className="p-3 text-right">
-                            <span className={it.is80 ? 'text-white font-semibold' : 'text-gray-600'}>{fmt(it.net_sales)}</span>
-                          </td>
-                          <td className="p-3 text-right text-gray-500 text-xs">
-                            {totalSales > 0 ? ((it.net_sales / totalSales) * 100).toFixed(1) + '%' : '—'}
-                          </td>
-                          <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-2">
-                              <div className="w-20 bg-gray-800 rounded-full h-1.5">
-                                <div className={`h-1.5 rounded-full ${it.is80 ? 'bg-blue-500' : 'bg-gray-700'}`}
-                                  style={{ width: `${Math.min(it.cumPct * 100, 100)}%` }} />
-                              </div>
-                              <span className={`text-xs w-12 text-right font-medium ${it.is80 ? 'text-blue-400' : 'text-gray-600'}`}>
-                                {(it.cumPct * 100).toFixed(1)}%
+                              </td>
+                            </tr>
+                          )}
+                          <tr key={it.item}
+                            className={`border-b border-gray-800/50 transition ${
+                              it.is80
+                                ? 'hover:bg-gray-800'
+                                : 'opacity-40 hover:opacity-60 bg-gray-900/30'
+                            }`}>
+                            <td className="px-4 py-3">
+                              <span className={`text-xs font-bold ${it.is80 ? 'text-blue-400' : 'text-gray-700'}`}>
+                                {i + 1}
                               </span>
-                            </div>
-                          </td>
-                        </tr>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                {it.is80 && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />}
+                                <span className={it.is80 ? 'text-white font-medium' : 'text-gray-600'}>{it.item}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="text-xs" style={{ color: it.is80 ? (CAT_COLORS[it.menu_category] || '#6b7280') : '#374151' }}>
+                                {CAT_LABELS[it.menu_category] || it.menu_category}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-xs text-gray-400">{it.qty.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right">
+                              <span className={it.is80 ? 'text-white font-semibold' : 'text-gray-700'}>{fmt(it.net_sales)}</span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-gray-500 text-xs">
+                              {totalSales > 0 ? ((it.net_sales / totalSales) * 100).toFixed(1) + '%' : '—'}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <div className="w-24 bg-gray-800 rounded-full h-2 overflow-hidden">
+                                  <div className={`h-2 rounded-full transition-all ${it.is80 ? 'bg-blue-500' : 'bg-gray-700'}`}
+                                    style={{ width: `${Math.min(it.cumPct * 100, 100)}%` }} />
+                                </div>
+                                <span className={`text-xs w-10 text-right font-semibold tabular-nums ${it.is80 ? 'text-blue-400' : 'text-gray-700'}`}>
+                                  {(it.cumPct * 100).toFixed(0)}%
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        </>
                       )
                     })}
                   </tbody>
