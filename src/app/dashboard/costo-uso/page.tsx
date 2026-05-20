@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
-import { can } from '@/lib/permissions'
+import { useAuth } from '@/lib/auth-context'
+import { can, Action } from '@/lib/permissions'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, Cell
@@ -53,6 +54,15 @@ export default function CostoUsoPage() {
   const [userCustomPerms, setUserCustomPerms] = useState<any>(null)
   const [adjustments, setAdjustments] = useState<any[]>([])
   const [skippedWeeks, setSkippedWeeks] = useState<any[]>([])
+
+  // ── NUEVO: estados para marcar/desmarcar semana sin inventario ─────────
+  const [showSkipPanel, setShowSkipPanel] = useState(false)
+  const [skipWeekTarget, setSkipWeekTarget] = useState('')
+  const [skipReason, setSkipReason] = useState('')
+  const [skipSaving, setSkipSaving] = useState(false)
+  const [skipError, setSkipError] = useState('')
+  const [showSkipLog, setShowSkipLog] = useState(false)
+
   const [showAdjPanel, setShowAdjPanel] = useState(false)
   const [adjWeek, setAdjWeek] = useState('')
   const [adjReportId, setAdjReportId] = useState('')
@@ -75,6 +85,8 @@ export default function CostoUsoPage() {
   }))
 
   const canEdit = can(userRole, 'costo_uso', 'edit', userCustomPerms)
+  const { isSuperAdmin } = useAuth()
+  const canSkipWeek = can(userRole, 'costo_uso', 'skip_week' as Action, userCustomPerms) || isSuperAdmin
 
   useEffect(() => { if (restaurantId) loadData() }, [restaurantId])
 
@@ -213,6 +225,55 @@ export default function CostoUsoPage() {
     setAdjWeek(week); setAdjReportId(reportId); setAdjCategory(category)
     setAdjField('inv_previous'); setAdjValue(''); setAdjNote(''); setAdjError('')
     setShowAdjPanel(true)
+  }
+
+  // ── NUEVO: funciones para marcar/desmarcar semanas saltadas ─────────────
+  function openSkipPanel(week: string) {
+    setSkipWeekTarget(week); setSkipReason(''); setSkipError('')
+    setShowSkipPanel(true)
+  }
+
+  async function saveSkippedWeek() {
+    if (!skipReason.trim()) { setSkipError('Debes ingresar un motivo'); return }
+    if (!skipWeekTarget) { setSkipError('No hay semana seleccionada'); return }
+    if (!restaurantId) { setSkipError('Restaurant no identificado'); return }
+    setSkipSaving(true); setSkipError('')
+
+    // Calcular week_start a partir de la semana (si existe en weeks[])
+    const w = weeks.find(w => w.report.week === skipWeekTarget)
+    const weekStart = w?.report?.week_start || null
+
+    const { data: { user } } = await supabase.auth.getUser()
+    const { error } = await supabase.from('skipped_inventory_weeks').insert({
+      restaurant_id: restaurantId,
+      week: skipWeekTarget,
+      week_start: weekStart,
+      reason: skipReason.trim(),
+      created_by: user?.email || user?.id || 'unknown',
+    })
+    if (error) {
+      setSkipError('Error al guardar: ' + error.message)
+      setSkipSaving(false); return
+    }
+    // Recargar skippedWeeks desde BD
+    const { data: skipped } = await supabase.from('skipped_inventory_weeks')
+      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true })
+    setSkippedWeeks(skipped || [])
+    setSkipReason(''); setShowSkipPanel(false); setSkipSaving(false)
+  }
+
+  async function deleteSkippedWeek(id: string, week: string) {
+    if (!confirm(`¿Desmarcar ${week} como saltada? El cálculo volverá a comportarse normalmente.`)) return
+    const { error } = await supabase.from('skipped_inventory_weeks').delete().eq('id', id)
+    if (error) { alert('Error al desmarcar: ' + error.message); return }
+    setSkippedWeeks(prev => prev.filter(s => s.id !== id))
+  }
+
+  // Helper: la semana actualmente seleccionada está marcada como saltada?
+  function isSelectedWeekSkipped(): { skipped: boolean; record: any | null } {
+    if (shortcut !== 'week' || !selectedWeek) return { skipped: false, record: null }
+    const record = skippedWeeks.find((s: any) => s.week === selectedWeek)
+    return { skipped: !!record, record: record || null }
   }
 
   const filtered = (() => {
@@ -471,6 +532,13 @@ export default function CostoUsoPage() {
                 ✏️ {adjustments.length} ajuste{adjustments.length !== 1 ? 's' : ''} manual{adjustments.length !== 1 ? 'es' : ''}
               </button>
             )}
+            {/* ── NUEVO: Botón log de semanas saltadas ── */}
+            {skippedWeeks.length > 0 && (
+              <button onClick={() => setShowSkipLog(!showSkipLog)}
+                className="bg-orange-900 text-orange-400 text-xs px-2 py-0.5 rounded-full font-medium hover:bg-orange-800 transition">
+                📭 {skippedWeeks.length} semana{skippedWeeks.length !== 1 ? 's' : ''} sin inventario
+              </button>
+            )}
           </div>
           <p className="text-gray-500 text-xs mt-0.5">{restaurantName} · (Inv. Anterior + Compras − Inv. Actual) / Ventas</p>
         </div>
@@ -531,6 +599,26 @@ export default function CostoUsoPage() {
               </select>
             </div>
           )}
+          {/* ── NUEVO: Botón contextual Marcar/Desmarcar saltada (solo vista Semana, con permiso) ── */}
+          {canSkipWeek && shortcut === 'week' && selectedWeek && (() => {
+            const { skipped, record } = isSelectedWeekSkipped()
+            if (skipped && record) {
+              return (
+                <button onClick={() => deleteSkippedWeek(record.id, record.week)}
+                  className="bg-orange-900 text-orange-300 hover:bg-orange-800 text-xs font-medium px-3 py-1.5 rounded-lg transition ml-2"
+                  title="Esta semana está marcada como sin inventario. Click para desmarcar.">
+                  📭 Desmarcar {selectedWeek}
+                </button>
+              )
+            }
+            return (
+              <button onClick={() => openSkipPanel(selectedWeek)}
+                className="bg-gray-800 hover:bg-orange-900 text-gray-400 hover:text-orange-300 text-xs font-medium px-3 py-1.5 rounded-lg transition ml-2 border border-gray-700 hover:border-orange-800"
+                title="Marcar esta semana como sin inventario">
+                📭 Marcar {selectedWeek} sin inventario
+              </button>
+            )
+          })()}
           <span className="text-gray-600 text-xs ml-2">{filtered.length} semana{filtered.length !== 1 ? 's' : ''}</span>
         </div>
       </div>
@@ -579,6 +667,46 @@ export default function CostoUsoPage() {
                   <button onClick={saveAdjustment} disabled={adjSaving}
                     className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white py-2 rounded-lg text-sm font-medium transition">
                     {adjSaving ? 'Guardando...' : 'Guardar ajuste'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── NUEVO: Modal marcar semana sin inventario ── */}
+        {showSkipPanel && canSkipWeek && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md">
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h3 className="text-white font-bold text-base">📭 Marcar semana sin inventario</h3>
+                  <p className="text-gray-500 text-xs mt-0.5">{skipWeekTarget}</p>
+                </div>
+                <button onClick={() => setShowSkipPanel(false)} className="text-gray-500 hover:text-white">✕</button>
+              </div>
+              <div className="space-y-4">
+                <div className="bg-blue-950 border border-blue-900 rounded-lg px-4 py-3">
+                  <p className="text-blue-300 text-xs leading-relaxed">
+                    Al marcar la semana sin inventario, el cálculo de Costo de Uso se consolidará automáticamente cuando se haga inventario en una semana posterior.
+                  </p>
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1">Motivo <span className="text-red-400">*</span></label>
+                  <textarea value={skipReason} onChange={e => setSkipReason(e.target.value)}
+                    placeholder="Ej: equipo de cocina no pudo contar inventario por evento privado"
+                    rows={3}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-none" />
+                </div>
+                {skipError && <p className="text-red-400 text-xs">{skipError}</p>}
+                <div className="bg-gray-800 rounded-lg px-4 py-3">
+                  <p className="text-gray-500 text-xs">⚠️ Este registro quedará guardado con tu usuario y fecha. Puedes desmarcarlo después.</p>
+                </div>
+                <div className="flex gap-3">
+                  <button onClick={() => setShowSkipPanel(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-sm transition">Cancelar</button>
+                  <button onClick={saveSkippedWeek} disabled={skipSaving}
+                    className="flex-1 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-700 text-white py-2 rounded-lg text-sm font-medium transition">
+                    {skipSaving ? 'Guardando...' : 'Marcar saltada'}
                   </button>
                 </div>
               </div>
@@ -639,6 +767,53 @@ export default function CostoUsoPage() {
           </div>
         )}
 
+        {/* ── NUEVO: Log de semanas saltadas ── */}
+        {showSkipLog && (
+          <div className="bg-gray-900 border border-orange-800 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-orange-400 font-semibold">📭 Semanas marcadas sin inventario</h3>
+              <button onClick={() => setShowSkipLog(false)} className="text-gray-500 hover:text-white text-sm">✕</button>
+            </div>
+            {skippedWeeks.length === 0 ? (
+              <p className="text-gray-500 text-sm">No hay semanas marcadas como saltadas.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-800">
+                      <th className="text-left text-gray-500 pb-2 font-medium">Semana</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Motivo</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Por</th>
+                      <th className="text-left text-gray-500 pb-2 font-medium">Fecha</th>
+                      {canSkipWeek && <th className="text-right text-gray-500 pb-2 font-medium">Acción</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {skippedWeeks.map((sk: any) => (
+                      <tr key={sk.id} className="border-b border-gray-900">
+                        <td className="text-orange-400 py-2 font-medium">{sk.week}</td>
+                        <td className="text-gray-300 py-2 max-w-md">{sk.reason}</td>
+                        <td className="text-gray-500 py-2">{sk.created_by}</td>
+                        <td className="text-gray-500 py-2">
+                          {new Date(sk.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: '2-digit' })}
+                        </td>
+                        {canSkipWeek && (
+                          <td className="text-right py-2">
+                            <button onClick={() => deleteSkippedWeek(sk.id, sk.week)}
+                              className="text-red-400 hover:text-red-300 text-xs">
+                              Desmarcar
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ── NUEVO: banner cuando toggle activo ── */}
         {includeOpDiscounts && (
           <div className="bg-green-950 border border-green-800 rounded-xl px-5 py-3 flex items-center gap-3">
@@ -681,12 +856,51 @@ export default function CostoUsoPage() {
           </div>
         ) : (
           <>
-            {detailData && (
+            {/* ── NUEVO: Banner cuando la semana seleccionada está marcada como saltada ── */}
+            {(() => {
+              const { skipped, record } = isSelectedWeekSkipped()
+              if (!skipped || !record) return null
+              return (
+                <div className="bg-gray-900 border-2 border-orange-800 rounded-2xl p-6 opacity-90">
+                  <div className="flex items-start gap-4">
+                    <span className="text-orange-400 text-3xl">📭</span>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 flex-wrap mb-2">
+                        <h2 className="text-orange-400 font-bold text-lg">{selectedWeek} — Sin inventario</h2>
+                        <span className="bg-orange-900 text-orange-300 text-xs px-2 py-0.5 rounded-full font-medium">semana saltada</span>
+                      </div>
+                      <p className="text-gray-300 text-sm leading-relaxed mb-3">
+                        <span className="text-gray-500">Motivo:</span> {record.reason}
+                      </p>
+                      <div className="flex items-center gap-3 text-xs text-gray-500">
+                        <span>Marcada por <span className="text-gray-400">{record.created_by}</span></span>
+                        <span>·</span>
+                        <span>{new Date(record.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: '2-digit' })}</span>
+                        {canSkipWeek && (
+                          <>
+                            <span>·</span>
+                            <button onClick={() => deleteSkippedWeek(record.id, record.week)}
+                              className="text-red-400 hover:text-red-300">Desmarcar</button>
+                          </>
+                        )}
+                      </div>
+                      <p className="text-gray-500 text-xs mt-3 leading-relaxed">
+                        Los cálculos de Costo de Uso se consolidarán automáticamente en la próxima semana con inventario real. Las ventas y compras de esta semana se sumarán al rango consolidado.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+
+            {detailData && !isSelectedWeekSkipped().skipped && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
-                  {isMultiWeek
-                    ? `Promedio ponderado del período — ${filtered[0]?.report?.week} → ${latest?.report?.week} (${filtered.length} semanas)`
-                    : `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`}
+                  {consolidatedSkippedWeeks.length > 0
+                    ? `Cálculo consolidado — ${selectedWeek} + ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario`
+                    : isMultiWeek
+                      ? `Promedio ponderado del período — ${filtered[0]?.report?.week} → ${latest?.report?.week} (${filtered.length} semanas)`
+                      : `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -715,7 +929,14 @@ export default function CostoUsoPage() {
 
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-white font-semibold">Detalle por categoría — {detailWeek?.report?.week}</h2>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 className="text-white font-semibold">Detalle por categoría — {detailWeek?.report?.week}</h2>
+                      {consolidatedSkippedWeeks.length > 0 && (
+                        <span className="bg-orange-900 text-orange-300 text-xs px-2 py-1 rounded-full font-medium" title={`Semanas saltadas consolidadas: ${consolidatedSkippedWeeks.join(', ')}`}>
+                          📭 Incluye {consolidatedSkippedWeeks.length} sem. saltada{consolidatedSkippedWeeks.length !== 1 ? 's' : ''} ({consolidatedSkippedWeeks.join(', ')})
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
                       {includeOpDiscounts && detailData.opDiscTotal > 0 && (
                         <span className="text-green-400 text-xs bg-green-950 px-2 py-1 rounded-full">
