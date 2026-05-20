@@ -1,0 +1,7 @@
+# Supabase CLI local state (no commitear)
+.temp/
+.branches/
+.env
+
+# Local-only config overrides
+config.local.toml
