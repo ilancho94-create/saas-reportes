@@ -1,18 +1,18 @@
 export type Module = 'dashboard' | 'ventas' | 'labor' | 'food_cost' | 'costo_uso' | 
   'waste' | 'avt' | 'compras' | 'historial' | 'upload' | 'settings' | 'users' | 'employee' | 'kitchen'
 
-export type Action = 'view' | 'edit' | 'create'
+export type Action = 'view' | 'edit' | 'create' | 'skip_week'
 
 export const ROLE_PERMISSIONS: Record<string, Record<Module, Action[]>> = {
   admin: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
-    costo_uso: ['view', 'edit'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
+    costo_uso: ['view', 'edit', 'skip_week'], waste: ['view'], avt: ['view', 'edit', 'skip_week'], compras: ['view'],
     historial: ['view'], upload: [], settings: ['view', 'edit'],
     users: ['view', 'edit', 'create'], employee: ['view'], kitchen: ['view']
   },
   owner: {
     dashboard: ['view'], ventas: ['view'], labor: ['view'], food_cost: ['view'],
-    costo_uso: ['view', 'edit'], waste: ['view'], avt: ['view', 'edit'], compras: ['view'],
+    costo_uso: ['view', 'edit', 'skip_week'], waste: ['view'], avt: ['view', 'edit', 'skip_week'], compras: ['view'],
     historial: ['view', 'edit'], upload: ['view', 'edit'], settings: ['view', 'edit'],
     users: ['view', 'edit', 'create'], employee: ['view'], kitchen: ['view']
   },
