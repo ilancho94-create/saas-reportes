@@ -52,6 +52,7 @@ export default function CostoUsoPage() {
   const [userRole, setUserRole] = useState<string>('')
   const [userCustomPerms, setUserCustomPerms] = useState<any>(null)
   const [adjustments, setAdjustments] = useState<any[]>([])
+  const [skippedWeeks, setSkippedWeeks] = useState<any[]>([])
   const [showAdjPanel, setShowAdjPanel] = useState(false)
   const [adjWeek, setAdjWeek] = useState('')
   const [adjReportId, setAdjReportId] = useState('')
@@ -139,6 +140,11 @@ export default function CostoUsoPage() {
     const { data: adjs } = await supabase.from('costo_uso_adjustments')
       .select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false })
     setAdjustments(adjs || [])
+
+    // ── NUEVO: cargar semanas saltadas (sin inventario marcado) ───────────
+    const { data: skipped } = await supabase.from('skipped_inventory_weeks')
+      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true })
+    setSkippedWeeks(skipped || [])
 
     const newAlerts: string[] = []
     for (let i = 1; i < weeksData.length; i++) {
@@ -323,23 +329,72 @@ export default function CostoUsoPage() {
     return result
   }
 
-  const chartData = filtered.map(buildWeekData)
-  const latest = filtered[filtered.length - 1]
-  const isMultiWeek = filtered.length > 1
-  const detailWeek = shortcut === 'week' ? filtered[0] || latest : latest
+  // ── NUEVO: helpers para consolidar semanas saltadas ───────────────────
+  // Set de lookup O(1) para semanas marcadas como saltadas
+  const skippedWeekSet = new Set<string>(skippedWeeks.map((s: any) => s.week))
+
+  // Si hay semanas saltadas inmediatamente previas al filtro, las incluye
+  // junto con la última semana CON inventario real anterior (ancla de inv_previous).
+  // Eso permite que buildRangeData() consolide automáticamente el cálculo.
+  function expandToIncludeSkippedPredecessors(filteredWeeks: any[]): any[] {
+    if (!filteredWeeks.length || !skippedWeeks.length) return filteredWeeks
+    const firstWeek = filteredWeeks[0].report.week
+    const firstIdx = weeks.findIndex(w => w.report.week === firstWeek)
+    if (firstIdx <= 0) return filteredWeeks
+
+    const predecessors: any[] = []
+    let foundInvAnchor = false
+    for (let i = firstIdx - 1; i >= 0; i--) {
+      const w = weeks[i]
+      const isSkipped = skippedWeekSet.has(w.report.week)
+      const hasInv = w.inventory?.by_account?.length > 0
+      if (isSkipped) {
+        predecessors.unshift(w)
+        continue
+      }
+      if (hasInv) {
+        predecessors.unshift(w)
+        foundInvAnchor = true
+        break
+      }
+      // semana sin inv y sin marca de saltada → datos ambiguos, no expandimos
+      break
+    }
+
+    // Solo expandimos si encontramos ancla + al menos 1 saltada en el camino
+    const hasSkippedInPath = predecessors.some(w => skippedWeekSet.has(w.report.week))
+    if (!foundInvAnchor || !hasSkippedInPath) return filteredWeeks
+
+    return [...predecessors, ...filteredWeeks]
+  }
+
+  // Rango efectivo de cálculo (puede incluir saltadas previas y su ancla de inv)
+  const effectiveFiltered = expandToIncludeSkippedPredecessors(filtered)
+
+  // Semanas saltadas que están consolidadas en el cálculo actual
+  const consolidatedSkippedWeeks = effectiveFiltered
+    .filter(w => skippedWeekSet.has(w.report.week))
+    .map(w => w.report.week)
+
+  const chartData = effectiveFiltered.map(buildWeekData)
+  const latest = effectiveFiltered[effectiveFiltered.length - 1]
+  const isMultiWeek = effectiveFiltered.length > 1
+  // detailWeek: solo se usa para título y vista single-week (no entra cuando isMultiWeek=true)
+  // Mantenemos filtered[0] para que el título refleje la semana que el usuario seleccionó
+  const detailWeek = shortcut === 'week' ? (filtered[0] || effectiveFiltered[effectiveFiltered.length - 1] || latest) : latest
 
   function buildRangeData() {
-    if (!filtered.length) return null
-    const weeklyData = filtered.map(w => ({ raw: w, data: buildWeekData(w) }))
+    if (!effectiveFiltered.length) return null
+    const weeklyData = effectiveFiltered.map(w => ({ raw: w, data: buildWeekData(w) }))
     const withInv = weeklyData.filter(wd => wd.data.hasInventory)
     if (!withInv.length) return null
     const firstWD = withInv[0]
     const lastWD = withInv[withInv.length - 1]
-    const nSemanas = filtered.length
+    const nSemanas = effectiveFiltered.length
     const diasRango = nSemanas * operatingDays
     const result: any = {
       fullWeek: latest?.report?.week, reportId: latest?.report?.id,
-      hasInventory: true, hasAnyAdj: filtered.some(w => hasAdjustments(w.report.week)), diasRango,
+      hasInventory: true, hasAnyAdj: effectiveFiltered.some(w => hasAdjustments(w.report.week)), diasRango, consolidatedSkippedWeeks,
     }
     CATEGORIES.forEach(cat => {
       const invPrevious = firstWD.data[cat.key + '_inv_previous'] ?? 0
@@ -380,7 +435,7 @@ export default function CostoUsoPage() {
 
   const rangeSummary = (() => {
     let totalUso = 0, totalTheo = 0, totalABSales = 0, totalVariacion = 0
-    filtered.forEach(w => {
+    effectiveFiltered.forEach(w => {
       const d = buildWeekData(w)
       if (!d.hasInventory) return
       totalUso += d.totalUsoCost; totalTheo += d.totalTheoCost
