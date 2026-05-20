@@ -45,6 +45,33 @@ export default function AvtPage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard')
   const [expandedItem, setExpandedItem] = useState<string | null>(null)
   const [activeCategories, setActiveCategories] = useState<string[]>(MAIN_CATEGORIES_FALLBACK)
+  const [skippedWeeks, setSkippedWeeks] = useState<any[]>([])
+
+  // ── NUEVO: helpers para mostrar info de semanas saltadas ────────────────
+  function isSelectedWeekSkipped(): { skipped: boolean; record: any | null } {
+    if (!selectedWeek) return { skipped: false, record: null }
+    const record = skippedWeeks.find((sw: any) => sw.week === selectedWeek)
+    return { skipped: !!record, record: record || null }
+  }
+
+  // Devuelve semanas saltadas inmediatamente anteriores a la seleccionada.
+  // R365 ya consolidó las varianzas en el reporte actual; esto solo lo comunica.
+  function getCoveredSkippedWeeks(week: string): string[] {
+    if (!week || !skippedWeeks.length) return []
+    const allWeeks = new Set<string>(weeks.map(w => w.report.week))
+    skippedWeeks.forEach((sw: any) => allWeeks.add(sw.week))
+    const sorted = Array.from(allWeeks).sort()
+    const idx = sorted.indexOf(week)
+    if (idx <= 0) return []
+    const skippedSet = new Set(skippedWeeks.map((sw: any) => sw.week))
+    const covered: string[] = []
+    for (let i = idx - 1; i >= 0; i--) {
+      const w = sorted[i]
+      if (skippedSet.has(w)) covered.unshift(w)
+      else break
+    }
+    return covered
+  }
 
   useEffect(() => { if (restaurantIdHook) loadData() }, [restaurantIdHook])
   useEffect(() => { if (selectedWeek && restaurantId) loadTracking(selectedWeek) }, [selectedWeek, restaurantId])
@@ -68,6 +95,12 @@ export default function AvtPage() {
     const { data: allT } = await supabase.from('avt_tracking')
       .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: false })
     setAllTracking(allT || [])
+
+    // ── NUEVO: cargar semanas saltadas (compartido con Costo de Uso) ──────
+    const { data: skipped } = await supabase.from('skipped_inventory_weeks')
+      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true })
+    setSkippedWeeks(skipped || [])
+
     setLoading(false)
     const { data: cats } = await supabase.from('avt_categories')
       .select('category').eq('restaurant_id', restaurantId).eq('active', true).order('category')
@@ -263,6 +296,36 @@ export default function AvtPage() {
       </div>
 
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+        {/* ── NUEVO: Banner cuando la semana seleccionada está marcada como saltada ── */}
+        {(() => {
+          const { skipped, record } = isSelectedWeekSkipped()
+          if (!skipped || !record) return null
+          return (
+            <div className="bg-gray-900 border-2 border-orange-800 rounded-2xl p-6 opacity-90">
+              <div className="flex items-start gap-4">
+                <span className="text-orange-400 text-3xl">📭</span>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 flex-wrap mb-2">
+                    <h2 className="text-orange-400 font-bold text-lg">{selectedWeek} — Sin inventario</h2>
+                    <span className="bg-orange-900 text-orange-300 text-xs px-2 py-0.5 rounded-full font-medium">semana saltada</span>
+                  </div>
+                  <p className="text-gray-300 text-sm leading-relaxed mb-3">
+                    <span className="text-gray-500">Motivo:</span> {record.reason}
+                  </p>
+                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                    <span>Marcada por <span className="text-gray-400">{record.created_by}</span></span>
+                    <span>·</span>
+                    <span>{new Date(record.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: '2-digit' })}</span>
+                  </div>
+                  <p className="text-gray-500 text-xs mt-3 leading-relaxed">
+                    Esta semana no tuvo cierre de inventario. Las varianzas se ven reflejadas en el reporte de la siguiente semana con inventario real. Para desmarcar esta semana, ve a <strong className="text-orange-400">Costo de Uso</strong>.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
         {weeks.length === 0 ? (
           <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">
             <div className="text-5xl mb-4">📊</div>
@@ -302,6 +365,26 @@ export default function AvtPage() {
                 ))}
               </div>
             </div>
+
+            {/* ── NUEVO: Banner informativo cuando varianzas cubren semanas saltadas ── */}
+            {(() => {
+              const covered = getCoveredSkippedWeeks(selectedWeek)
+              if (covered.length === 0) return null
+              const totalSemanas = covered.length + 1
+              return (
+                <div className="bg-orange-950 border border-orange-800 rounded-xl px-5 py-3 flex items-start gap-3">
+                  <span className="text-orange-400 text-xl mt-0.5">📭</span>
+                  <div className="flex-1">
+                    <p className="text-orange-300 text-sm font-medium">
+                      Estas varianzas cubren {totalSemanas} semanas: {covered.join(', ')} (sin inventario) + {selectedWeek}
+                    </p>
+                    <p className="text-orange-500 text-xs mt-1 leading-relaxed">
+                      R365 acumuló las diferencias de las semanas saltadas en este reporte. Los totales y montos individuales corresponden al rango completo.
+                    </p>
+                  </div>
+                </div>
+              )
+            })()}
 
             <div className="grid grid-cols-4 gap-4">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -418,6 +501,11 @@ export default function AvtPage() {
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-white font-semibold">🔴 Faltantes — {selectedWeek}
+                  {getCoveredSkippedWeeks(selectedWeek).length > 0 && (
+                    <span className="ml-2 bg-orange-900 text-orange-300 text-xs px-2 py-0.5 rounded-full font-medium" title={`Incluye ${getCoveredSkippedWeeks(selectedWeek).join(', ')}`}>
+                      📭 +{getCoveredSkippedWeeks(selectedWeek).length} sem.
+                    </span>
+                  )}
                   <span className="text-red-400 font-normal text-sm ml-2">({filteredShortages.length} items · {fmt(totalShortage)})</span>
                 </h2>
                 {filteredShortages.length > 10 && (
@@ -433,6 +521,11 @@ export default function AvtPage() {
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-white font-semibold">🟢 Sobrantes — {selectedWeek}
+                  {getCoveredSkippedWeeks(selectedWeek).length > 0 && (
+                    <span className="ml-2 bg-orange-900 text-orange-300 text-xs px-2 py-0.5 rounded-full font-medium" title={`Incluye ${getCoveredSkippedWeeks(selectedWeek).join(', ')}`}>
+                      📭 +{getCoveredSkippedWeeks(selectedWeek).length} sem.
+                    </span>
+                  )}
                   <span className="text-green-400 font-normal text-sm ml-2">({filteredOverages.length} items · ({fmt(totalOverage)}))</span>
                 </h2>
                 {filteredOverages.length > 10 && (
