@@ -494,22 +494,6 @@ export default function CostoUsoPage() {
   const detailData = isMultiWeek ? buildRangeData() : (detailWeek ? buildWeekData(detailWeek) : null)
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
 
-  const rangeSummary = (() => {
-    let totalUso = 0, totalTheo = 0, totalABSales = 0, totalVariacion = 0
-    effectiveFiltered.forEach(w => {
-      const d = buildWeekData(w)
-      if (!d.hasInventory) return
-      totalUso += d.totalUsoCost; totalTheo += d.totalTheoCost
-      totalABSales += d.totalABSales
-      if (d.totalVariacion !== null) totalVariacion += d.totalVariacion
-    })
-    return {
-      totalUso, totalTheo, totalABSales, totalVariacion,
-      totalRealPct: totalABSales > 0 ? parseFloat((totalUso / totalABSales * 100).toFixed(1)) : null,
-      totalMixPct: totalABSales > 0 ? parseFloat((totalTheo / totalABSales * 100).toFixed(1)) : null,
-    }
-  })()
-
   const SHORTCUTS: { key: Shortcut; label: string }[] = [
     { key: 'week', label: 'Semana' }, { key: 'last4', label: 'Últimas 4 sem' },
     { key: 'last8', label: 'Últimas 8 sem' }, { key: 'month', label: 'Este mes' }, { key: 'custom', label: 'Custom' },
@@ -903,22 +887,22 @@ export default function CostoUsoPage() {
                       : `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <p className="text-gray-500 text-xs mb-1">% Costo Real A&B {isMultiWeek ? '(pond.)' : ''}</p>
-                    <p className="text-3xl font-bold text-blue-400">{rangeSummary.totalRealPct !== null ? rangeSummary.totalRealPct + '%' : '—'}</p>
-                    <p className="text-gray-600 text-xs mt-1">{fmt(rangeSummary.totalUso)} uso {isMultiWeek ? 'acumulado' : 'real'}</p>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5" title={isMultiWeek ? 'Cálculo consolidado del período: usa el inventario anterior de la primera semana, las compras de todas las semanas y el inventario actual de la última semana. Mismo número que el total de la tabla de detalle.' : undefined}>
+                    <p className="text-gray-500 text-xs mb-1">% Costo Real A&B {isMultiWeek ? '(consolidado)' : ''}</p>
+                    <p className="text-3xl font-bold text-blue-400">{detailData.totalRealPct !== null ? detailData.totalRealPct + '%' : '—'}</p>
+                    <p className="text-gray-600 text-xs mt-1">{fmt(detailData.totalUsoCost)} uso {isMultiWeek ? 'consolidado' : 'real'}</p>
                   </div>
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <p className="text-gray-500 text-xs mb-1">% Costo P.Mix {isMultiWeek ? '(pond.)' : ''}</p>
-                    <p className="text-3xl font-bold text-green-400">{rangeSummary.totalMixPct !== null ? rangeSummary.totalMixPct + '%' : '—'}</p>
-                    <p className="text-gray-600 text-xs mt-1">{fmt(rangeSummary.totalTheo)} teórico</p>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5" title={isMultiWeek ? 'Suma del costo teórico de todas las semanas del rango, dividido entre las ventas A&B totales.' : undefined}>
+                    <p className="text-gray-500 text-xs mb-1">% Costo P.Mix {isMultiWeek ? '(consolidado)' : ''}</p>
+                    <p className="text-3xl font-bold text-green-400">{detailData.totalMixPct !== null ? detailData.totalMixPct + '%' : '—'}</p>
+                    <p className="text-gray-600 text-xs mt-1">{fmt(detailData.totalTheoCost)} teórico</p>
                   </div>
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                    <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'acumulada' : ''}</p>
-                    <p className={`text-3xl font-bold ${rangeSummary.totalVariacion > 0 ? 'text-red-400' : rangeSummary.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
-                      {rangeSummary.totalVariacion !== null ? (rangeSummary.totalVariacion > 0 ? '+' : '') + fmt(rangeSummary.totalVariacion) : '—'}
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5" title={isMultiWeek ? 'Diferencia entre % Real consolidado y % P.Mix consolidado, expresada en dólares sobre las ventas A&B del período.' : undefined}>
+                    <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'del período' : ''}</p>
+                    <p className={`text-3xl font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
+                      {detailData.totalVariacion !== null ? (detailData.totalVariacion > 0 ? '+' : '') + fmt(detailData.totalVariacion) : '—'}
                     </p>
-                    <p className="text-gray-600 text-xs mt-1">{rangeSummary.totalVariacion > 0 ? 'sobre lo teórico' : rangeSummary.totalVariacion < 0 ? 'bajo lo teórico' : ''}</p>
+                    <p className="text-gray-600 text-xs mt-1">{detailData.totalVariacion > 0 ? 'sobre lo teórico' : detailData.totalVariacion < 0 ? 'bajo lo teórico' : ''}</p>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
@@ -1151,7 +1135,13 @@ export default function CostoUsoPage() {
                 </div>
 
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                  <h2 className="text-white font-semibold mb-4">Histórico por semana</h2>
+                  <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                    <h2 className="text-white font-semibold">Histórico por semana</h2>
+                    <p className="text-gray-500 text-xs">
+                      {effectiveFiltered.length} semana{effectiveFiltered.length !== 1 ? 's' : ''} en el rango
+                      {consolidatedSkippedWeeks.length > 0 && ` · incluye ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario`}
+                    </p>
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -1167,7 +1157,7 @@ export default function CostoUsoPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {[...filtered].reverse().map((w) => {
+                        {[...effectiveFiltered].reverse().map((w) => {
                           const d = buildWeekData(w)
                           return (
                             <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
