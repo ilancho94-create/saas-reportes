@@ -390,100 +390,247 @@ export default function CostoUsoPage() {
     return result
   }
 
-  // ── NUEVO: helpers para consolidar semanas saltadas ───────────────────
-  // Set de lookup O(1) para semanas marcadas como saltadas
+  // ──────────────────────────────────────────────────────────────────────
+  // PERIOD-BASED CONSOLIDATION MODEL
+  //
+  // Un PERÍODO va de un check-point de inventario (anchor) al siguiente
+  // (closing). Semanas saltadas o sin inventario entre anchor y closing
+  // se ABSORBEN dentro del período (sus ventas/compras se suman).
+  //
+  // Fórmula correcta:
+  //   inv_start  = anchor.inv_current   (cierre del check-point previo)
+  //                — o R365's inv_previous del closing si no hay anchor
+  //   inv_end    = closing.inv_current  (cierre del nuevo check-point)
+  //   purchases  = Σ(compras de intermediates + closing)
+  //   sales      = Σ(ventas de intermediates + closing)
+  //   uso        = inv_start + purchases − inv_end
+  //
+  // Esto reemplaza el modelo anterior (buildRangeData + effectiveFiltered)
+  // que tenía dos bugs:
+  //   1) Por-semana W22 con W20-W21 saltadas → inv_previous era el cierre
+  //      de W19 (3 semanas de consumo) pero ventas/compras solo de W22
+  //      → % inflado ~40%+
+  //   2) buildRangeData incluía al anchor (W19) dentro del período,
+  //      sobrecontando 1 semana
+  // ──────────────────────────────────────────────────────────────────────
   const skippedWeekSet = new Set<string>(skippedWeeks.map((s: any) => s.week))
 
-  // Si hay semanas saltadas inmediatamente previas al filtro, las incluye
-  // junto con la última semana CON inventario real anterior (ancla de inv_previous).
-  // Eso permite que buildRangeData() consolide automáticamente el cálculo.
-  function expandToIncludeSkippedPredecessors(filteredWeeks: any[]): any[] {
-    if (!filteredWeeks.length || !skippedWeeks.length) return filteredWeeks
-    const firstWeek = filteredWeeks[0].report.week
-    const firstIdx = weeks.findIndex(w => w.report.week === firstWeek)
-    if (firstIdx <= 0) return filteredWeeks
-
-    const predecessors: any[] = []
-    let foundInvAnchor = false
-    for (let i = firstIdx - 1; i >= 0; i--) {
-      const w = weeks[i]
-      const isSkipped = skippedWeekSet.has(w.report.week)
-      const hasInv = w.inventory?.by_account?.length > 0
-      if (isSkipped) {
-        predecessors.unshift(w)
-        continue
-      }
-      if (hasInv) {
-        predecessors.unshift(w)
-        foundInvAnchor = true
-        break
-      }
-      // semana sin inv y sin marca de saltada → datos ambiguos, no expandimos
-      break
+  // Encuentra la última semana CON inventario antes de targetWeek.
+  function findAnchorBefore(targetWeek: any): any | null {
+    const idx = weeks.findIndex(w => w.report.week === targetWeek.report.week)
+    if (idx <= 0) return null
+    for (let i = idx - 1; i >= 0; i--) {
+      if (weeks[i].inventory?.by_account?.length > 0) return weeks[i]
     }
-
-    // Solo expandimos si encontramos ancla + al menos 1 saltada en el camino
-    const hasSkippedInPath = predecessors.some(w => skippedWeekSet.has(w.report.week))
-    if (!foundInvAnchor || !hasSkippedInPath) return filteredWeeks
-
-    return [...predecessors, ...filteredWeeks]
+    return null
   }
 
-  // Rango efectivo de cálculo (puede incluir saltadas previas y su ancla de inv)
-  const effectiveFiltered = expandToIncludeSkippedPredecessors(filtered)
+  // Devuelve las semanas entre anchor (excl) y closing (excl) del array global `weeks`.
+  function getWeeksBetween(anchor: any | null, closing: any): any[] {
+    const closingIdx = weeks.findIndex(w => w.report.week === closing.report.week)
+    if (closingIdx < 0) return []
+    const anchorIdx = anchor ? weeks.findIndex(w => w.report.week === anchor.report.week) : -1
+    return weeks.slice(anchorIdx + 1, closingIdx)
+  }
 
-  // Semanas saltadas que están consolidadas en el cálculo actual
-  const consolidatedSkippedWeeks = effectiveFiltered
-    .filter(w => skippedWeekSet.has(w.report.week))
-    .map(w => w.report.week)
+  // Calcula los datos consolidados de un período cerrado por `closing`.
+  // anchor=null → usa el inv_previous del R365 del closing como punto de inicio.
+  function buildPeriodData(anchor: any | null, intermediates: any[], closing: any) {
+    const periodWeeks = [...intermediates, closing]
+    const closingWeek = closing.report.week
+    const isConsolidated = intermediates.length > 0
+    const spannedSkippedWeeks = intermediates
+      .filter(w => skippedWeekSet.has(w.report.week))
+      .map(w => w.report.week)
 
-  const chartData = effectiveFiltered.map(buildWeekData)
-  const latest = effectiveFiltered[effectiveFiltered.length - 1]
-  const isMultiWeek = effectiveFiltered.length > 1
-  // detailWeek: solo se usa para título y vista single-week (no entra cuando isMultiWeek=true)
-  // Mantenemos filtered[0] para que el título refleje la semana que el usuario seleccionó
-  const detailWeek = shortcut === 'week' ? (filtered[0] || effectiveFiltered[effectiveFiltered.length - 1] || latest) : latest
-
-  function buildRangeData() {
-    if (!effectiveFiltered.length) return null
-    const weeklyData = effectiveFiltered.map(w => ({ raw: w, data: buildWeekData(w) }))
-    const withInv = weeklyData.filter(wd => wd.data.hasInventory)
-    if (!withInv.length) return null
-    const firstWD = withInv[0]
-    const lastWD = withInv[withInv.length - 1]
-    const nSemanas = effectiveFiltered.length
-    const diasRango = nSemanas * operatingDays
     const result: any = {
-      fullWeek: latest?.report?.week, reportId: latest?.report?.id,
-      hasInventory: true, hasAnyAdj: effectiveFiltered.some(w => hasAdjustments(w.report.week)), diasRango, consolidatedSkippedWeeks,
+      week: closingWeek.replace('2026-', ''),
+      fullWeek: closingWeek,
+      reportId: closing.report.id,
+      netSales: periodWeeks.reduce((s, w) => s + (w.sales?.net_sales || 0), 0),
+      hasInventory: true,
+      hasProductMix: !!closing.productMix,
+      opDiscTotal: periodWeeks.reduce((s, w) => s + getOpDiscountTotal(w), 0),
+      isConsolidated,
+      spannedSkippedWeeks,
+      anchorWeek: anchor?.report.week || null,
+      periodWeekCount: periodWeeks.length,
+      closingReport: closing.report,
+      closingRaw: closing,
     }
+
+    let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
+
     CATEGORIES.forEach(cat => {
-      const invPrevious = firstWD.data[cat.key + '_inv_previous'] ?? 0
-      const invCurrent = lastWD.data[cat.key + '_inv_current'] ?? 0
-      const purchases = weeklyData.reduce((sum, wd) => sum + (wd.data[cat.key + '_purchases'] ?? 0), 0)
+      // inv_start: anchor's inv_current si existe, sino R365's inv_previous del closing
+      let invPrevious: number
+      if (anchor) {
+        const anchorInv = getInventoryByCategory(anchor.inventory?.by_account || [], cat.key)
+        const adjAnchorCurr = getAdj(anchor.report.week, cat.key, 'inv_current')
+        invPrevious = anchorInv.current + adjAnchorCurr
+      } else {
+        const closingInv = getInventoryByCategory(closing.inventory?.by_account || [], cat.key)
+        const adjClosingPrev = getAdj(closing.report.week, cat.key, 'inv_previous')
+        invPrevious = closingInv.previous + adjClosingPrev
+      }
+
+      const closingInv = getInventoryByCategory(closing.inventory?.by_account || [], cat.key)
+      const adjClosingCurr = getAdj(closing.report.week, cat.key, 'inv_current')
+      const invCurrent = closingInv.current + adjClosingCurr
+
+      const purchases = periodWeeks.reduce((sum, w) => {
+        const cogsCat = w.cogs?.by_category || {}
+        const adj = getAdj(w.report.week, cat.key, 'purchases')
+        return sum + (cogsCat[cat.key] || 0) + adj
+      }, 0)
+
       const uso = Math.max(invPrevious + purchases - invCurrent, 0)
-      const catSales = weeklyData.reduce((sum, wd) => sum + (wd.data[cat.key + '_sales'] ?? 0), 0)
-      const theoCost = weeklyData.reduce((sum, wd) => sum + (wd.data[cat.key + '_theo_cost'] ?? 0), 0)
+
+      const catSales = periodWeeks.reduce((sum, w) => {
+        const salesCategories = w.sales?.categories || []
+        const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
+        const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
+        const adjSales = getAdj(w.report.week, cat.key, 'sales_adjustment')
+        return sum + (includeOpDiscounts && catSalesGross > catSalesBase ? catSalesGross + adjSales : catSalesBase)
+      }, 0)
+
+      const theoCost = periodWeeks.reduce((sum, w) => {
+        const theoByCat = w.productMix?.theo_cost_by_category || {}
+        const adj = getAdj(w.report.week, cat.key, 'theo_cost')
+        return sum + (theoByCat[cat.key] || 0) + adj
+      }, 0)
+
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacion = realPct !== null && mixPct !== null && catSales > 0
+      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
         ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
-      const diasInv = uso > 0 ? parseFloat((((invCurrent + invPrevious) / 2) / (uso / diasRango)).toFixed(1)) : null
-      const hasAdj = weeklyData.some(wd => wd.data[cat.key + '_has_adj'])
-      result[cat.key + '_uso'] = uso; result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0; result[cat.key + '_variacion'] = variacion
-      result[cat.key + '_dias_inv'] = diasInv; result[cat.key + '_inv_current'] = invCurrent
-      result[cat.key + '_inv_previous'] = invPrevious; result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = catSales; result[cat.key + '_has_adj'] = hasAdj
+
+      const totalOpDays = periodWeeks.length * operatingDays
+      const diasInv = uso > 0
+        ? parseFloat((((invCurrent + invPrevious) / 2) / uso * totalOpDays).toFixed(1))
+        : null
+
+      const hasAdj = periodWeeks.some(w =>
+        getAdj(w.report.week, cat.key, 'inv_previous') !== 0 ||
+        getAdj(w.report.week, cat.key, 'purchases') !== 0 ||
+        getAdj(w.report.week, cat.key, 'inv_current') !== 0 ||
+        getAdj(w.report.week, cat.key, 'theo_cost') !== 0
+      )
+
+      result[cat.key + '_uso'] = uso
+      result[cat.key + '_uso_pct'] = realPct || 0
+      result[cat.key + '_theo_pct'] = mixPct || 0
+      result[cat.key + '_variacion'] = variacionDolares
+      result[cat.key + '_dias_inv'] = diasInv
+      result[cat.key + '_inv_current'] = invCurrent
+      result[cat.key + '_inv_previous'] = invPrevious
+      result[cat.key + '_purchases'] = purchases
+      result[cat.key + '_sales'] = catSales
+      result[cat.key + '_has_adj'] = hasAdj
       result[cat.key + '_theo_cost'] = theoCost
+
+      if (uso > 0) totalUsoCost += uso
+      if (theoCost > 0) totalTheoCost += theoCost
+      if (catSales > 0) totalABSales += catSales
     })
+
+    result.totalUsoCost = totalUsoCost
+    result.totalTheoCost = totalTheoCost
+    result.totalABSales = totalABSales
+    result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
+    result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
+    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
+      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
+    result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
+    return result
+  }
+
+  // Recorre weekList cronológicamente y emite UN período por cada semana inventariada.
+  // Semanas sin inventario (saltadas o pendientes) se absorben en el siguiente cierre.
+  // Si la primera semana del weekList tiene saltadas anteriores con un anchor fuera del
+  // weekList, también las absorbe.
+  function buildPeriodSeries(weekList: any[]): any[] {
+    if (!weekList.length) return []
+
+    let priorAnchor = findAnchorBefore(weekList[0])
+    // Semanas no-inventariadas entre el anchor y el inicio del weekList se absorben también
+    const preIntermediates = priorAnchor ? getWeeksBetween(priorAnchor, weekList[0]) : []
+
+    const series: any[] = []
+    let intermediates: any[] = [...preIntermediates]
+
+    for (const w of weekList) {
+      const hasInv = w.inventory?.by_account?.length > 0
+      if (!hasInv) {
+        intermediates.push(w)
+        continue
+      }
+      series.push(buildPeriodData(priorAnchor, intermediates, w))
+      priorAnchor = w
+      intermediates = []
+    }
+    // intermediates restantes al final (sin cierre todavía) no se renderizan.
+    return series
+  }
+
+  // Agrega N períodos en una sola fila resumen (matemáticamente equivalente a una
+  // consolidación full por la propiedad telescópica).
+  function aggregateSeries(series: any[]): any {
+    if (!series.length) return null
+    if (series.length === 1) return series[0]
+
+    const result: any = {
+      isConsolidated: series.some(s => s.isConsolidated),
+      spannedSkippedWeeks: series.flatMap(s => s.spannedSkippedWeeks || []),
+      periodCount: series.length,
+      hasAnyAdj: series.some(s => s.hasAnyAdj),
+      hasInventory: true,
+      hasProductMix: series[series.length - 1].hasProductMix,
+      fullWeek: series[series.length - 1].fullWeek,
+      reportId: series[series.length - 1].reportId,
+      closingReport: series[series.length - 1].closingReport,
+      closingRaw: series[series.length - 1].closingRaw,
+      opDiscTotal: series.reduce((s, p) => s + (p.opDiscTotal || 0), 0),
+    }
+    const totalOpDays = series.reduce((s, p) => s + (p.periodWeekCount || 1) * operatingDays, 0)
+
+    CATEGORIES.forEach(cat => {
+      const uso = series.reduce((s, p) => s + (p[cat.key + '_uso'] || 0), 0)
+      const theo = series.reduce((s, p) => s + (p[cat.key + '_theo_cost'] || 0), 0)
+      const sales = series.reduce((s, p) => s + (p[cat.key + '_sales'] || 0), 0)
+      const purchases = series.reduce((s, p) => s + (p[cat.key + '_purchases'] || 0), 0)
+      const realPct = sales > 0 ? pct(uso, sales) : null
+      const mixPct = sales > 0 ? pct(theo, sales) : null
+      const variacion = realPct !== null && mixPct !== null && sales > 0
+        ? parseFloat(((realPct - mixPct) / 100 * sales).toFixed(2)) : null
+      const invPrev = series[0][cat.key + '_inv_previous']
+      const invCurr = series[series.length - 1][cat.key + '_inv_current']
+      const diasInv = uso > 0
+        ? parseFloat((((invCurr + invPrev) / 2) / uso * totalOpDays).toFixed(1))
+        : null
+
+      result[cat.key + '_uso'] = uso
+      result[cat.key + '_uso_pct'] = realPct || 0
+      result[cat.key + '_theo_pct'] = mixPct || 0
+      result[cat.key + '_variacion'] = variacion
+      result[cat.key + '_inv_current'] = invCurr
+      result[cat.key + '_inv_previous'] = invPrev
+      result[cat.key + '_purchases'] = purchases
+      result[cat.key + '_sales'] = sales
+      result[cat.key + '_has_adj'] = series.some(p => p[cat.key + '_has_adj'])
+      result[cat.key + '_theo_cost'] = theo
+      result[cat.key + '_dias_inv'] = diasInv
+    })
+
     let totalUso = 0, totalTheo = 0, totalSales = 0
     CATEGORIES.forEach(cat => {
       totalUso += result[cat.key + '_uso'] || 0
       totalTheo += result[cat.key + '_theo_cost'] || 0
       totalSales += result[cat.key + '_sales'] || 0
     })
-    result.totalUsoCost = totalUso; result.totalTheoCost = totalTheo; result.totalABSales = totalSales
+    result.totalUsoCost = totalUso
+    result.totalTheoCost = totalTheo
+    result.totalABSales = totalSales
     result.totalRealPct = totalSales > 0 ? pct(totalUso, totalSales) : null
     result.totalMixPct = totalSales > 0 ? pct(totalTheo, totalSales) : null
     result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
@@ -491,7 +638,20 @@ export default function CostoUsoPage() {
     return result
   }
 
-  const detailData = isMultiWeek ? buildRangeData() : (detailWeek ? buildWeekData(detailWeek) : null)
+  // ── Computed values usados por la UI ───────────────────────────────────
+  const periodSeries = buildPeriodSeries(filtered)
+  const consolidatedSkippedWeeks = periodSeries.flatMap((p: any) => p.spannedSkippedWeeks || [])
+  const chartData = periodSeries
+  const latest = filtered[filtered.length - 1]
+  // isMultiWeek = el rango representa más de 1 semana de actividad
+  // (varios períodos, o un solo período que absorbió semanas saltadas)
+  const isMultiWeek = periodSeries.length > 1 || (periodSeries.length === 1 && periodSeries[0].isConsolidated)
+  const isMultiPeriod = periodSeries.length > 1
+  // detailWeek = la semana de cierre del período más reciente (para títulos, ajustes, etc.)
+  const detailWeek = periodSeries.length > 0
+    ? periodSeries[periodSeries.length - 1].closingRaw
+    : (filtered[filtered.length - 1] || filtered[0] || null)
+  const detailData = aggregateSeries(periodSeries)
   const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
 
   const SHORTCUTS: { key: Shortcut; label: string }[] = [
@@ -880,11 +1040,16 @@ export default function CostoUsoPage() {
             {detailData && !isSelectedWeekSkipped().skipped && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
-                  {consolidatedSkippedWeeks.length > 0
-                    ? `Cálculo consolidado — ${selectedWeek} + ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario`
-                    : isMultiWeek
-                      ? `Promedio ponderado del período — ${filtered[0]?.report?.week} → ${latest?.report?.week} (${filtered.length} semanas)`
-                      : `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`}
+                  {(() => {
+                    if (isMultiPeriod) {
+                      const totalWeeks = periodSeries.reduce((s: number, p: any) => s + (p.periodWeekCount || 1), 0)
+                      return `Período — ${periodSeries[0].fullWeek} → ${periodSeries[periodSeries.length - 1].fullWeek} (${periodSeries.length} cierre${periodSeries.length !== 1 ? 's' : ''} de inventario, ${totalWeeks} semana${totalWeeks !== 1 ? 's' : ''} de actividad)`
+                    }
+                    if (consolidatedSkippedWeeks.length > 0) {
+                      return `Cálculo consolidado — ${detailData.fullWeek} + ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario (${consolidatedSkippedWeeks.join(', ')})`
+                    }
+                    return `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`
+                  })()}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5" title={isMultiWeek ? 'Cálculo consolidado del período: usa el inventario anterior de la primera semana, las compras de todas las semanas y el inventario actual de la última semana. Mismo número que el total de la tabla de detalle.' : undefined}>
@@ -914,7 +1079,11 @@ export default function CostoUsoPage() {
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <h2 className="text-white font-semibold">Detalle por categoría — {detailWeek?.report?.week}</h2>
+                      <h2 className="text-white font-semibold">
+                        {isMultiPeriod
+                          ? `Detalle por categoría — ${periodSeries[0].fullWeek} → ${periodSeries[periodSeries.length - 1].fullWeek}`
+                          : `Detalle por categoría — ${detailWeek?.report?.week}`}
+                      </h2>
                       {consolidatedSkippedWeeks.length > 0 && (
                         <span className="bg-orange-900 text-orange-300 text-xs px-2 py-1 rounded-full font-medium" title={`Semanas saltadas consolidadas: ${consolidatedSkippedWeeks.join(', ')}`}>
                           📭 Incluye {consolidatedSkippedWeeks.length} sem. saltada{consolidatedSkippedWeeks.length !== 1 ? 's' : ''} ({consolidatedSkippedWeeks.join(', ')})
@@ -1081,14 +1250,14 @@ export default function CostoUsoPage() {
               </div>
             )}
 
-            {chartData.filter(d => d.hasInventory).length >= 1 && (
+            {chartData.length >= 1 && (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                    <h2 className="text-white font-semibold mb-1">% Real vs % P.Mix por semana</h2>
-                    <p className="text-gray-500 text-xs mb-4">Total A&B</p>
+                    <h2 className="text-white font-semibold mb-1">% Real vs % P.Mix por período</h2>
+                    <p className="text-gray-500 text-xs mb-4">Total A&B · un punto por cierre de inventario</p>
                     <ResponsiveContainer width="100%" height={200}>
-                      <LineChart data={chartData.filter(d => d.hasInventory)}>
+                      <LineChart data={chartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                         <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
@@ -1100,16 +1269,16 @@ export default function CostoUsoPage() {
                     </ResponsiveContainer>
                   </div>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-                    <h2 className="text-white font-semibold mb-1">Variación $ por semana</h2>
-                    <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno)</p>
+                    <h2 className="text-white font-semibold mb-1">Variación $ por período</h2>
+                    <p className="text-gray-500 text-xs mb-4">Positivo = sobre teórico (malo) · Negativo = bajo teórico (bueno) · períodos consolidados acumulan más semanas</p>
                     <ResponsiveContainer width="100%" height={200}>
-                      <BarChart data={chartData.filter(d => d.hasInventory)}>
+                      <BarChart data={chartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                         <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => '$' + v} />
                         <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} formatter={(v: any) => [fmt(v), 'Variación']} />
                         <Bar dataKey="totalVariacion" name="Variación $" radius={[4, 4, 0, 0]} fill="#ef4444" label={false}>
-                          {chartData.filter(d => d.hasInventory).map((entry, index) => (
+                          {chartData.map((entry: any, index: number) => (
                             <Cell key={index} fill={entry.totalVariacion <= 0 ? '#22c55e' : '#ef4444'} />
                           ))}
                         </Bar>
@@ -1119,9 +1288,9 @@ export default function CostoUsoPage() {
                 </div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <h2 className="text-white font-semibold mb-1">% Costo Real por categoría</h2>
-                  <p className="text-gray-500 text-xs mb-4">Tendencia semanal</p>
+                  <p className="text-gray-500 text-xs mb-4">Tendencia por período cerrado</p>
                   <ResponsiveContainer width="100%" height={220}>
-                    <LineChart data={chartData.filter(d => d.hasInventory)}>
+                    <LineChart data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                       <XAxis dataKey="week" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={v => v + '%'} />
@@ -1136,53 +1305,62 @@ export default function CostoUsoPage() {
 
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
                   <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-                    <h2 className="text-white font-semibold">Histórico por semana</h2>
+                    <h2 className="text-white font-semibold">Histórico por período</h2>
                     <p className="text-gray-500 text-xs">
-                      {effectiveFiltered.length} semana{effectiveFiltered.length !== 1 ? 's' : ''} en el rango
-                      {consolidatedSkippedWeeks.length > 0 && ` · incluye ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario`}
+                      {periodSeries.length} período{periodSeries.length !== 1 ? 's' : ''} cerrado{periodSeries.length !== 1 ? 's' : ''}
+                      {consolidatedSkippedWeeks.length > 0 && ` · ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario absorbida${consolidatedSkippedWeeks.length !== 1 ? 's' : ''}`}
                     </p>
                   </div>
+                  <p className="text-gray-600 text-xs mb-4">
+                    Cada fila representa un período cerrado por un check-point de inventario.
+                    Las semanas saltadas se absorben en la fila del cierre siguiente, sumando sus ventas y compras al cálculo consolidado.
+                  </p>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-800">
-                          <th className="text-left text-gray-500 text-xs pb-3 font-medium">Semana</th>
+                          <th className="text-left text-gray-500 text-xs pb-3 font-medium">Período / Cierre</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">% Real</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">% P.Mix</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Variación $</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Uso $</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas A&B</th>
-                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Inventario</th>
+                          <th className="text-right text-gray-500 text-xs pb-3 font-medium">Sem.</th>
                           <th className="text-right text-gray-500 text-xs pb-3 font-medium">P.Mix</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {[...effectiveFiltered].reverse().map((w) => {
-                          const d = buildWeekData(w)
+                        {[...periodSeries].reverse().map((p: any) => {
+                          const cr = p.closingReport
                           return (
-                            <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                            <tr key={p.reportId} className="border-b border-gray-800 hover:bg-gray-800 transition">
                               <td className="py-3">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <div>
-                                    <p className="text-gray-300">{w.report.week}</p>
-                                    <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
+                                    <p className="text-gray-300">{p.fullWeek}</p>
+                                    <p className="text-gray-600 text-xs">{cr?.week_start} → {cr?.week_end}</p>
+                                    {p.isConsolidated && (
+                                      <p className="text-orange-400 text-xs mt-1" title={`Semanas saltadas absorbidas: ${p.spannedSkippedWeeks.join(', ')}`}>
+                                        📭 incluye {p.spannedSkippedWeeks.length} sem. saltada{p.spannedSkippedWeeks.length !== 1 ? 's' : ''} · arranca desde {p.anchorWeek || 'inicio'}
+                                      </p>
+                                    )}
                                   </div>
-                                  {d.hasAnyAdj && <span className="text-yellow-400 text-xs" title="Semana con ajustes manuales">✏️</span>}
+                                  {p.hasAnyAdj && <span className="text-yellow-400 text-xs" title="Período con ajustes manuales">✏️</span>}
                                 </div>
                               </td>
-                              <td className="py-3 text-right"><span className={`font-medium ${d.totalRealPct && d.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(d.totalRealPct)}</span></td>
-                              <td className="py-3 text-right text-blue-400">{fmtPct(d.totalMixPct)}</td>
+                              <td className="py-3 text-right"><span className={`font-medium ${p.totalRealPct && p.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(p.totalRealPct)}</span></td>
+                              <td className="py-3 text-right text-blue-400">{fmtPct(p.totalMixPct)}</td>
                               <td className="py-3 text-right">
-                                {d.totalVariacion !== null ? (
-                                  <span className={`font-medium ${d.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                                    {d.totalVariacion > 0 ? '+' : ''}{fmt(d.totalVariacion)}
+                                {p.totalVariacion !== null ? (
+                                  <span className={`font-medium ${p.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                    {p.totalVariacion > 0 ? '+' : ''}{fmt(p.totalVariacion)}
                                   </span>
                                 ) : <span className="text-gray-600">—</span>}
                               </td>
-                              <td className="py-3 text-right text-white">{fmt(d.totalUsoCost)}</td>
-                              <td className="py-3 text-right text-gray-400">{fmt(d.totalABSales)}</td>
-                              <td className="py-3 text-right">{d.hasInventory ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
-                              <td className="py-3 text-right">{d.hasProductMix ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
+                              <td className="py-3 text-right text-white">{fmt(p.totalUsoCost)}</td>
+                              <td className="py-3 text-right text-gray-400">{fmt(p.totalABSales)}</td>
+                              <td className="py-3 text-right text-gray-400 text-xs">{p.periodWeekCount}</td>
+                              <td className="py-3 text-right">{p.hasProductMix ? <span className="text-green-400 text-xs">✓</span> : <span className="text-gray-600 text-xs">—</span>}</td>
                             </tr>
                           )
                         })}
