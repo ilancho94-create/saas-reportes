@@ -79,6 +79,15 @@ export default function CostoUsoPage() {
   const [opDiscountMappings, setOpDiscountMappings] = useState<string[]>([]) // nombres operativos
   const [discountsDataByWeek, setDiscountsDataByWeek] = useState<Record<string, number>>({}) // semana → total operativos
 
+  // ── NUEVO: panel "Análisis de variación" ──────────────────────────────────
+  // category=null → análisis del total A&B del período
+  // category=string → análisis de esa categoría específica
+  const [varPanel, setVarPanel] = useState<null | {
+    category: string | null
+    periodLabel: string
+    period: any
+  }>(null)
+
   const CATEGORIES = CATEGORIES_BASE.map(cat => ({
     ...cat,
     meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
@@ -130,14 +139,16 @@ export default function CostoUsoPage() {
     if (!reports || reports.length === 0) { setLoading(false); return }
 
     const weeksData = await Promise.all(reports.map(async (r) => {
-      const [s, c, inv, pm, disc] = await Promise.all([
+      const [s, c, inv, pm, disc, wt, vd] = await Promise.all([
         supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
         supabase.from('cogs_data').select('*').eq('report_id', r.id).single(),
         supabase.from('inventory_data').select('*').eq('report_id', r.id).single(),
         supabase.from('product_mix_data').select('*').eq('report_id', r.id).single(),
         supabase.from('discounts_data').select('total, items').eq('report_id', r.id).single(),
+        supabase.from('waste_data').select('total_cost, items').eq('report_id', r.id).single(),
+        supabase.from('voids_data').select('total, items').eq('report_id', r.id).single(),
       ])
-      return { report: r, sales: s.data, cogs: c.data, inventory: inv.data, productMix: pm.data, discounts: disc.data }
+      return { report: r, sales: s.data, cogs: c.data, inventory: inv.data, productMix: pm.data, discounts: disc.data, waste: wt.data, voids: vd.data }
     }))
 
     setWeeks(weeksData)
@@ -457,6 +468,7 @@ export default function CostoUsoPage() {
       periodWeekCount: periodWeeks.length,
       closingReport: closing.report,
       closingRaw: closing,
+      periodWeeksRaw: periodWeeks,  // semanas raw del período (para análisis de varianza)
     }
 
     let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
@@ -591,6 +603,7 @@ export default function CostoUsoPage() {
       closingReport: series[series.length - 1].closingReport,
       closingRaw: series[series.length - 1].closingRaw,
       opDiscTotal: series.reduce((s, p) => s + (p.opDiscTotal || 0), 0),
+      periodWeeksRaw: series.flatMap(s => s.periodWeeksRaw || []),  // todas las raw weeks del agregado
     }
     const totalOpDays = series.reduce((s, p) => s + (p.periodWeekCount || 1) * operatingDays, 0)
 
@@ -636,6 +649,139 @@ export default function CostoUsoPage() {
     result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
       ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalSales).toFixed(2)) : null
     return result
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // ANÁLISIS DE VARIANZA
+  // Dada una categoría (o null = total A&B) y un período (period entry con
+  // periodWeeksRaw), descompone la variación $ en causas conocidas con
+  // datos del sistema (waste, voids, comps, items sin receta) y el residuo
+  // no explicado.
+  // ──────────────────────────────────────────────────────────────────────
+  function buildVarianceBreakdown(category: string | null, period: any) {
+    const rawWeeks: any[] = period?.periodWeeksRaw || []
+    const catKey = category // null = total A&B
+
+    // Uso y teórico del scope solicitado
+    let uso: number, theo: number, sales: number, variance: number
+    if (catKey) {
+      uso = period[catKey + '_uso'] || 0
+      theo = period[catKey + '_theo_cost'] || 0
+      sales = period[catKey + '_sales'] || 0
+      variance = period[catKey + '_variacion'] ?? (uso - theo)
+    } else {
+      uso = period.totalUsoCost || 0
+      theo = period.totalTheoCost || 0
+      sales = period.totalABSales || 0
+      variance = period.totalVariacion ?? (uso - theo)
+    }
+
+    // ── Waste registrado en R365 ─────────────────────────────────────────
+    // Cada item de waste tiene .category (R365 account name) que mapeamos via ACCOUNT_MAP
+    const wasteItems: any[] = []
+    let wasteAttributed = 0
+    let wasteUncategorized = 0
+    rawWeeks.forEach(w => {
+      const items: any[] = w.waste?.items || []
+      items.forEach(it => {
+        const mappedCat = ACCOUNT_MAP[it.category as string] || null
+        if (catKey === null) {
+          wasteAttributed += it.total || 0
+          wasteItems.push({ ...it, week: w.report.week, mappedCat })
+        } else if (mappedCat === catKey) {
+          wasteAttributed += it.total || 0
+          wasteItems.push({ ...it, week: w.report.week, mappedCat })
+        } else if (!mappedCat && catKey !== null) {
+          // waste sin categoría mapeable, no podemos atribuir → contar aparte
+          wasteUncategorized += it.total || 0
+        }
+      })
+    })
+
+    // ── Voids del período ────────────────────────────────────────────────
+    // Items mandados a cocina y cancelados → consumieron inventario pero
+    // no generaron venta. Toast Voids no tiene categoría — total del período.
+    const voidsItems: any[] = []
+    let voidsTotal = 0
+    let voidsCount = 0
+    rawWeeks.forEach(w => {
+      const items: any[] = w.voids?.items || []
+      items.forEach(it => {
+        voidsTotal += it.price || 0
+        voidsCount += it.quantity || 1
+        voidsItems.push({ ...it, week: w.report.week })
+      })
+    })
+    // Voids es PRECIO DE VENTA del item cancelado, no costo de inv directo.
+    // Aproximamos su impacto en inventario asumiendo que se consumió a costo
+    // teórico (~ price * theo_pct_categoría) — pero a nivel categoría no
+    // sabemos cuál es. Reportamos el monto bruto y notamos el caveat.
+
+    // ── Comps / Descuentos NO operativos ─────────────────────────────────
+    // Los operativos (staff meals) ya se contabilizaron en sales si toggle ON.
+    // Los no-operativos podrían ser comps (item regalado) → consumió inv sin
+    // generar venta efectiva. Reportamos.
+    let compsTotal = 0
+    let compsCount = 0
+    const compsItems: any[] = []
+    rawWeeks.forEach(w => {
+      const items: any[] = w.discounts?.items || []
+      items.forEach(it => {
+        const isOp = opDiscountMappings.includes(it.name)
+        if (!isOp) {
+          compsTotal += it.amount || 0
+          compsCount += it.applications || 0
+          compsItems.push({ ...it, week: w.report.week })
+        }
+      })
+    })
+
+    // ── Operativos (relevante si toggle OFF, porque inflarían varianza) ──
+    let opDiscTotal = 0
+    rawWeeks.forEach(w => {
+      const items: any[] = w.discounts?.items || []
+      items.forEach(it => {
+        const isOp = opDiscountMappings.includes(it.name)
+        if (isOp) opDiscTotal += it.amount || 0
+      })
+    })
+
+    // ── Items vendidos sin receta en P.Mix ───────────────────────────────
+    // unmatched_items: tienen theo cost computado por R365 pero no se pudieron
+    // clasificar en una categoría → su theo está "perdido" → varianza de la
+    // categoría real está inflada.
+    const unmatchedItems: any[] = []
+    let unmatchedTheoCost = 0
+    rawWeeks.forEach(w => {
+      const items: any[] = w.productMix?.raw_data?.unmatched_items || []
+      items.forEach(it => {
+        unmatchedTheoCost += it.theo_cost || 0
+        unmatchedItems.push({ ...it, week: w.report.week })
+      })
+    })
+
+    // ── Residuo no explicado ─────────────────────────────────────────────
+    // Suma de causas conocidas que afectan variance hacia arriba (uso > theo):
+    //   - waste (consume inv, no theo en P.Mix porque no se vendió)
+    //   - voids (consume inv, no theo)
+    //   - comps no-op (consume inv, no theo si no fue por descuento)
+    //   - unmatched theo (debería sumar a theo pero está perdido)
+    // Operativos NO entran en el residuo si toggle ON (ya absorbidos en sales).
+    // Si toggle OFF, sí entran (inflan variance via menor sales efectivas).
+    const totalExplained = wasteAttributed + voidsTotal + compsTotal + unmatchedTheoCost
+      + (!includeOpDiscounts ? opDiscTotal : 0)
+    const residual = variance - totalExplained
+
+    return {
+      scope: catKey ? CATEGORIES.find(c => c.key === catKey)?.label || catKey : 'Total A&B',
+      uso, theo, sales, variance,
+      wasteAttributed, wasteUncategorized, wasteItems,
+      voidsTotal, voidsCount, voidsItems,
+      compsTotal, compsCount, compsItems,
+      opDiscTotal, opDiscIncludedInSales: includeOpDiscounts,
+      unmatchedTheoCost, unmatchedItems,
+      totalExplained, residual,
+    }
   }
 
   // ── Computed values usados por la UI ───────────────────────────────────
@@ -768,6 +914,261 @@ export default function CostoUsoPage() {
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+
+        {/* ── Modal: Análisis de variación ── */}
+        {varPanel && (() => {
+          const b = buildVarianceBreakdown(varPanel.category, varPanel.period)
+          const fmtSigned = (n: number) => (n > 0 ? '+' : n < 0 ? '' : '') + fmt(n)
+          const explainedPctOfVar = b.variance !== 0 ? Math.min(100, Math.abs(b.totalExplained / b.variance * 100)) : 0
+          return (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setVarPanel(null)}>
+              <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-5">
+                  <div>
+                    <h3 className="text-white font-bold text-base">🔍 Análisis de variación</h3>
+                    <p className="text-gray-500 text-xs mt-0.5">
+                      {b.scope} · {varPanel.periodLabel}
+                    </p>
+                  </div>
+                  <button onClick={() => setVarPanel(null)} className="text-gray-500 hover:text-white">✕</button>
+                </div>
+
+                {/* Números base */}
+                <div className="grid grid-cols-3 gap-3 mb-5">
+                  <div className="bg-gray-800 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs mb-1">Uso real</p>
+                    <p className="text-xl font-bold text-white">{fmt(b.uso)}</p>
+                    <p className="text-gray-600 text-xs">inv. anterior + compras − inv. actual</p>
+                  </div>
+                  <div className="bg-gray-800 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs mb-1">Teórico (P.Mix)</p>
+                    <p className="text-xl font-bold text-white">{fmt(b.theo)}</p>
+                    <p className="text-gray-600 text-xs">costo según recetas</p>
+                  </div>
+                  <div className={`rounded-xl p-4 ${b.variance > 0 ? 'bg-red-950 border border-red-900' : b.variance < 0 ? 'bg-green-950 border border-green-900' : 'bg-gray-800'}`}>
+                    <p className="text-gray-400 text-xs mb-1">Variación</p>
+                    <p className={`text-xl font-bold ${b.variance > 0 ? 'text-red-400' : b.variance < 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                      {fmtSigned(b.variance)}
+                    </p>
+                    <p className="text-gray-500 text-xs">{b.variance > 0 ? 'usaste más que las recetas' : b.variance < 0 ? 'usaste menos que las recetas' : 'cuadra perfecto'}</p>
+                  </div>
+                </div>
+
+                {b.variance === 0 ? (
+                  <div className="bg-gray-800 rounded-xl p-4 text-center">
+                    <p className="text-gray-300 text-sm">No hay variación que analizar para este scope.</p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-3">
+                      Causas con datos del sistema
+                    </p>
+
+                    <div className="space-y-3 mb-5">
+                      {/* Waste */}
+                      <div className="bg-gray-800 rounded-xl p-4">
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div className="flex items-start gap-3 flex-1">
+                            <span className="text-xl">🗑️</span>
+                            <div className="flex-1">
+                              <p className="text-white text-sm font-semibold">Desperdicio registrado en R365</p>
+                              <p className="text-gray-500 text-xs mt-0.5">
+                                {b.wasteItems.length} registro{b.wasteItems.length !== 1 ? 's' : ''} {varPanel.category ? `mapeado${b.wasteItems.length !== 1 ? 's' : ''} a ${b.scope}` : 'del período'}
+                                {b.wasteUncategorized > 0 && ` · ${fmt(b.wasteUncategorized)} sin categoría mapeable`}
+                              </p>
+                            </div>
+                          </div>
+                          <p className="text-white text-base font-bold whitespace-nowrap">{fmt(b.wasteAttributed)}</p>
+                        </div>
+                        {b.wasteItems.length > 0 && (
+                          <details className="mt-2">
+                            <summary className="text-gray-400 text-xs cursor-pointer hover:text-white">Ver items ({b.wasteItems.length})</summary>
+                            <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                              {b.wasteItems.slice(0, 30).map((it, i) => (
+                                <div key={i} className="flex justify-between items-center text-xs bg-gray-900 rounded px-2 py-1">
+                                  <span className="text-gray-300 truncate">{it.name}</span>
+                                  <span className="text-gray-500 shrink-0 ml-2">{it.qty} {it.uom} · {fmt(it.total)} · {it.week}</span>
+                                </div>
+                              ))}
+                              {b.wasteItems.length > 30 && <p className="text-gray-600 text-xs text-center pt-1">+{b.wasteItems.length - 30} más</p>}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+
+                      {/* Voids */}
+                      <div className="bg-gray-800 rounded-xl p-4">
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div className="flex items-start gap-3 flex-1">
+                            <span className="text-xl">🚫</span>
+                            <div className="flex-1">
+                              <p className="text-white text-sm font-semibold">Voids (items cancelados después de mandar a cocina)</p>
+                              <p className="text-gray-500 text-xs mt-0.5">
+                                {b.voidsCount} items voided del período · monto bruto, no categorizable directamente
+                                {varPanel.category && ' · contribuye a la varianza total, no necesariamente a esta categoría'}
+                              </p>
+                            </div>
+                          </div>
+                          <p className="text-white text-base font-bold whitespace-nowrap">{fmt(b.voidsTotal)}</p>
+                        </div>
+                        {b.voidsItems.length > 0 && (
+                          <details className="mt-2">
+                            <summary className="text-gray-400 text-xs cursor-pointer hover:text-white">Ver items ({b.voidsItems.length})</summary>
+                            <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                              {b.voidsItems.slice(0, 30).map((it, i) => (
+                                <div key={i} className="flex justify-between items-center text-xs bg-gray-900 rounded px-2 py-1">
+                                  <span className="text-gray-300 truncate">{it.item_name}</span>
+                                  <span className="text-gray-500 shrink-0 ml-2">{it.reason || 'sin razón'} · {fmt(it.price)} · {it.week}</span>
+                                </div>
+                              ))}
+                              {b.voidsItems.length > 30 && <p className="text-gray-600 text-xs text-center pt-1">+{b.voidsItems.length - 30} más</p>}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+
+                      {/* Comps / discounts no-operativos */}
+                      <div className="bg-gray-800 rounded-xl p-4">
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div className="flex items-start gap-3 flex-1">
+                            <span className="text-xl">🎁</span>
+                            <div className="flex-1">
+                              <p className="text-white text-sm font-semibold">Descuentos NO operativos (potenciales comps)</p>
+                              <p className="text-gray-500 text-xs mt-0.5">
+                                {b.compsCount} aplicacion{b.compsCount !== 1 ? 'es' : ''} · si fueron items regalados completos, consumieron inv sin generar venta efectiva
+                              </p>
+                            </div>
+                          </div>
+                          <p className="text-white text-base font-bold whitespace-nowrap">{fmt(b.compsTotal)}</p>
+                        </div>
+                        {b.compsItems.length > 0 && (
+                          <details className="mt-2">
+                            <summary className="text-gray-400 text-xs cursor-pointer hover:text-white">Ver descuentos</summary>
+                            <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                              {b.compsItems.slice(0, 20).map((it, i) => (
+                                <div key={i} className="flex justify-between items-center text-xs bg-gray-900 rounded px-2 py-1">
+                                  <span className="text-gray-300 truncate">{it.name}</span>
+                                  <span className="text-gray-500 shrink-0 ml-2">{it.applications}x · {fmt(it.amount)} · {it.week}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+
+                      {/* Operativos */}
+                      {b.opDiscTotal > 0 && (
+                        <div className={`rounded-xl p-4 ${b.opDiscIncludedInSales ? 'bg-green-950 border border-green-900' : 'bg-yellow-950 border border-yellow-900'}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-3 flex-1">
+                              <span className="text-xl">{b.opDiscIncludedInSales ? '✅' : '⚠️'}</span>
+                              <div className="flex-1">
+                                <p className="text-white text-sm font-semibold">Descuentos operativos (staff meals, etc.)</p>
+                                <p className="text-gray-400 text-xs mt-0.5">
+                                  {b.opDiscIncludedInSales
+                                    ? 'Toggle "+Desc. Operativos" está ACTIVO → ya absorbidos en ventas; no contribuyen al residuo.'
+                                    : 'Toggle "+Desc. Operativos" está APAGADO → estos descuentos NO se sumaron a ventas, por lo que inflan artificialmente la varianza. Considera prenderlo.'}
+                                </p>
+                              </div>
+                            </div>
+                            <p className="text-white text-base font-bold whitespace-nowrap">{fmt(b.opDiscTotal)}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Unmatched */}
+                      <div className="bg-gray-800 rounded-xl p-4">
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div className="flex items-start gap-3 flex-1">
+                            <span className="text-xl">❓</span>
+                            <div className="flex-1">
+                              <p className="text-white text-sm font-semibold">Items vendidos con receta pero sin categoría mapeada</p>
+                              <p className="text-gray-500 text-xs mt-0.5">
+                                {b.unmatchedItems.length === 0
+                                  ? 'No hay items sin categorizar este período.'
+                                  : `${b.unmatchedItems.length} item${b.unmatchedItems.length !== 1 ? 's' : ''}: su costo teórico se "perdió" y no entró en ninguna categoría → infla la varianza de la categoría real`}
+                              </p>
+                            </div>
+                          </div>
+                          <p className="text-white text-base font-bold whitespace-nowrap">{fmt(b.unmatchedTheoCost)}</p>
+                        </div>
+                        {b.unmatchedItems.length > 0 && (
+                          <>
+                            <details className="mt-2">
+                              <summary className="text-gray-400 text-xs cursor-pointer hover:text-white">Ver items</summary>
+                              <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                                {b.unmatchedItems.slice(0, 30).map((it, i) => (
+                                  <div key={i} className="flex justify-between items-center text-xs bg-gray-900 rounded px-2 py-1">
+                                    <span className="text-gray-300 truncate">{it.item}</span>
+                                    <span className="text-gray-500 shrink-0 ml-2">{fmt(it.theo_cost)} · {it.week}</span>
+                                  </div>
+                                ))}
+                                {b.unmatchedItems.length > 30 && <p className="text-gray-600 text-xs text-center pt-1">+{b.unmatchedItems.length - 30} más</p>}
+                              </div>
+                            </details>
+                            <a href="/dashboard/settings/mapeo-items" className="text-blue-400 hover:text-blue-300 text-xs inline-block mt-2">→ Ir a Mapeo de Items para categorizarlos</a>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Residuo */}
+                    <div className="border-t border-gray-700 pt-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider">
+                          Sin explicación clara
+                        </p>
+                        <p className="text-gray-600 text-xs">
+                          {explainedPctOfVar.toFixed(0)}% de la varianza explicado por datos del sistema
+                        </p>
+                      </div>
+                      <div className={`rounded-xl p-4 ${Math.abs(b.residual) > Math.abs(b.variance) * 0.3 ? 'bg-orange-950 border border-orange-900' : 'bg-gray-800'}`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-white text-sm font-semibold">Residuo no explicado</p>
+                          <p className={`text-xl font-bold ${b.residual > 0 ? 'text-red-400' : b.residual < 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                            {fmtSigned(b.residual)}
+                          </p>
+                        </div>
+                        <p className="text-gray-400 text-xs leading-relaxed">
+                          {b.residual > 0
+                            ? 'Inventario consumido que no se puede atribuir a una causa registrada. Posibles fuentes:'
+                            : b.residual < 0
+                              ? 'Las causas registradas suman MÁS que la varianza observada. Posibles fuentes:'
+                              : 'Las causas registradas cuadran con la varianza.'}
+                        </p>
+                        {b.residual !== 0 && (
+                          <ul className="text-gray-500 text-xs mt-2 space-y-0.5 list-disc list-inside">
+                            {b.residual > 0 && (
+                              <>
+                                <li>Sobre-porción (cocinero sirve más que la receta)</li>
+                                <li>Mermas no registradas en R365 Waste</li>
+                                <li>Robo o desviación</li>
+                                <li>Transferencias entre sucursales no registradas</li>
+                                <li>Errores de conteo de inventario</li>
+                                <li>Recetas en R365 desactualizadas (gramaje incorrecto)</li>
+                              </>
+                            )}
+                            {b.residual < 0 && (
+                              <>
+                                <li>Doble conteo: waste también ya estaba reflejado en sales (item cobrado + reportado como waste)</li>
+                                <li>Comps no-operativos categorizados como tales pero sí cobrados</li>
+                                <li>Items voided que en realidad sí se vendieron</li>
+                              </>
+                            )}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-gray-600 text-xs mt-4 leading-relaxed">
+                      <strong className="text-gray-400">Nota:</strong> Voids y descuentos no operativos no se pueden atribuir a una categoría específica con los datos actuales — su monto bruto aparece igual cuando ves Total A&B que cuando ves una categoría individual.
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+          )
+        })()}
 
         {/* Modal ajuste */}
         {showAdjPanel && canEdit && (
@@ -1062,13 +1463,25 @@ export default function CostoUsoPage() {
                     <p className="text-3xl font-bold text-green-400">{detailData.totalMixPct !== null ? detailData.totalMixPct + '%' : '—'}</p>
                     <p className="text-gray-600 text-xs mt-1">{fmt(detailData.totalTheoCost)} teórico</p>
                   </div>
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5" title={isMultiWeek ? 'Diferencia entre % Real consolidado y % P.Mix consolidado, expresada en dólares sobre las ventas A&B del período.' : undefined}>
-                    <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'del período' : ''}</p>
+                  <button
+                    onClick={() => detailData.totalVariacion !== null && setVarPanel({
+                      category: null,
+                      periodLabel: isMultiPeriod
+                        ? `${periodSeries[0].fullWeek} → ${periodSeries[periodSeries.length - 1].fullWeek}`
+                        : periodSeries[0]?.isConsolidated
+                          ? `${periodSeries[0].fullWeek} (consolidado)`
+                          : (periodSeries[0]?.fullWeek || ''),
+                      period: detailData,
+                    })}
+                    disabled={detailData.totalVariacion === null}
+                    className="bg-gray-900 border border-gray-800 hover:border-blue-700 hover:bg-gray-800 rounded-xl p-5 text-left transition disabled:cursor-default disabled:hover:bg-gray-900 disabled:hover:border-gray-800"
+                    title="Click para ver el desglose de la variación: waste, voids, comps, items sin receta y residuo">
+                    <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'del período' : ''} <span className="text-blue-400 text-xs">🔍</span></p>
                     <p className={`text-3xl font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                       {detailData.totalVariacion !== null ? (detailData.totalVariacion > 0 ? '+' : '') + fmt(detailData.totalVariacion) : '—'}
                     </p>
-                    <p className="text-gray-600 text-xs mt-1">{detailData.totalVariacion > 0 ? 'sobre lo teórico' : detailData.totalVariacion < 0 ? 'bajo lo teórico' : ''}</p>
-                  </div>
+                    <p className="text-gray-600 text-xs mt-1">{detailData.totalVariacion > 0 ? 'sobre lo teórico · click para analizar' : detailData.totalVariacion < 0 ? 'bajo lo teórico · click para analizar' : ''}</p>
+                  </button>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
                     <p className="text-2xl font-bold text-white">{fmt(detailWeek?.inventory?.grand_total_current)}</p>
@@ -1184,11 +1597,22 @@ export default function CostoUsoPage() {
                               <td className="py-3 text-right"><span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</span></td>
                               <td className="py-3 text-right text-blue-400 text-sm">{fmtPct(mixPct)}</td>
                               <td className="py-3 text-right">
-                                {variacion !== null ? (
-                                  <span className={`text-sm font-medium ${variacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                {variacion !== null && variacion !== 0 ? (
+                                  <button
+                                    onClick={() => setVarPanel({
+                                      category: cat.key,
+                                      periodLabel: isMultiPeriod
+                                        ? `${periodSeries[0].fullWeek} → ${periodSeries[periodSeries.length - 1].fullWeek}`
+                                        : periodSeries[0]?.isConsolidated
+                                          ? `${periodSeries[0].fullWeek} (consolidado)`
+                                          : (periodSeries[0]?.fullWeek || ''),
+                                      period: detailData,
+                                    })}
+                                    className={`text-sm font-medium underline decoration-dotted underline-offset-2 hover:bg-gray-700 px-1.5 py-0.5 rounded transition ${variacion > 0 ? 'text-red-400' : 'text-green-400'}`}
+                                    title="Click para analizar esta variación">
                                     {variacion > 0 ? '+' : ''}{fmt(variacion)}
-                                  </span>
-                                ) : <span className="text-gray-600">—</span>}
+                                  </button>
+                                ) : variacion === null ? <span className="text-gray-600">—</span> : <span className="text-gray-400">$0</span>}
                               </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>
                               {canEdit && shortcut === 'week' && (
@@ -1210,10 +1634,21 @@ export default function CostoUsoPage() {
                           <td className="py-3 text-right"><span className={`font-bold ${detailData.totalRealPct && detailData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(detailData.totalRealPct)}</span></td>
                           <td className="py-3 text-right text-blue-400 font-bold">{fmtPct(detailData.totalMixPct)}</td>
                           <td className="py-3 text-right">
-                            {detailData.totalVariacion !== null ? (
-                              <span className={`font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                            {detailData.totalVariacion !== null && detailData.totalVariacion !== 0 ? (
+                              <button
+                                onClick={() => setVarPanel({
+                                  category: null,
+                                  periodLabel: isMultiPeriod
+                                    ? `${periodSeries[0].fullWeek} → ${periodSeries[periodSeries.length - 1].fullWeek}`
+                                    : periodSeries[0]?.isConsolidated
+                                      ? `${periodSeries[0].fullWeek} (consolidado)`
+                                      : (periodSeries[0]?.fullWeek || ''),
+                                  period: detailData,
+                                })}
+                                className={`font-bold underline decoration-dotted underline-offset-2 hover:bg-gray-700 px-1.5 py-0.5 rounded transition ${detailData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}
+                                title="Click para analizar la variación total">
                                 {detailData.totalVariacion > 0 ? '+' : ''}{fmt(detailData.totalVariacion)}
-                              </span>
+                              </button>
                             ) : '—'}
                           </td>
                           <td />{canEdit && shortcut === 'week' && <td />}
@@ -1351,10 +1786,19 @@ export default function CostoUsoPage() {
                               <td className="py-3 text-right"><span className={`font-medium ${p.totalRealPct && p.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(p.totalRealPct)}</span></td>
                               <td className="py-3 text-right text-blue-400">{fmtPct(p.totalMixPct)}</td>
                               <td className="py-3 text-right">
-                                {p.totalVariacion !== null ? (
-                                  <span className={`font-medium ${p.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                {p.totalVariacion !== null && p.totalVariacion !== 0 ? (
+                                  <button
+                                    onClick={() => setVarPanel({
+                                      category: null,
+                                      periodLabel: p.isConsolidated
+                                        ? `${p.fullWeek} (incluye ${p.spannedSkippedWeeks.join(', ')})`
+                                        : p.fullWeek,
+                                      period: p,
+                                    })}
+                                    className={`font-medium underline decoration-dotted underline-offset-2 hover:bg-gray-700 px-1.5 py-0.5 rounded transition ${p.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}
+                                    title="Click para analizar la varianza de este período">
                                     {p.totalVariacion > 0 ? '+' : ''}{fmt(p.totalVariacion)}
-                                  </span>
+                                  </button>
                                 ) : <span className="text-gray-600">—</span>}
                               </td>
                               <td className="py-3 text-right text-white">{fmt(p.totalUsoCost)}</td>
