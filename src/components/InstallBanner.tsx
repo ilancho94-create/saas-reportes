@@ -45,11 +45,16 @@ export default function InstallBanner() {
       setDismissed(false)
     }
 
-    // Registrar service worker (necesario para que el evento dispare)
+    // Registrar service worker (necesario para que el evento dispare).
+    // Forzamos update() para que usuarios con SW viejo (versión que tenía
+    // fetch handler + clients.claim, que pudo interceptar mal las requests
+    // de Supabase) reciban la versión inerte cuanto antes.
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {
-        // Silencioso — no es crítico para el resto de la app
-      })
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(reg => reg.update().catch(() => {}))
+        .catch(() => {
+          // Silencioso — no es crítico para el resto de la app
+        })
     }
 
     // Capturar el prompt

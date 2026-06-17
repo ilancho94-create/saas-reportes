@@ -1,29 +1,21 @@
-// Service Worker mínimo para habilitar la instalación PWA.
-// No implementa estrategia de caché offline todavía — eso vendrá en una
-// fase posterior junto con la optimización de velocidad y costos.
-// La sola presencia de este SW + el manifest.json es suficiente para que
-// Chrome dispare el evento beforeinstallprompt y se pueda agregar a inicio.
+// Service Worker MÍNIMO INERTE.
+//
+// No tiene fetch handler ni clients.claim a propósito:
+// - Sin fetch handler, el browser no enruta requests por aquí (overhead 0).
+// - Sin clients.claim, el nuevo SW solo toma control en la siguiente
+//   navegación, sin re-interpretar requests in-flight.
+// - skipWaiting está para que usuarios con SW viejo se actualicen sin
+//   tener que cerrar todas las pestañas.
+//
+// Chrome 89+ acepta un SW sin fetch handler como "installable".
+//
+// Cuando se implemente offline strategy (post-auditoría), aquí se agregan
+// los listeners de fetch con cache-first/network-first por ruta.
 
-const CACHE_NAME = 'restaurant-xray-v1'
-
-self.addEventListener('install', (event) => {
-  // Activar inmediatamente, sin esperar a que se cierren las pestañas viejas
+self.addEventListener('install', () => {
   self.skipWaiting()
 })
 
-self.addEventListener('activate', (event) => {
-  // Tomar control de pestañas abiertas inmediatamente
-  event.waitUntil(self.clients.claim())
-  // Limpieza de cachés viejas (por si en el futuro agregamos versiones)
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    )
-  )
-})
-
-self.addEventListener('fetch', (event) => {
-  // Pasa todo a la red sin tocar. Cuando agreguemos offline strategy,
-  // aquí va el switch entre cache-first / network-first según ruta.
-  return
+self.addEventListener('activate', () => {
+  // No clients.claim — el SW nuevo aplica solo en la siguiente navegación.
 })
