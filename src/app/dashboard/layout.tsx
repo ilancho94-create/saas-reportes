@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 
@@ -143,12 +144,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               {visibleItems.map(item => {
                 const active = isActive(item.href)
                 return (
-                  <a key={item.href} href={item.href} title={item.label}
+                  <Link key={item.href} href={item.href} title={item.label} prefetch
                     onClick={() => setMobileOpen(false)}
                     className={`flex items-center gap-3 px-4 py-2 text-sm transition-all ${collapsed ? 'justify-center' : ''} ${active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
                     <span className="text-base shrink-0">{item.icon}</span>
                     {!collapsed && <span>{item.label}</span>}
-                  </a>
+                  </Link>
                 )
               })}
             </div>
@@ -158,12 +159,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {isSuperAdmin && (
           <div className="mb-4">
             {!collapsed && <p className="text-amber-600 text-xs font-semibold px-4 mb-1 tracking-wider">SUPER ADMIN</p>}
-            <a href="/dashboard/superadmin" title="Super Admin"
+            <Link href="/dashboard/superadmin" title="Super Admin" prefetch
               onClick={() => setMobileOpen(false)}
               className={`flex items-center gap-3 px-4 py-2 text-sm transition-all ${collapsed ? 'justify-center' : ''} ${isActive('/dashboard/superadmin') ? 'bg-amber-600 text-white' : 'text-amber-500 hover:text-amber-300 hover:bg-amber-950'}`}>
               <span className="text-base shrink-0">⚡</span>
               {!collapsed && <span>Super Admin</span>}
-            </a>
+            </Link>
           </div>
         )}
       </nav>

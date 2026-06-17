@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 
@@ -179,7 +180,7 @@ export default function UploadPage() {
   return (
     <div className="min-h-screen bg-gray-950">
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center gap-4">
-        <a href="/dashboard" className="text-gray-400 hover:text-white text-sm">← Volver al dashboard</a>
+        <Link href="/dashboard" prefetch className="text-gray-400 hover:text-white text-sm">← Volver al dashboard</Link>
         <span className="text-white font-semibold">Subir reporte semanal</span>
         {currentRestaurant && (
           <span className="ml-auto text-xs text-blue-400 bg-blue-950 border border-blue-800 px-3 py-1 rounded-full">

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 
@@ -42,9 +43,9 @@ export default function HistoryPage() {
   return (
     <div className="min-h-screen bg-gray-950">
       <header className="border-b border-gray-800 bg-gray-900 px-6 py-4 flex items-center gap-4">
-        <button onClick={() => window.location.href = '/dashboard'} className="text-gray-400 hover:text-white text-sm">
+        <Link href="/dashboard" prefetch className="text-gray-400 hover:text-white text-sm">
           ← Dashboard
-        </button>
+        </Link>
         <span className="text-white font-semibold">Historial de reportes</span>
       </header>
 

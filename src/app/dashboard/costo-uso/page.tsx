@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import { useAuth } from '@/lib/auth-context'
@@ -94,7 +95,7 @@ export default function CostoUsoPage() {
   }))
 
   const canEdit = can(userRole, 'costo_uso', 'edit', userCustomPerms)
-  const { isSuperAdmin } = useAuth()
+  const { isSuperAdmin, user } = useAuth()
   const canSkipWeek = can(userRole, 'costo_uso', 'skip_week' as Action, userCustomPerms) || isSuperAdmin
 
   useEffect(() => { if (restaurantId) loadData() }, [restaurantId])
@@ -104,70 +105,91 @@ export default function CostoUsoPage() {
     setLoading(true)
     setWeeks([])
 
-    const { data: { user } } = await supabase.auth.getUser()
-    if (user) {
-      const { data: ur } = await supabase.from('user_restaurants')
-        .select('role, custom_permissions').eq('user_id', user.id).eq('restaurant_id', restaurantId).single()
-      if (ur) { setUserRole(ur.role || ''); setUserCustomPerms(ur.custom_permissions || null) }
+    // Una sola ronda de queries en paralelo:
+    //   - Reports con EMBEDDED select que trae todas las *_data en un solo
+    //     round-trip (antes: 1 + 52×7 = 365 queries → ahora 1 query).
+    //   - Resto de tablas en paralelo (config, adjustments, skipped, user_role).
+    // Tomamos user del AuthProvider (ya cargado) para no llamar getUser otra vez.
+    const userRestaurantPromise = user
+      ? supabase.from('user_restaurants').select('role, custom_permissions')
+          .eq('user_id', user.id).eq('restaurant_id', restaurantId).maybeSingle()
+      : Promise.resolve({ data: null })
+
+    const [
+      restRes, mapsRes, tgtsRes, discMapsRes, reportsRes, adjsRes, skippedRes, urRes,
+    ] = await Promise.all([
+      supabase.from('restaurants').select('name, operating_days').eq('id', restaurantId).single(),
+      supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
+      supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
+      supabase.from('discount_mappings').select('discount_name').eq('restaurant_id', restaurantId).eq('is_operational', true),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id,
+        sales_data(net_sales, categories),
+        cogs_data(by_category),
+        inventory_data(by_account, grand_total_current, grand_total_previous),
+        product_mix_data(theo_cost_by_category, raw_data),
+        discounts_data(total, items),
+        waste_data(total_cost, items),
+        voids_data(total, items)
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52),
+      supabase.from('costo_uso_adjustments').select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false }),
+      supabase.from('skipped_inventory_weeks').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true }),
+      userRestaurantPromise,
+    ])
+
+    // user_restaurants
+    if (urRes.data) {
+      setUserRole((urRes.data as any).role || '')
+      setUserCustomPerms((urRes.data as any).custom_permissions || null)
     }
 
-    const { data: rest } = await supabase.from('restaurants').select('name, operating_days').eq('id', restaurantId).single()
-    setRestaurantName(rest?.name || '')
-    setOperatingDays(rest?.operating_days || 6)
+    // restaurant
+    setRestaurantName(restRes.data?.name || '')
+    setOperatingDays(restRes.data?.operating_days || 6)
 
-    const { data: maps } = await supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId)
-    setMappings(maps || [])
+    // mappings
+    setMappings(mapsRes.data || [])
 
-    const { data: tgts } = await supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
-    if (tgts?.length) {
+    // cost targets
+    if (tgtsRes.data?.length) {
       const m: Record<string, number> = {}
-      tgts.forEach((t: any) => { m[t.category] = Number(t.target_pct) })
+      tgtsRes.data.forEach((t: any) => { m[t.category] = Number(t.target_pct) })
       setCostTargets(m)
     }
 
-    // ── NUEVO: cargar nombres de descuentos operativos ─────────────────────
-    const { data: discMaps } = await supabase
-      .from('discount_mappings')
-      .select('discount_name')
-      .eq('restaurant_id', restaurantId)
-      .eq('is_operational', true)
-    setOpDiscountMappings((discMaps || []).map((d: any) => d.discount_name))
+    // discount mappings (operativos)
+    setOpDiscountMappings((discMapsRes.data || []).map((d: any) => d.discount_name))
 
-    const { data: reports } = await supabase.from('reports').select('*')
-      .eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52)
+    // adjustments + skipped
+    setAdjustments(adjsRes.data || [])
+    setSkippedWeeks(skippedRes.data || [])
 
+    // Mapear reports embedded a la estructura `weeks` que ya usa el componente.
+    // Supabase embeds pueden venir como array (one-to-many) u objeto (one-to-one
+    // con FK invertida) — normalizamos a objeto único o null.
+    const reports = reportsRes.data
     if (!reports || reports.length === 0) { setLoading(false); return }
-
-    const weeksData = await Promise.all(reports.map(async (r) => {
-      const [s, c, inv, pm, disc, wt, vd] = await Promise.all([
-        supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
-        supabase.from('cogs_data').select('*').eq('report_id', r.id).single(),
-        supabase.from('inventory_data').select('*').eq('report_id', r.id).single(),
-        supabase.from('product_mix_data').select('*').eq('report_id', r.id).single(),
-        supabase.from('discounts_data').select('total, items').eq('report_id', r.id).single(),
-        supabase.from('waste_data').select('total_cost, items').eq('report_id', r.id).single(),
-        supabase.from('voids_data').select('total, items').eq('report_id', r.id).single(),
-      ])
-      return { report: r, sales: s.data, cogs: c.data, inventory: inv.data, productMix: pm.data, discounts: disc.data, waste: wt.data, voids: vd.data }
-    }))
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData = reports.map((r: any) => {
+      const { sales_data, cogs_data, inventory_data, product_mix_data, discounts_data, waste_data, voids_data, ...report } = r
+      return {
+        report,
+        sales: pickOne(sales_data),
+        cogs: pickOne(cogs_data),
+        inventory: pickOne(inventory_data),
+        productMix: pickOne(product_mix_data),
+        discounts: pickOne(discounts_data),
+        waste: pickOne(waste_data),
+        voids: pickOne(voids_data),
+      }
+    })
 
     setWeeks(weeksData)
 
-    // ── NUEVO: calcular total de descuentos operativos por semana ──────────
-    // Se recalcula dinámicamente en getOpDiscountTotal() usando opDiscountMappings
     const last = weeksData[weeksData.length - 1]
     setSelectedWeek(last?.report.week || '')
     setCustomFrom(weeksData.length >= 4 ? weeksData[weeksData.length - 4].report.week : weeksData[0].report.week)
     setCustomTo(last?.report.week || '')
-
-    const { data: adjs } = await supabase.from('costo_uso_adjustments')
-      .select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false })
-    setAdjustments(adjs || [])
-
-    // ── NUEVO: cargar semanas saltadas (sin inventario marcado) ───────────
-    const { data: skipped } = await supabase.from('skipped_inventory_weeks')
-      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true })
-    setSkippedWeeks(skipped || [])
 
     const newAlerts: string[] = []
     for (let i = 1; i < weeksData.length; i++) {
@@ -287,7 +309,7 @@ export default function CostoUsoPage() {
     return { skipped: !!record, record: record || null }
   }
 
-  const filtered = (() => {
+  const filtered = useMemo(() => {
     if (weeks.length === 0) return []
     if (shortcut === 'week') return weeks.filter(w => w.report.week === selectedWeek)
     if (shortcut === 'last4') return weeks.slice(-4)
@@ -302,7 +324,7 @@ export default function CostoUsoPage() {
       return weeks.filter(w => w.report.week >= from && w.report.week <= to)
     }
     return weeks.slice(-4)
-  })()
+  }, [weeks, shortcut, selectedWeek, customFrom, customTo])
 
   function fmt(n: any) { if (n === null || n === undefined) return '—'; return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }) }
   function fmtPct(n: any) { if (n === null || n === undefined) return '—'; return Number(n).toFixed(1) + '%' }
@@ -785,20 +807,33 @@ export default function CostoUsoPage() {
   }
 
   // ── Computed values usados por la UI ───────────────────────────────────
-  const periodSeries = buildPeriodSeries(filtered)
-  const consolidatedSkippedWeeks = periodSeries.flatMap((p: any) => p.spannedSkippedWeeks || [])
+  // Cálculo pesado: memoizar para evitar re-correr en cada keystroke.
+  // Deps incluyen todo lo que buildPeriodSeries cierra sobre.
+  const periodSeries = useMemo(
+    () => buildPeriodSeries(filtered),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtered, weeks, skippedWeeks, adjustments, mappings, opDiscountMappings, includeOpDiscounts, costTargets, operatingDays]
+  )
+  const consolidatedSkippedWeeks = useMemo(
+    () => periodSeries.flatMap((p: any) => p.spannedSkippedWeeks || []),
+    [periodSeries]
+  )
   const chartData = periodSeries
   const latest = filtered[filtered.length - 1]
-  // isMultiWeek = el rango representa más de 1 semana de actividad
-  // (varios períodos, o un solo período que absorbió semanas saltadas)
   const isMultiWeek = periodSeries.length > 1 || (periodSeries.length === 1 && periodSeries[0].isConsolidated)
   const isMultiPeriod = periodSeries.length > 1
-  // detailWeek = la semana de cierre del período más reciente (para títulos, ajustes, etc.)
   const detailWeek = periodSeries.length > 0
     ? periodSeries[periodSeries.length - 1].closingRaw
     : (filtered[filtered.length - 1] || filtered[0] || null)
-  const detailData = aggregateSeries(periodSeries)
-  const hasInventory = weeks.some(w => w.inventory?.by_account?.length > 0)
+  const detailData = useMemo(
+    () => aggregateSeries(periodSeries),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [periodSeries]
+  )
+  const hasInventory = useMemo(
+    () => weeks.some(w => w.inventory?.by_account?.length > 0),
+    [weeks]
+  )
 
   const SHORTCUTS: { key: Shortcut; label: string }[] = [
     { key: 'week', label: 'Semana' }, { key: 'last4', label: 'Últimas 4 sem' },
@@ -1106,7 +1141,7 @@ export default function CostoUsoPage() {
                                 {b.unmatchedItems.length > 30 && <p className="text-gray-600 text-xs text-center pt-1">+{b.unmatchedItems.length - 30} más</p>}
                               </div>
                             </details>
-                            <a href="/dashboard/settings/mapeo-items" className="text-blue-400 hover:text-blue-300 text-xs inline-block mt-2">→ Ir a Mapeo de Items para categorizarlos</a>
+                            <Link href="/dashboard/settings/mapeo-items" prefetch className="text-blue-400 hover:text-blue-300 text-xs inline-block mt-2">→ Ir a Mapeo de Items para categorizarlos</Link>
                           </>
                         )}
                       </div>

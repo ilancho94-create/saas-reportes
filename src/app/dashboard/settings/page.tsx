@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import { useAuth } from '@/lib/auth-context'
@@ -486,10 +487,10 @@ export default function SettingsPage() {
             <p className="text-gray-500 text-sm mb-6">
               Asigna categoría a los items de Menu Item Analysis que no tienen match automático con Toast.
             </p>
-            <a href="/dashboard/settings/mapeo-items"
+            <Link href="/dashboard/settings/mapeo-items" prefetch
               className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-xl transition">
               🗂 Ir a Mapeo de Items →
-            </a>
+            </Link>
           </div>
         )}
 

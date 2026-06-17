@@ -66,24 +66,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   async function loadUserRestaurants(userId: string) {
-    // Cargar perfil para obtener is_superadmin
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('restaurant_id, role, is_superadmin')
-      .eq('id', userId)
-      .single()
+    // Paralelizar las 2 queries iniciales — son independientes.
+    const [profileRes, urRes] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select('restaurant_id, role, is_superadmin')
+        .eq('id', userId)
+        .single(),
+      supabase
+        .from('user_restaurants')
+        .select(`
+          id, role, custom_permissions,
+          restaurant_id,
+          restaurants(id, name, organization_id, organizations(id, name))
+        `)
+        .eq('user_id', userId)
+        .eq('active', true),
+    ])
+
+    const profile = profileRes.data
+    const data = urRes.data
 
     setIsSuperAdmin(profile?.is_superadmin === true)
-
-    const { data } = await supabase
-      .from('user_restaurants')
-      .select(`
-        id, role, custom_permissions,
-        restaurant_id,
-        restaurants(id, name, organization_id, organizations(id, name))
-      `)
-      .eq('user_id', userId)
-      .eq('active', true)
 
     let mapped: UserRestaurant[] = []
 
