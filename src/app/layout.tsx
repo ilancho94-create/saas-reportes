@@ -18,7 +18,9 @@ export const metadata: Metadata = {
   title: "Restaurant X-Ray",
   description: "Plataforma de reportes y análisis operacional para restaurantes",
   icons: {
-    icon: "/lupa.png",
+    // Favicon: reusamos el icono PWA de 192x192 (~20KB) en vez del lupa.png
+    // original que era 284KB sin razón válida para un favicon.
+    icon: "/icons/icon-192.png",
     apple: "/icons/apple-touch-icon.png",
   },
   appleWebApp: {

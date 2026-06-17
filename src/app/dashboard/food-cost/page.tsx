@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -90,7 +90,7 @@ export default function FoodCostPage() {
   }
 
   // ── Filtered by shortcut ─────────────────────────────────────────────────
-  const filtered = (() => {
+  const filtered = useMemo(() => {
     if (weeks.length === 0) return []
     if (shortcut === 'last1') return weeks.slice(-1)
     if (shortcut === 'last4') return weeks.slice(-4)
@@ -109,7 +109,7 @@ export default function FoodCostPage() {
       return weeks.filter(w => w.report.week >= from && w.report.week <= to)
     }
     return weeks.slice(-4)
-  })()
+  }, [weeks, shortcut, customFrom, customTo])
 
   function fmt(n: any) {
     if (!n) return '—'
@@ -160,7 +160,11 @@ export default function FoodCostPage() {
     }
   }
 
-  const chartData = filtered.map(buildWeekData)
+  const chartData = useMemo(
+    () => filtered.map(buildWeekData),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filtered, mappings]
+  )
   const latest = filtered[filtered.length - 1]
   const latestData = latest ? buildWeekData(latest) : null
   const weekAData = compareA ? buildWeekData(weeks.find(w => w.report.week === compareA) || weeks[0]) : null

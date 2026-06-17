@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -90,7 +90,7 @@ export default function VentasPage() {
     return Number(n).toFixed(1) + '%'
   }
 
-  const filtered = (() => {
+  const filtered = useMemo(() => {
     if (viewMode === 'single') {
       const w = weeks.find(w => w.report.week === selectedWeek)
       return w ? [w] : []
@@ -99,14 +99,14 @@ export default function VentasPage() {
       return weeks.filter(w => w.report.week >= rangeFrom && w.report.week <= rangeTo)
     }
     return weeks.slice(-range)
-  })()
+  }, [weeks, viewMode, selectedWeek, rangeFrom, rangeTo, range])
 
-  const prevRange = (() => {
+  const prevRange = useMemo(() => {
     if (filtered.length === 0) return []
     const firstIdx = weeks.findIndex(w => w.report.week === filtered[0].report.week)
     const start = Math.max(0, firstIdx - filtered.length)
     return weeks.slice(start, firstIdx)
-  })()
+  }, [weeks, filtered])
 
   function sumRange(arr: any[], field: string) {
     return arr.reduce((acc, w) => acc + (Number(w.sales?.[field]) || 0), 0)
@@ -141,14 +141,14 @@ export default function VentasPage() {
   const diffDescuentos = diffPct(totalDescuentos, prevTotalDescuentos)
   const diffAvgGuest = diffPct(avgGuest, prevAvgGuest)
 
-  const chartData = filtered.map(w => ({
+  const chartData = useMemo(() => filtered.map(w => ({
     week: w.report.week.replace('2026-', ''),
     ventas: w.sales?.net_sales || 0,
     ordenes: w.sales?.orders || 0,
     guests: w.sales?.guests || 0,
     avgGuest: w.sales?.avg_per_guest || 0,
     descuentos: w.sales?.discounts || 0,
-  }))
+  })), [filtered])
 
   const latest = filtered[filtered.length - 1]
   const latestCategories = latest?.sales?.categories || []

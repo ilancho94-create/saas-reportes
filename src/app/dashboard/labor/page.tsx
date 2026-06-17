@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -67,7 +67,7 @@ export default function LaborPage() {
     return parseFloat((Number(part) / Number(total) * 100).toFixed(1))
   }
 
-  const filtered = weeks.slice(-range)
+  const filtered = useMemo(() => weeks.slice(-range), [weeks, range])
   const displayWeekIdx = selectedWeekIdx !== null ? selectedWeekIdx : filtered.length - 1
   const latest = filtered[displayWeekIdx] || filtered[filtered.length - 1]
   const prev = filtered[filtered.length - 2]
@@ -76,13 +76,13 @@ export default function LaborPage() {
   const prevLaborPct = pct(prev?.labor?.total_pay, prev?.sales?.net_sales)
   const laborDiff = laborPct && prevLaborPct ? (laborPct - prevLaborPct).toFixed(1) : null
 
-  const chartData = filtered.map(w => ({
+  const chartData = useMemo(() => filtered.map(w => ({
     week: w.report.week.replace('2026-', ''),
     laborPct: pct(w.labor?.total_pay, w.sales?.net_sales) || 0,
     'labor$': w.labor?.total_pay || 0,
     horas: w.labor?.total_hours || 0,
     ot: w.labor?.total_ot_hours || 0,
-  }))
+  })), [filtered])
 
   // Empleados de todas las semanas para filtros
   const allEmployees = [...new Set(

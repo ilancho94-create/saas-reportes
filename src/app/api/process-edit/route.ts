@@ -12,6 +12,7 @@ import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
 import { parseEmployeePerformanceExcel } from '@/lib/parsers/parse-employee-performance'
 import { parseKitchenDetailsCsv } from '@/lib/parsers/parse-kitchen-details'
 import { requireAuth, requireRestaurantAccess } from '@/lib/api-auth'
+import { validateUpload } from '@/lib/upload-guards'
 
 const TABLE_MAP: Record<string, string> = {
   sales: 'sales_data', labor: 'labor_data', cogs: 'cogs_data',
@@ -27,6 +28,20 @@ export async function POST(request: NextRequest) {
 
     if (!week || !reportId) {
       return NextResponse.json({ success: false, error: 'week y report_id requeridos' }, { status: 400 })
+    }
+
+    // Validación de tamaño/extensión antes de tocar el DB (process-edit
+    // borra-y-vuelve-a-insertar; un file inválido tras borrar dejaría la
+    // semana sin datos hasta el siguiente upload).
+    const validationErrors: Record<string, string> = {}
+    for (const [key, value] of formData.entries()) {
+      if (value instanceof File && value.size > 0) {
+        const v = validateUpload(key, value)
+        if (v) validationErrors[key] = v.reason
+      }
+    }
+    if (Object.keys(validationErrors).length > 0) {
+      return NextResponse.json({ success: false, error: 'Archivos inválidos', validationErrors }, { status: 400 })
     }
 
     // Auth: requiere JWT válido. Aún no sabemos el restaurant_id (lo

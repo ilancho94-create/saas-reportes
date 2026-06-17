@@ -11,6 +11,7 @@ import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
 import { parseEmployeePerformanceExcel } from '@/lib/parsers/parse-employee-performance'
 import { parseKitchenDetailsCsv } from '@/lib/parsers/parse-kitchen-details'
 import { requireRestaurantAccess } from '@/lib/api-auth'
+import { validateUpload } from '@/lib/upload-guards'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export async function POST(request: NextRequest) {
@@ -21,6 +22,20 @@ export async function POST(request: NextRequest) {
 
     if (!week) return NextResponse.json({ success: false, error: 'Semana requerida' }, { status: 400 })
     if (!restaurant_id) return NextResponse.json({ success: false, error: 'restaurant_id requerido' }, { status: 400 })
+
+    // Validar tamaño y extensión de TODOS los archivos antes de procesar.
+    // Fail-fast evita parsear un Excel si otro file viene con extension
+    // inválida o excede el límite (defensa contra DoS / zip-bomb).
+    const validationErrors: Record<string, string> = {}
+    for (const [key, value] of formData.entries()) {
+      if (value instanceof File && value.size > 0) {
+        const v = validateUpload(key, value)
+        if (v) validationErrors[key] = v.reason
+      }
+    }
+    if (Object.keys(validationErrors).length > 0) {
+      return NextResponse.json({ success: false, error: 'Archivos inválidos', validationErrors }, { status: 400 })
+    }
 
     // Auth + verificación de membresía activa en este restaurante.
     const auth = await requireRestaurantAccess(request, restaurant_id)

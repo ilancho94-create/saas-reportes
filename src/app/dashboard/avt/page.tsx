@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -201,10 +201,18 @@ export default function AvtPage() {
   const allItems: any[] = avt?.all_items || []
   const byCategory: any[] = avt?.by_category || []
 
-  const filteredShortages = selectedCategory === 'Todas'
-    ? allShortages : allShortages.filter((i: any) => i.category === selectedCategory)
-  const filteredOverages = selectedCategory === 'Todas'
-    ? allOverages : allOverages.filter((i: any) => i.category === selectedCategory)
+  const filteredShortages = useMemo(
+    () => selectedCategory === 'Todas'
+      ? allShortages
+      : allShortages.filter((i: any) => i.category === selectedCategory),
+    [allShortages, selectedCategory]
+  )
+  const filteredOverages = useMemo(
+    () => selectedCategory === 'Todas'
+      ? allOverages
+      : allOverages.filter((i: any) => i.category === selectedCategory),
+    [allOverages, selectedCategory]
+  )
 
   function sortItems(items: any[]) {
     return [...items].sort((a, b) => {
@@ -215,8 +223,8 @@ export default function AvtPage() {
     })
   }
 
-  const sortedShortages = sortItems(filteredShortages)
-  const sortedOverages = sortItems(filteredOverages)
+  const sortedShortages = useMemo(() => sortItems(filteredShortages), [filteredShortages, sortKey])
+  const sortedOverages = useMemo(() => sortItems(filteredOverages), [filteredOverages, sortKey])
   const displayShortages = showAllShortages ? sortedShortages : sortedShortages.slice(0, 10)
   const displayOverages = showAllOverages ? sortedOverages : sortedOverages.slice(0, 10)
 
