@@ -1,6 +1,6 @@
 // src/app/api/process-edit/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvtExcel, parseAvtCsv, parseReceivingCsv } from '@/lib/product-mix-processor'
 import { parseSalesExcel, buildSalesDateWarning } from '@/lib/parsers/parse-sales'
 import { parseLaborCsv } from '@/lib/parsers/parse-labor'
@@ -11,11 +11,7 @@ import { parseWasteExcel, buildWasteDateWarning } from '@/lib/parsers/parse-wast
 import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
 import { parseEmployeePerformanceExcel } from '@/lib/parsers/parse-employee-performance'
 import { parseKitchenDetailsCsv } from '@/lib/parsers/parse-kitchen-details'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+import { requireAuth, requireRestaurantAccess } from '@/lib/api-auth'
 
 const TABLE_MAP: Record<string, string> = {
   sales: 'sales_data', labor: 'labor_data', cogs: 'cogs_data',
@@ -30,14 +26,31 @@ export async function POST(request: NextRequest) {
     const reportId = formData.get('report_id') as string
 
     if (!week || !reportId) {
-      return NextResponse.json({ success: false, error: 'Faltan parámetros' })
+      return NextResponse.json({ success: false, error: 'week y report_id requeridos' }, { status: 400 })
     }
 
-    const { data: existingReport } = await supabase
-      .from('reports').select('week_start, week_end, restaurant_id').eq('id', reportId).single()
-    const weekStart = existingReport?.week_start || ''
-    const weekEnd   = existingReport?.week_end   || ''
-    const restaurantId = existingReport?.restaurant_id || '00000000-0000-0000-0000-000000000001'
+    // Auth: requiere JWT válido. Aún no sabemos el restaurant_id (lo
+    // obtenemos del report), por eso requireAuth y NO requireRestaurantAccess.
+    const preAuth = await requireAuth(request)
+    if (preAuth instanceof NextResponse) return preAuth
+    const supabase = preAuth.supabase
+
+    // Resolver el reporte. Con RLS, esto solo retorna si el user tiene
+    // acceso al restaurante. Sin RLS (estado actual) cualquiera lo lee,
+    // por eso abajo cruzamos con user_restaurants manualmente.
+    const { data: existingReport, error: reportLookupError } = await supabase
+      .from('reports').select('week_start, week_end, restaurant_id').eq('id', reportId).maybeSingle()
+    if (reportLookupError || !existingReport) {
+      return NextResponse.json({ success: false, error: 'Reporte no encontrado' }, { status: 404 })
+    }
+    const restaurantId = existingReport.restaurant_id as string
+    const weekStart = existingReport.week_start as string
+    const weekEnd = existingReport.week_end as string
+
+    // Cross-tenant guard: confirma membresía activa en el restaurante
+    // dueño del report. Defensa en profundidad por si RLS no estuviera aún.
+    const guard = await requireRestaurantAccess(request, restaurantId)
+    if (guard instanceof NextResponse) return guard
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
@@ -53,7 +66,7 @@ export async function POST(request: NextRequest) {
         delete data._report_start; delete data._report_end
         data.date_warning = warning
         await supabase.from('sales_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'sales', data)
+        await saveToDatabase(supabase, reportId, 'sales', data)
         results['sales'] = { net_sales: data.net_sales, orders: data.orders }
       } catch (err: any) {
         console.error('Error processing sales:', err)
@@ -68,7 +81,7 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await laborFile.arrayBuffer())
         const data = parseLaborCsv(buffer.toString('utf-8'))
         await supabase.from('labor_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'labor', data)
+        await saveToDatabase(supabase, reportId, 'labor', data)
         results['labor'] = { total_pay: data.total_pay, employees: data.by_employee?.length }
       } catch (err: any) {
         console.error('Error processing labor:', err)
@@ -87,7 +100,7 @@ export async function POST(request: NextRequest) {
         delete data._report_start; delete data._report_end
         data.date_warning = warning
         await supabase.from('cogs_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'cogs', data)
+        await saveToDatabase(supabase, reportId, 'cogs', data)
         results['cogs'] = { total: data.total }
       } catch (err: any) {
         console.error('Error processing cogs:', err)
@@ -102,7 +115,7 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await voidsFile.arrayBuffer())
         const data = parseVoidsCsv(buffer.toString('latin1'))
         await supabase.from('voids_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'voids', data)
+        await saveToDatabase(supabase, reportId, 'voids', data)
         results['voids'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing voids:', err)
@@ -117,7 +130,7 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await discountsFile.arrayBuffer())
         const data = parseDiscountsCsv(buffer.toString('latin1'))
         await supabase.from('discounts_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'discounts', data)
+        await saveToDatabase(supabase, reportId, 'discounts', data)
         if (data._discount_names?.length) {
           await upsertDiscountMappings(supabase, restaurantId, data._discount_names)
         }
@@ -139,7 +152,7 @@ export async function POST(request: NextRequest) {
         delete data._report_start; delete data._report_end
         data.date_warning = warning
         await supabase.from('waste_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'waste', data)
+        await saveToDatabase(supabase, reportId, 'waste', data)
         results['waste'] = { total_cost: data.total_cost, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing waste:', err)
@@ -154,7 +167,7 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await inventoryFile.arrayBuffer())
         const data = parseInventoryExcel(buffer)
         await supabase.from('inventory_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'inventory', data)
+        await saveToDatabase(supabase, reportId, 'inventory', data)
         results['inventory'] = { grand_total_current: data.grand_total_current }
       } catch (err: any) {
         console.error('Error processing inventory:', err)
@@ -171,7 +184,7 @@ export async function POST(request: NextRequest) {
         const avtData = isCsv ? parseAvtCsv(buffer.toString('utf-8')) : parseAvtExcel(buffer)
         results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
         await supabase.from('avt_data').delete().eq('report_id', reportId)
-        await saveToDatabase(reportId, 'avt', avtData)
+        await saveToDatabase(supabase, reportId, 'avt', avtData)
         const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
         for (const cat of detectedCats) {
           await supabase.from('avt_categories').upsert({
@@ -295,7 +308,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function saveToDatabase(reportId: string, fileType: string, data: any) {
+async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileType: string, data: any) {
   const table = TABLE_MAP[fileType]
   if (!table) return
   const insertData: Record<string, any> = { report_id: reportId, raw_data: data }

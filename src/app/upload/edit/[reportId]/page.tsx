@@ -108,7 +108,12 @@ export default function EditReportPage() {
     formData.append('mode', 'edit')
     Object.entries(files).forEach(([type, file]) => formData.append(type, file))
     try {
-      const res = await fetch('/api/process-edit', { method: 'POST', body: formData })
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch('/api/process-edit', {
+        method: 'POST',
+        body: formData,
+        headers: session?.access_token ? { 'Authorization': 'Bearer ' + session.access_token } : {},
+      })
       const data = await res.json()
       if (data.success) {
         const warningKeys = Object.keys(data.warnings || {})

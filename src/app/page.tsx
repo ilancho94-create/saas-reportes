@@ -8,23 +8,14 @@ export default function Home() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [mode, setMode] = useState<'login' | 'register'>('login')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError('')
-
-    if (mode === 'login') {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
-      if (error) setError(error.message)
-      else window.location.href = '/dashboard'
-    } else {
-      const { error } = await supabase.auth.signUp({ email, password })
-      if (error) setError(error.message)
-      else setError('Revisa tu email para confirmar tu cuenta')
-    }
-
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) setError(error.message)
+    else window.location.href = '/dashboard'
     setLoading(false)
   }
 
@@ -35,9 +26,7 @@ export default function Home() {
           <img src="/logo.png" alt="Restaurant X-Ray" className="h-64 mx-auto object-contain" />
         </div>
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
-          <h2 className="text-xl font-semibold text-white mb-6">
-            {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
-          </h2>
+          <h2 className="text-xl font-semibold text-white mb-6">Iniciar sesión</h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="text-sm text-gray-400 mb-1 block">Email</label>
@@ -71,17 +60,11 @@ export default function Home() {
               disabled={loading}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-900 text-white font-semibold py-3 rounded-lg transition"
             >
-              {loading ? 'Cargando...' : mode === 'login' ? 'Entrar' : 'Crear cuenta'}
+              {loading ? 'Cargando...' : 'Entrar'}
             </button>
           </form>
-          <p className="text-center text-gray-500 text-sm mt-6">
-            {mode === 'login' ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}{' '}
-            <button
-              onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
-              className="text-blue-400 hover:text-blue-300"
-            >
-              {mode === 'login' ? 'Crear cuenta' : 'Iniciar sesión'}
-            </button>
+          <p className="text-center text-gray-600 text-xs mt-6">
+            ¿Necesitas una cuenta? Contacta al administrador.
           </p>
         </div>
       </div>

@@ -379,11 +379,14 @@ function CreateUserForm({ allOrgs, onSuccess }: { allOrgs: any[], onSuccess: (ms
     if (!email || !password || !orgId || !restaurantId) { setError('Completa todos los campos'); return }
     if (password.length < 6) { setError('La contraseña debe tener al menos 6 caracteres'); return }
     setCreating(true); setError('')
-    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { session } } = await supabase.auth.getSession()
     const res = await fetch('/api/admin/create-user', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, organizationId: orgId, restaurantId, role, requesterId: user?.id }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(session?.access_token ? { 'Authorization': 'Bearer ' + session.access_token } : {}),
+      },
+      body: JSON.stringify({ email, password, organizationId: orgId, restaurantId, role }),
     })
     const result = await res.json()
     setCreating(false)

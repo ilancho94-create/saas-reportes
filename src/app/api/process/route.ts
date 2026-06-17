@@ -1,6 +1,5 @@
 // src/app/api/process/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 import { parseProductMixExcel, parseMenuAnalysisExcel, matchAndCombine, parseAvtExcel, parseAvtCsv, parseReceivingCsv } from '@/lib/product-mix-processor'
 import { parseSalesExcel, buildSalesDateWarning } from '@/lib/parsers/parse-sales'
 import { parseLaborCsv } from '@/lib/parsers/parse-labor'
@@ -11,29 +10,24 @@ import { parseWasteExcel, buildWasteDateWarning } from '@/lib/parsers/parse-wast
 import { parseInventoryExcel } from '@/lib/parsers/parse-inventory'
 import { parseEmployeePerformanceExcel } from '@/lib/parsers/parse-employee-performance'
 import { parseKitchenDetailsCsv } from '@/lib/parsers/parse-kitchen-details'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
+import { requireRestaurantAccess } from '@/lib/api-auth'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
     const week = formData.get('week') as string
-    if (!week) return NextResponse.json({ success: false, error: 'Semana requerida' })
+    const restaurant_id = formData.get('restaurant_id') as string
 
-    const authHeader = request.headers.get('authorization')
-    const { data: { user } } = await supabase.auth.getUser(authHeader?.replace('Bearer ', '') || '')
+    if (!week) return NextResponse.json({ success: false, error: 'Semana requerida' }, { status: 400 })
+    if (!restaurant_id) return NextResponse.json({ success: false, error: 'restaurant_id requerido' }, { status: 400 })
 
-    const formRestaurantId = formData.get('restaurant_id') as string
-    let restaurant_id = formRestaurantId || '00000000-0000-0000-0000-000000000001'
-    if (!formRestaurantId && user) {
-      const { data: profile } = await supabase.from('profiles').select('restaurant_id').eq('id', user.id).single()
-      if (profile?.restaurant_id) restaurant_id = profile.restaurant_id
-    }
+    // Auth + verificación de membresía activa en este restaurante.
+    const auth = await requireRestaurantAccess(request, restaurant_id)
+    if (auth instanceof NextResponse) return auth
+    const supabase = auth.supabase  // cliente con JWT del user → RLS aplica
 
-    const weekStart = await getWeekStartFromFiscal(week, restaurant_id)
+    const weekStart = await getWeekStartFromFiscal(supabase, week, restaurant_id)
     const weekEnd = getWeekEndFromStart(weekStart)
 
     const { data: report, error: reportError } = await supabase
@@ -41,7 +35,7 @@ export async function POST(request: NextRequest) {
       .insert({ restaurant_id, week, week_start: weekStart, week_end: weekEnd })
       .select().single()
 
-    if (reportError) return NextResponse.json({ success: false, error: reportError.message })
+    if (reportError) return NextResponse.json({ success: false, error: reportError.message }, { status: 400 })
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
@@ -56,7 +50,7 @@ export async function POST(request: NextRequest) {
         if (warning) warnings['sales'] = warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await saveToDatabase(report.id, 'sales', data)
+        await saveToDatabase(supabase, report.id, 'sales', data)
         results['sales'] = { net_sales: data.net_sales, orders: data.orders }
       } catch (err: any) {
         console.error('Error processing sales:', err)
@@ -70,7 +64,7 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await laborFile.arrayBuffer())
         const data = parseLaborCsv(buffer.toString('utf-8'))
-        await saveToDatabase(report.id, 'labor', data)
+        await saveToDatabase(supabase, report.id, 'labor', data)
         results['labor'] = { total_pay: data.total_pay, employees: data.by_employee?.length }
       } catch (err: any) {
         console.error('Error processing labor:', err)
@@ -88,7 +82,7 @@ export async function POST(request: NextRequest) {
         if (warning) warnings['cogs'] = warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await saveToDatabase(report.id, 'cogs', data)
+        await saveToDatabase(supabase, report.id, 'cogs', data)
         results['cogs'] = { total: data.total }
       } catch (err: any) {
         console.error('Error processing cogs:', err)
@@ -102,7 +96,7 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await voidsFile.arrayBuffer())
         const data = parseVoidsCsv(buffer.toString('latin1'))
-        await saveToDatabase(report.id, 'voids', data)
+        await saveToDatabase(supabase, report.id, 'voids', data)
         results['voids'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing voids:', err)
@@ -116,7 +110,7 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await discountsFile.arrayBuffer())
         const data = parseDiscountsCsv(buffer.toString('latin1'))
-        await saveToDatabase(report.id, 'discounts', data)
+        await saveToDatabase(supabase, report.id, 'discounts', data)
         if (data._discount_names?.length) {
           await upsertDiscountMappings(supabase, restaurant_id, data._discount_names)
         }
@@ -137,7 +131,7 @@ export async function POST(request: NextRequest) {
         if (warning) warnings['waste'] = warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await saveToDatabase(report.id, 'waste', data)
+        await saveToDatabase(supabase, report.id, 'waste', data)
         results['waste'] = { total_cost: data.total_cost, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing waste:', err)
@@ -151,7 +145,7 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await inventoryFile.arrayBuffer())
         const data = parseInventoryExcel(buffer)
-        await saveToDatabase(report.id, 'inventory', data)
+        await saveToDatabase(supabase, report.id, 'inventory', data)
         results['inventory'] = { grand_total_current: data.grand_total_current }
       } catch (err: any) {
         console.error('Error processing inventory:', err)
@@ -167,7 +161,7 @@ export async function POST(request: NextRequest) {
         const isCsv = avtFile.name.endsWith('.csv')
         const avtData = isCsv ? parseAvtCsv(buffer.toString('utf-8')) : parseAvtExcel(buffer)
         results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
-        await saveToDatabase(report.id, 'avt', avtData)
+        await saveToDatabase(supabase, report.id, 'avt', avtData)
         const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
         for (const cat of detectedCats) {
           await supabase.from('avt_categories').upsert({
@@ -185,7 +179,7 @@ export async function POST(request: NextRequest) {
     const menuAnalysisFile = formData.get('menu_analysis') as File | null
     if (productMixFile || menuAnalysisFile) {
       try {
-        await processProductMixDirect(report.id, restaurant_id, productMixFile, menuAnalysisFile, results, warnings)
+        await processProductMixDirect(supabase, report.id, restaurant_id, productMixFile, menuAnalysisFile, results, warnings)
       } catch (err: any) {
         console.error('Error processing product mix:', err)
         results['product_mix'] = { error: err.message }
@@ -253,6 +247,7 @@ export async function POST(request: NextRequest) {
 }
 
 async function processProductMixDirect(
+  supabase: SupabaseClient,
   reportId: string, restaurantId: string,
   productMixFile: File | null, menuAnalysisFile: File | null,
   results: Record<string, any>, warnings: Record<string, string>
@@ -285,17 +280,20 @@ async function processProductMixDirect(
     by_menu: combined.by_menu, by_category: combined.by_category,
     theo_cost_by_category: combined.theo_cost_by_category, total_theo_cost: combined.total_theo_cost,
   })
-  if (error) console.error('Error saving product_mix_data:', error)
+  if (error) {
+    results['product_mix'] = { ...(results['product_mix'] || {}), error: error.message }
+    console.error('Error saving product_mix_data:', error)
+  }
 }
 
-async function saveToDatabase(reportId: string, fileType: string, data: any) {
+async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileType: string, data: any): Promise<{ error?: string }> {
   const tableMap: Record<string, string> = {
     sales: 'sales_data', labor: 'labor_data', cogs: 'cogs_data',
     voids: 'voids_data', discounts: 'discounts_data', waste: 'waste_data',
     inventory: 'inventory_data', avt: 'avt_data',
   }
   const table = tableMap[fileType]
-  if (!table) return
+  if (!table) return {}
   const insertData: Record<string, any> = { report_id: reportId, raw_data: data }
   if (fileType === 'sales') {
     insertData.net_sales = data.net_sales; insertData.gross_sales = data.gross_sales
@@ -330,10 +328,14 @@ async function saveToDatabase(reportId: string, fileType: string, data: any) {
     insertData.by_category = data.by_category
   }
   const { error } = await supabase.from(table).insert(insertData)
-  if (error) console.error(`Error saving ${fileType}:`, error)
+  if (error) {
+    console.error(`Error saving ${fileType}:`, error)
+    return { error: error.message }
+  }
+  return {}
 }
 
-async function getWeekStartFromFiscal(week: string, restaurantId: string): Promise<string> {
+async function getWeekStartFromFiscal(supabase: SupabaseClient, week: string, restaurantId: string): Promise<string> {
   const [, weekNum] = week.split('-W').map(Number)
   const { data: restaurant } = await supabase.from('restaurants').select('fiscal_year_start').eq('id', restaurantId).single()
   if (restaurant?.fiscal_year_start) {
