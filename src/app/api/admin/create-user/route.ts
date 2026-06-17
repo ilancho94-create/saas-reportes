@@ -29,7 +29,12 @@ export async function POST(req: NextRequest) {
       password,
       email_confirm: true,
     })
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+    if (error) {
+      console.error('createUser error:', error)
+      // Email-ya-existe es seguro mostrarlo (no es secret).
+      const msg = error.message?.includes('already') ? 'Ese email ya está registrado' : 'No se pudo crear el usuario'
+      return NextResponse.json({ error: msg }, { status: 400 })
+    }
     if (!newUser?.user?.id) return NextResponse.json({ error: 'No se pudo crear el usuario' }, { status: 500 })
 
     // Asignar al restaurante. Usamos service_role porque el usuario recién
@@ -45,7 +50,8 @@ export async function POST(req: NextRequest) {
     if (insertError) {
       // Rollback el usuario para no dejar cuentas huérfanas.
       await supabaseAdmin.auth.admin.deleteUser(newUser.user.id)
-      return NextResponse.json({ error: insertError.message }, { status: 500 })
+      console.error('user_restaurants.insert error:', insertError)
+      return NextResponse.json({ error: 'No se pudo asignar el restaurante' }, { status: 500 })
     }
 
     return NextResponse.json({ success: true, userId: newUser.user.id })

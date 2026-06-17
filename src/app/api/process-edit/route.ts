@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
         results['sales'] = { net_sales: data.net_sales, orders: data.orders }
       } catch (err: any) {
         console.error('Error processing sales:', err)
-        results['sales'] = { error: err.message }
+        results['sales'] = { error: 'No se pudo procesar el archivo de sales' }
       }
     }
 
@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
         results['labor'] = { total_pay: data.total_pay, employees: data.by_employee?.length }
       } catch (err: any) {
         console.error('Error processing labor:', err)
-        results['labor'] = { error: err.message }
+        results['labor'] = { error: 'No se pudo procesar el archivo de labor' }
       }
     }
 
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
         results['cogs'] = { total: data.total }
       } catch (err: any) {
         console.error('Error processing cogs:', err)
-        results['cogs'] = { error: err.message }
+        results['cogs'] = { error: 'No se pudo procesar el archivo de cogs' }
       }
     }
 
@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
         results['voids'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing voids:', err)
-        results['voids'] = { error: err.message }
+        results['voids'] = { error: 'No se pudo procesar el archivo de voids' }
       }
     }
 
@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
         results['discounts'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing discounts:', err)
-        results['discounts'] = { error: err.message }
+        results['discounts'] = { error: 'No se pudo procesar el archivo de discounts' }
       }
     }
 
@@ -156,7 +156,7 @@ export async function POST(request: NextRequest) {
         results['waste'] = { total_cost: data.total_cost, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing waste:', err)
-        results['waste'] = { error: err.message }
+        results['waste'] = { error: 'No se pudo procesar el archivo de waste' }
       }
     }
 
@@ -171,7 +171,7 @@ export async function POST(request: NextRequest) {
         results['inventory'] = { grand_total_current: data.grand_total_current }
       } catch (err: any) {
         console.error('Error processing inventory:', err)
-        results['inventory'] = { error: err.message }
+        results['inventory'] = { error: 'No se pudo procesar el archivo de inventory' }
       }
     }
 
@@ -193,7 +193,7 @@ export async function POST(request: NextRequest) {
         }
       } catch (err: any) {
         console.error('Error processing avt:', err)
-        results['avt'] = { error: err.message }
+        results['avt'] = { error: 'No se pudo procesar el archivo de avt' }
       }
     }
 
@@ -240,7 +240,7 @@ export async function POST(request: NextRequest) {
         if (error) console.error('Error saving product_mix_data:', error)
       } catch (err: any) {
         console.error('Error processing product mix:', err)
-        results['product_mix'] = { error: err.message }
+        results['product_mix'] = { error: 'No se pudo procesar el archivo de product_mix' }
       }
     }
 
@@ -260,7 +260,7 @@ export async function POST(request: NextRequest) {
         results['receiving'] = { items: items.length }
       } catch (err: any) {
         console.error('Error processing receiving:', err)
-        results['receiving'] = { error: err.message }
+        results['receiving'] = { error: 'No se pudo procesar el archivo de receiving' }
       }
     }
 
@@ -277,7 +277,7 @@ export async function POST(request: NextRequest) {
         results['employee_performance'] = { employees: data.employees.length }
       } catch (err: any) {
         console.error('Error processing employee performance:', err)
-        results['employee_performance'] = { error: err.message }
+        results['employee_performance'] = { error: 'No se pudo procesar el archivo de employee_performance' }
       }
     }
 
@@ -296,22 +296,25 @@ export async function POST(request: NextRequest) {
         results['kitchen_details'] = { tickets: data.tickets.length, stations: data.detected_stations.length }
       } catch (err: any) {
         console.error('Error processing kitchen details:', err)
-        results['kitchen_details'] = { error: err.message }
+        results['kitchen_details'] = { error: 'No se pudo procesar el archivo de kitchen_details' }
       }
     }
 
     return NextResponse.json({ success: true, report_id: reportId, week, processed: Object.keys(results), warnings })
 
   } catch (error: any) {
-    console.error('API Error:', error)
-    return NextResponse.json({ success: false, error: error.message })
+    console.error('process-edit route error:', error)
+    return NextResponse.json({ success: false, error: 'Error interno procesando reporte' }, { status: 500 })
   }
 }
 
 async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileType: string, data: any) {
   const table = TABLE_MAP[fileType]
   if (!table) return
-  const insertData: Record<string, any> = { report_id: reportId, raw_data: data }
+  // raw_data se mantiene solo en sales y voids (campos no promovidos a columnas).
+  const KEEP_RAW = new Set(['sales', 'voids'])
+  const insertData: Record<string, any> = { report_id: reportId }
+  if (KEEP_RAW.has(fileType)) insertData.raw_data = data
   if (fileType === 'sales') {
     insertData.net_sales = data.net_sales; insertData.gross_sales = data.gross_sales
     insertData.discounts = data.discounts; insertData.orders = data.orders

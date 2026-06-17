@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth-context'
 import {
@@ -136,83 +136,78 @@ export default function CeoDashboard() {
     setLoading(false)
   }
 
-  const activeRests = selectedRestaurant === 'all'
-    ? restaurantsData
-    : restaurantsData.filter((r: any) => r.restaurant.id === selectedRestaurant)
+  const activeRests = useMemo(
+    () => selectedRestaurant === 'all'
+      ? restaurantsData
+      : restaurantsData.filter((r: any) => r.restaurant.id === selectedRestaurant),
+    [restaurantsData, selectedRestaurant]
+  )
 
-  function getFilteredWeeks(restData: any): any[] {
-    const weeks: any[] = restData.weeks
-    if (!weeks.length) return []
-    return weeks.filter((w: any) => w.report.week === selectedWeek)
-  }
+  const aggregated = useMemo<any[]>(() => {
+    return activeRests.map((restData: any) => {
+      const fw = (restData.weeks || []).filter((w: any) => w.report.week === selectedWeek)
+      if (!fw.length) return null
+      const latest = fw[fw.length - 1]
+      const totalSales = fw.reduce((s: number, w: any) => s + safeNum(w.sales?.net_sales), 0)
+      const totalLabor = fw.reduce((s: number, w: any) => s + safeNum(w.labor?.total_pay), 0)
+      const totalCOGS = fw.reduce((s: number, w: any) => s + safeNum(w.cogs?.total), 0)
+      const totalWaste = fw.reduce((s: number, w: any) => s + safeNum(w.waste?.total_cost), 0)
+      const totalOrders = fw.reduce((s: number, w: any) => s + safeNum(w.sales?.orders), 0)
+      const totalGuests = fw.reduce((s: number, w: any) => s + safeNum(w.sales?.guests), 0)
+      const laborPct = totalSales > 0 ? totalLabor / totalSales * 100 : null
+      const cogsPct = totalSales > 0 ? totalCOGS / totalSales * 100 : null
+      const profit = totalSales - totalLabor - totalCOGS
+      const profitPct = totalSales > 0 ? profit / totalSales * 100 : null
+      const avgGuest = totalGuests > 0 ? totalSales / totalGuests : null
+      return { restaurant: restData.restaurant, latest, fw, totalSales, totalLabor, totalCOGS, totalWaste, totalOrders, totalGuests, laborPct, cogsPct, profit, profitPct, avgGuest }
+    }).filter(Boolean)
+  }, [activeRests, selectedWeek])
 
-  function aggregateRestData(restData: any): any | null {
-    const fw = getFilteredWeeks(restData)
-    if (!fw.length) return null
-    const latest = fw[fw.length - 1]
-    const totalSales = fw.reduce((s: number, w: any) => s + safeNum(w.sales?.net_sales), 0)
-    const totalLabor = fw.reduce((s: number, w: any) => s + safeNum(w.labor?.total_pay), 0)
-    const totalCOGS = fw.reduce((s: number, w: any) => s + safeNum(w.cogs?.total), 0)
-    const totalWaste = fw.reduce((s: number, w: any) => s + safeNum(w.waste?.total_cost), 0)
-    const totalOrders = fw.reduce((s: number, w: any) => s + safeNum(w.sales?.orders), 0)
-    const totalGuests = fw.reduce((s: number, w: any) => s + safeNum(w.sales?.guests), 0)
-    const laborPct = totalSales > 0 ? totalLabor / totalSales * 100 : null
-    const cogsPct = totalSales > 0 ? totalCOGS / totalSales * 100 : null
-    const profit = totalSales - totalLabor - totalCOGS
-    const profitPct = totalSales > 0 ? profit / totalSales * 100 : null
-    const avgGuest = totalGuests > 0 ? totalSales / totalGuests : null
-    return { restaurant: restData.restaurant, latest, fw, totalSales, totalLabor, totalCOGS, totalWaste, totalOrders, totalGuests, laborPct, cogsPct, profit, profitPct, avgGuest }
-  }
+  const combined = useMemo(() => {
+    const c: any = aggregated.reduce((acc: any, r: any) => ({
+      totalSales: safeNum(acc.totalSales) + safeNum(r.totalSales),
+      totalLabor: safeNum(acc.totalLabor) + safeNum(r.totalLabor),
+      totalCOGS: safeNum(acc.totalCOGS) + safeNum(r.totalCOGS),
+      totalWaste: safeNum(acc.totalWaste) + safeNum(r.totalWaste),
+      totalOrders: safeNum(acc.totalOrders) + safeNum(r.totalOrders),
+      totalGuests: safeNum(acc.totalGuests) + safeNum(r.totalGuests),
+    }), { totalSales: 0, totalLabor: 0, totalCOGS: 0, totalWaste: 0, totalOrders: 0, totalGuests: 0 })
+    c.laborPct = c.totalSales > 0 ? c.totalLabor / c.totalSales * 100 : null
+    c.cogsPct = c.totalSales > 0 ? c.totalCOGS / c.totalSales * 100 : null
+    c.profit = c.totalSales - c.totalLabor - c.totalCOGS
+    c.profitPct = c.totalSales > 0 ? c.profit / c.totalSales * 100 : null
+    c.avgGuest = c.totalGuests > 0 ? c.totalSales / c.totalGuests : null
+    return c
+  }, [aggregated])
 
-  const aggregated: any[] = activeRests.map(aggregateRestData).filter(Boolean)
-
-  const combined = aggregated.reduce((acc: any, r: any) => ({
-    totalSales: safeNum(acc.totalSales) + safeNum(r.totalSales),
-    totalLabor: safeNum(acc.totalLabor) + safeNum(r.totalLabor),
-    totalCOGS: safeNum(acc.totalCOGS) + safeNum(r.totalCOGS),
-    totalWaste: safeNum(acc.totalWaste) + safeNum(r.totalWaste),
-    totalOrders: safeNum(acc.totalOrders) + safeNum(r.totalOrders),
-    totalGuests: safeNum(acc.totalGuests) + safeNum(r.totalGuests),
-  }), { totalSales: 0, totalLabor: 0, totalCOGS: 0, totalWaste: 0, totalOrders: 0, totalGuests: 0 })
-
-  combined.laborPct = combined.totalSales > 0 ? combined.totalLabor / combined.totalSales * 100 : null
-  combined.cogsPct = combined.totalSales > 0 ? combined.totalCOGS / combined.totalSales * 100 : null
-  combined.profit = combined.totalSales - combined.totalLabor - combined.totalCOGS
-  combined.profitPct = combined.totalSales > 0 ? combined.profit / combined.totalSales * 100 : null
-  combined.avgGuest = combined.totalGuests > 0 ? combined.totalSales / combined.totalGuests : null
-
-  // Semana seleccionada + las 11 anteriores para gráficas de tendencia
-  const chartWeeks = (() => {
+  const chartData = useMemo(() => {
     const idx = allWeeks.indexOf(selectedWeek)
-    if (idx === -1) return [...allWeeks].reverse()
-    return allWeeks.slice(idx, idx + 12).reverse()
-  })()
-
-  const chartData = chartWeeks.map((week: string) => {
-    let sales = 0, labor = 0, cogs = 0, waste = 0, guests = 0
-    activeRests.forEach((r: any) => {
-      const w = r.weeks.find((wk: any) => wk.report.week === week)
-      if (w) {
-        sales += safeNum(w.sales?.net_sales); labor += safeNum(w.labor?.total_pay)
-        cogs += safeNum(w.cogs?.total); waste += safeNum(w.waste?.total_cost)
-        guests += safeNum(w.sales?.guests)
+    const chartWeeks = idx === -1 ? [...allWeeks].reverse() : allWeeks.slice(idx, idx + 12).reverse()
+    return chartWeeks.map((week: string) => {
+      let sales = 0, labor = 0, cogs = 0, waste = 0, guests = 0
+      activeRests.forEach((r: any) => {
+        const w = r.weeks.find((wk: any) => wk.report.week === week)
+        if (w) {
+          sales += safeNum(w.sales?.net_sales); labor += safeNum(w.labor?.total_pay)
+          cogs += safeNum(w.cogs?.total); waste += safeNum(w.waste?.total_cost)
+          guests += safeNum(w.sales?.guests)
+        }
+      })
+      const profit = sales - labor - cogs
+      return {
+        week: week.replace('2026-', ''),
+        ventas: sales > 0 ? sales : null, labor: labor > 0 ? labor : null,
+        cogs: cogs > 0 ? cogs : null, profit: sales > 0 ? profit : null,
+        waste: waste > 0 ? waste : null,
+        laborPct: sales > 0 ? parseFloat((labor / sales * 100).toFixed(1)) : null,
+        cogsPct: sales > 0 ? parseFloat((cogs / sales * 100).toFixed(1)) : null,
+        profitPct: sales > 0 ? parseFloat((profit / sales * 100).toFixed(1)) : null,
+        avgGuest: guests > 0 ? parseFloat((sales / guests).toFixed(2)) : null,
       }
-    })
-    const profit = sales - labor - cogs
-    return {
-      week: week.replace('2026-', ''),
-      ventas: sales > 0 ? sales : null, labor: labor > 0 ? labor : null,
-      cogs: cogs > 0 ? cogs : null, profit: sales > 0 ? profit : null,
-      waste: waste > 0 ? waste : null,
-      laborPct: sales > 0 ? parseFloat((labor / sales * 100).toFixed(1)) : null,
-      cogsPct: sales > 0 ? parseFloat((cogs / sales * 100).toFixed(1)) : null,
-      profitPct: sales > 0 ? parseFloat((profit / sales * 100).toFixed(1)) : null,
-      avgGuest: guests > 0 ? parseFloat((sales / guests).toFixed(2)) : null,
-    }
-  }).filter((d: any) => d.ventas)
+    }).filter((d: any) => d.ventas)
+  }, [allWeeks, selectedWeek, activeRests])
 
-  // ── FIX: semana de detalle = última semana del filtro activo ──────────────
-  const detailWeekData = aggregated[0]?.latest  // latest ya es la última del filtro
+  const detailWeekData = aggregated[0]?.latest
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'resumen', label: '📊 Resumen' }, { id: 'ventas', label: '💰 Ventas' },
