@@ -41,34 +41,34 @@ export default function VentasPage() {
   async function loadData() {
     setLoading(true)
 
-    const { data: rest } = await supabase
-      .from('restaurants').select('name').eq('id', restaurantId).single()
-    setRestaurantName(rest?.name || '')
+    // 3 queries en paralelo (antes: 2 + 1 + 52*3 = 159).
+    const [restRes, discMapsRes, reportsRes] = await Promise.all([
+      supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      supabase.from('discount_mappings').select('discount_name').eq('restaurant_id', restaurantId).eq('is_operational', true),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id,
+        sales_data(net_sales, gross_sales, orders, guests, avg_per_guest, avg_per_order, categories, revenue_centers, lunch_dinner, discounts),
+        discounts_data(total, items),
+        voids_data(total, items)
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(52),
+    ])
 
-    // ── NUEVO: cargar discount_mappings operativos ─────────────────────────
-    const { data: discMaps } = await supabase
-      .from('discount_mappings')
-      .select('discount_name')
-      .eq('restaurant_id', restaurantId)
-      .eq('is_operational', true)
-    setOpDiscountNames(new Set((discMaps || []).map((d: any) => d.discount_name)))
+    setRestaurantName(restRes.data?.name || '')
+    setOpDiscountNames(new Set((discMapsRes.data || []).map((d: any) => d.discount_name)))
 
-    const { data: reports } = await supabase
-      .from('reports').select('*')
-      .eq('restaurant_id', restaurantId)
-      .order('week', { ascending: false })
-      .limit(52)
-
+    const reports = reportsRes.data
     if (!reports || reports.length === 0) { setLoading(false); return }
 
-    const weeksData = await Promise.all(reports.map(async (r) => {
-      const [{ data: s }, { data: d }, { data: v }] = await Promise.all([
-        supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
-        supabase.from('discounts_data').select('*').eq('report_id', r.id).single(),
-        supabase.from('voids_data').select('*').eq('report_id', r.id).single(),
-      ])
-      return { report: r, sales: s, discounts: d, voids: v }
-    }))
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData = reports.map((r: any) => {
+      const { sales_data, discounts_data, voids_data, ...report } = r
+      return {
+        report,
+        sales: pickOne(sales_data),
+        discounts: pickOne(discounts_data),
+        voids: pickOne(voids_data),
+      }
+    })
 
     const sorted = weeksData.reverse()
     setWeeks(sorted)

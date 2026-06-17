@@ -46,25 +46,32 @@ export default function KitchenPage() {
   async function loadData() {
     if (!restaurantId) return
     setLoading(true)
-    const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
-    setRestaurantName(rest?.name || '')
-    const { data: reports } = await supabase.from('reports').select('*')
-      .eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12)
-    const weeksData = reports?.length
-      ? await Promise.all(reports.map(async r => {
-          const { data: kp } = await supabase.from('kitchen_performance_data').select('*').eq('report_id', r.id).single()
-          return { report: r, kp }
-        }))
-      : []
-    const withData = weeksData.filter(w => w.kp)
+
+    // 3 queries en paralelo (antes: 3 + 12 = 15).
+    const [restRes, reportsRes, configsRes] = await Promise.all([
+      supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id,
+        kitchen_performance_data(tickets, detected_stations)
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12),
+      supabase.from('kitchen_station_config').select('*').eq('restaurant_id', restaurantId).order('station_name'),
+    ])
+
+    setRestaurantName(restRes.data?.name || '')
+
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData = (reportsRes.data || []).map((r: any) => {
+      const { kitchen_performance_data, ...report } = r
+      return { report, kp: pickOne(kitchen_performance_data) }
+    })
+    const withData = weeksData.filter((w: any) => w.kp)
     setWeeks(withData)
     if (withData.length > 0) {
       setSelectedWeek(withData[0].report.week)
       setCustomFrom(withData[withData.length - 1]?.report.week || '')
       setCustomTo(withData[0]?.report.week || '')
     }
-    const { data: configs } = await supabase.from('kitchen_station_config').select('*').eq('restaurant_id', restaurantId).order('station_name')
-    setStationConfig(configs || [])
+    setStationConfig(configsRes.data || [])
     setLoading(false)
   }
 

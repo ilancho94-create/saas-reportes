@@ -80,31 +80,38 @@ export default function AvtPage() {
     if (!restaurantIdHook) return
     setLoading(true)
     setWeeks([])
-    const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
-    setRestaurantName(rest?.name || '')
-    const { data: reports } = await supabase.from('reports').select('*')
-      .eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12)
+
+    // 5 queries en paralelo con embedded select (antes: 1 + 1 + 12 + 1 + 1 + 1 = 17).
+    const [restRes, reportsRes, allTRes, skippedRes, catsRes] = await Promise.all([
+      supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id,
+        avt_data(shortages, overages, all_items, net_variance, total_shortage_dollar, total_overage_dollar, by_category)
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12),
+      supabase.from('avt_tracking').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: false }),
+      supabase.from('skipped_inventory_weeks').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true }),
+      supabase.from('avt_categories').select('category').eq('restaurant_id', restaurantId).eq('active', true).order('category'),
+    ])
+
+    setRestaurantName(restRes.data?.name || '')
+
+    const reports = reportsRes.data
     if (!reports?.length) { setLoading(false); return }
-    const weeksData = await Promise.all(reports.map(async r => {
-      const { data: avt } = await supabase.from('avt_data').select('*').eq('report_id', r.id).single()
-      return { report: r, avt }
-    }))
-    const withAvt = weeksData.filter(w => w.avt)
+
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData = reports.map((r: any) => {
+      const { avt_data, ...report } = r
+      return { report, avt: pickOne(avt_data) }
+    })
+    const withAvt = weeksData.filter((w: any) => w.avt)
     setWeeks(withAvt)
     if (withAvt.length > 0) setSelectedWeek(withAvt[0].report.week)
-    const { data: allT } = await supabase.from('avt_tracking')
-      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: false })
-    setAllTracking(allT || [])
 
-    // ── NUEVO: cargar semanas saltadas (compartido con Costo de Uso) ──────
-    const { data: skipped } = await supabase.from('skipped_inventory_weeks')
-      .select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true })
-    setSkippedWeeks(skipped || [])
+    setAllTracking(allTRes.data || [])
+    setSkippedWeeks(skippedRes.data || [])
+    if (catsRes.data && catsRes.data.length > 0) setActiveCategories(catsRes.data.map((c: any) => c.category))
 
     setLoading(false)
-    const { data: cats } = await supabase.from('avt_categories')
-      .select('category').eq('restaurant_id', restaurantId).eq('active', true).order('category')
-    if (cats && cats.length > 0) setActiveCategories(cats.map((c: any) => c.category))
   }
 
   async function loadTracking(week: string) {

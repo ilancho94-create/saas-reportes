@@ -65,38 +65,64 @@ export default function CeoDashboard() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { setLoading(false); return }
 
-    const { data: userRests } = await supabase.from('user_restaurants')
+    // 3 queries en paralelo: user_restaurants, restaurants y todos los reports
+    // con embedded select. Antes: 2 + R + R*52 + R*52*8 (con R=2, 938 queries).
+    // Ahora: 3 queries totales, sin importar cuántos restaurantes ni semanas.
+    const userRestRes = await supabase.from('user_restaurants')
       .select('restaurant_id, role').eq('user_id', user.id)
-    if (!userRests?.length) { setLoading(false); return }
+    if (!userRestRes.data?.length) { setLoading(false); return }
+    const restIds = userRestRes.data.map((r: any) => r.restaurant_id)
 
-    const restIds = userRests.map((r: any) => r.restaurant_id)
-    const { data: rests } = await supabase.from('restaurants').select('*').in('id', restIds)
-    if (!rests?.length) { setLoading(false); return }
+    // 1 query a restaurants + N queries en paralelo (una por restaurante con
+    // limit 52 propio para no sesgar el orden si un restaurante tiene más
+    // historia que otro). Antes con multi-restaurante eran 938 queries.
+    const reportsSelect = `
+      id, week, week_start, week_end, restaurant_id,
+      sales_data(net_sales, gross_sales, orders, guests, categories, lunch_dinner),
+      labor_data(total_pay, total_hours, total_ot_hours, by_position),
+      waste_data(total_cost),
+      cogs_data(total, by_category),
+      voids_data(total, items),
+      discounts_data(total, items),
+      employee_performance_data(employees),
+      avt_data(net_variance, total_shortage_dollar, total_overage_dollar)
+    `
+    const [restsRes, ...reportsByRest] = await Promise.all([
+      supabase.from('restaurants').select('*').in('id', restIds),
+      ...restIds.map((rid: string) =>
+        supabase.from('reports').select(reportsSelect)
+          .eq('restaurant_id', rid).order('week', { ascending: false }).limit(52)
+      ),
+    ])
 
-    const allRestData = await Promise.all(rests.map(async (rest: any) => {
-      const { data: reports } = await supabase.from('reports').select('*')
-        .eq('restaurant_id', rest.id).order('week', { ascending: false }).limit(52)
-      if (!reports?.length) return { restaurant: rest, weeks: [] }
+    if (!restsRes.data?.length) { setLoading(false); return }
 
-      const weeksData = await Promise.all(reports.map(async (r: any) => {
-        const [s, l, w, c, v, d, ep, avt] = await Promise.all([
-          supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
-          supabase.from('labor_data').select('*').eq('report_id', r.id).single(),
-          supabase.from('waste_data').select('*').eq('report_id', r.id).single(),
-          supabase.from('cogs_data').select('*').eq('report_id', r.id).single(),
-          supabase.from('voids_data').select('*').eq('report_id', r.id).single(),
-          supabase.from('discounts_data').select('*').eq('report_id', r.id).single(),
-          supabase.from('employee_performance_data').select('*').eq('report_id', r.id).single(),
-          supabase.from('avt_data').select('*').eq('report_id', r.id).single(),
-        ])
-        return {
-          report: r,
-          sales: s.data ?? null, labor: l.data ?? null, waste: w.data ?? null,
-          cogs: c.data ?? null, voids: v.data ?? null, discounts: d.data ?? null,
-          employee: ep.data ?? null, avt: avt.data ?? null,
-        }
-      }))
-      return { restaurant: rest, weeks: weeksData.reverse() }
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const mapReport = (r: any) => {
+      const { sales_data, labor_data, waste_data, cogs_data, voids_data, discounts_data, employee_performance_data, avt_data, ...report } = r
+      return {
+        report,
+        sales: pickOne(sales_data),
+        labor: pickOne(labor_data),
+        waste: pickOne(waste_data),
+        cogs: pickOne(cogs_data),
+        voids: pickOne(voids_data),
+        discounts: pickOne(discounts_data),
+        employee: pickOne(employee_performance_data),
+        avt: pickOne(avt_data),
+      }
+    }
+
+    const byRest: Record<string, any[]> = {}
+    reportsByRest.forEach((res: any, idx: number) => {
+      const rid = restIds[idx]
+      byRest[rid] = ((res?.data as any[]) || []).map(mapReport)
+    })
+
+    const allRestData = restsRes.data.map((rest: any) => ({
+      restaurant: rest,
+      // weeks llegan más-reciente-primero; el resto del código asume orden ascendente.
+      weeks: (byRest[rest.id] || []).slice().reverse(),
     }))
 
     setRestaurantsData(allRestData)

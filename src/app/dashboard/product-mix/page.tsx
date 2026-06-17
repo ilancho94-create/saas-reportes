@@ -258,25 +258,27 @@ export default function ProductMixPage() {
 
   async function loadData() {
     setLoading(true)
-    const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
-    setRestName(rest?.name || '')
 
-    const { data: reports } = await supabase
-      .from('reports').select('*')
-      .eq('restaurant_id', restaurantId)
-      .order('week', { ascending: false })
-      .limit(52)
+    // 2 queries en paralelo con embedded select (antes: 2 + 52 = 54).
+    const [restRes, reportsRes] = await Promise.all([
+      supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id,
+        product_mix_data(by_menu, by_category, theo_cost_by_category, total_theo_cost, raw_data)
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(52),
+    ])
 
-    if (!reports || reports.length === 0) { setLoading(false); return }
+    setRestName(restRes.data?.name || '')
 
-    const weeksData: WeekData[] = await Promise.all(reports.map(async r => {
-      const { data: pm } = await supabase
-        .from('product_mix_data').select('*')
-        .eq('report_id', r.id).single()
-      return { report: r, pm: pm || null }
-    }))
+    if (!reportsRes.data || reportsRes.data.length === 0) { setLoading(false); return }
 
-    const withData = weeksData.filter(w => w.pm !== null).reverse()
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData: WeekData[] = reportsRes.data.map((r: any) => {
+      const { product_mix_data, ...report } = r
+      return { report, pm: pickOne(product_mix_data) }
+    })
+
+    const withData = weeksData.filter((w: any) => w.pm !== null).reverse()
     setWeeks(withData)
     if (withData.length > 0) {
       setSelWeek(withData[withData.length - 1].report.week)

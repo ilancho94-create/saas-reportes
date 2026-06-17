@@ -25,21 +25,26 @@ export default function EmployeePage() {
     if (!restaurantId) return
     setLoading(true)
 
-    const { data: rest } = await supabase.from('restaurants').select('name').eq('id', restaurantId).single()
-    setRestaurantName(rest?.name || '')
+    // 2 queries en paralelo (antes: 2 + 12 = 14).
+    const [restRes, reportsRes] = await Promise.all([
+      supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id,
+        employee_performance_data(employees)
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12),
+    ])
 
-    const { data: reports } = await supabase.from('reports').select('*')
-      .eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12)
+    setRestaurantName(restRes.data?.name || '')
 
-    if (!reports?.length) { setLoading(false); return }
+    if (!reportsRes.data?.length) { setLoading(false); return }
 
-    const weeksData = await Promise.all(reports.map(async r => {
-      const { data: ep } = await supabase.from('employee_performance_data')
-        .select('*').eq('report_id', r.id).single()
-      return { report: r, ep }
-    }))
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData = reportsRes.data.map((r: any) => {
+      const { employee_performance_data, ...report } = r
+      return { report, ep: pickOne(employee_performance_data) }
+    })
 
-    const withData = weeksData.filter(w => w.ep)
+    const withData = weeksData.filter((w: any) => w.ep)
     setWeeks(withData)
     if (withData.length > 0) setSelectedWeek(withData[0].report.week)
     setLoading(false)

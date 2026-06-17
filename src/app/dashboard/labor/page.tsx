@@ -31,25 +31,27 @@ export default function LaborPage() {
 
   async function loadData() {
     setLoading(true)
-    const { data: rest } = await supabase
-      .from('restaurants').select('name').eq('id', restaurantId).single()
-    setRestaurantName(rest?.name || '')
 
-    const { data: reports } = await supabase
-      .from('reports').select('*')
-      .eq('restaurant_id', restaurantId)
-      .order('created_at', { ascending: false })
-      .limit(12)
+    // 2 queries en paralelo con embedded select (antes: 1 + 1 + 12*2 = 26).
+    const [restRes, reportsRes] = await Promise.all([
+      supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id, created_at,
+        sales_data(net_sales),
+        labor_data(total_pay, total_hours, total_ot_hours, by_position, by_employee)
+      `).eq('restaurant_id', restaurantId).order('created_at', { ascending: false }).limit(12),
+    ])
 
+    setRestaurantName(restRes.data?.name || '')
+
+    const reports = reportsRes.data
     if (!reports || reports.length === 0) { setLoading(false); return }
 
-    const weeksData = await Promise.all(reports.map(async (r) => {
-      const [s, l] = await Promise.all([
-        supabase.from('sales_data').select('net_sales').eq('report_id', r.id).single(),
-        supabase.from('labor_data').select('*').eq('report_id', r.id).single(),
-      ])
-      return { report: r, sales: s.data, labor: l.data }
-    }))
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData = reports.map((r: any) => {
+      const { sales_data, labor_data, ...report } = r
+      return { report, sales: pickOne(sales_data), labor: pickOne(labor_data) }
+    })
 
     setWeeks(weeksData.reverse())
     setLoading(false)

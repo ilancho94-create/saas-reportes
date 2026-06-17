@@ -48,37 +48,35 @@ export default function FoodCostPage() {
     setLoading(true)
     setWeeks([])
 
-    const { data: rest } = await supabase
-      .from('restaurants').select('name').eq('id', restaurantId).single()
-    setRestaurantName(rest?.name || '')
+    // 4 queries en paralelo con embedded select (antes: 4 + 52*2 = 108).
+    const [restRes, mapsRes, tgtsRes, reportsRes] = await Promise.all([
+      supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
+      supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
+      supabase.from('reports').select(`
+        id, week, week_start, week_end, restaurant_id,
+        sales_data(net_sales, categories),
+        cogs_data(total, by_category, by_vendor)
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52),
+    ])
 
-    const { data: maps } = await supabase
-      .from('category_mappings').select('*').eq('restaurant_id', restaurantId)
-    setMappings(maps || [])
+    setRestaurantName(restRes.data?.name || '')
+    setMappings(mapsRes.data || [])
 
-    const { data: tgts } = await supabase
-      .from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId)
-    if (tgts?.length) {
+    if (tgtsRes.data?.length) {
       const m: Record<string, number> = {}
-      tgts.forEach((t: any) => { m[t.category] = Number(t.target_pct) })
+      tgtsRes.data.forEach((t: any) => { m[t.category] = Number(t.target_pct) })
       setCostTargets(m)
     }
 
-    const { data: reports } = await supabase
-      .from('reports').select('*')
-      .eq('restaurant_id', restaurantId)
-      .order('week', { ascending: true })   // ← ASC: oldest first
-      .limit(52)
-
+    const reports = reportsRes.data
     if (!reports || reports.length === 0) { setLoading(false); return }
 
-    const weeksData = await Promise.all(reports.map(async (r) => {
-      const [s, c] = await Promise.all([
-        supabase.from('sales_data').select('*').eq('report_id', r.id).single(),
-        supabase.from('cogs_data').select('*').eq('report_id', r.id).single(),
-      ])
-      return { report: r, sales: s.data, cogs: c.data }
-    }))
+    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+    const weeksData = reports.map((r: any) => {
+      const { sales_data, cogs_data, ...report } = r
+      return { report, sales: pickOne(sales_data), cogs: pickOne(cogs_data) }
+    })
 
     setWeeks(weeksData)
 
