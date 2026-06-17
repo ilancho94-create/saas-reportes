@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import useSWR from 'swr'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth-context'
 import {
@@ -44,97 +45,109 @@ function safeNum(n: any): number {
   return isNaN(v) ? 0 : v
 }
 
+// Fetcher para SWR: hace el bundle de queries del CEO dashboard.
+async function fetchCeoData() {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) {
+    if (typeof window !== 'undefined') window.location.href = '/'
+    return null
+  }
+
+  const userRestRes = await supabase.from('user_restaurants')
+    .select('restaurant_id, role').eq('user_id', user.id)
+  if (!userRestRes.data?.length) return { allRestData: [], sortedWeeks: [] }
+  const restIds = userRestRes.data.map((r: any) => r.restaurant_id)
+
+  // 1 query a restaurants + N queries en paralelo (una por restaurante con
+  // limit propio para no sesgar el orden si un restaurante tiene más
+  // historia que otro).
+  // Limit 13 = 12 semanas que usa la gráfica + 1 buffer.
+  const reportsSelect = `
+    id, week, week_start, week_end, restaurant_id,
+    sales_data(net_sales, gross_sales, orders, guests, categories, lunch_dinner),
+    labor_data(total_pay, total_hours, total_ot_hours, by_position),
+    waste_data(total_cost),
+    cogs_data(total, by_category),
+    voids_data(total, items),
+    discounts_data(total, items),
+    employee_performance_data(employees),
+    avt_data(net_variance, total_shortage_dollar, total_overage_dollar)
+  `
+  const [restsRes, ...reportsByRest] = await Promise.all([
+    supabase.from('restaurants').select('*').in('id', restIds),
+    ...restIds.map((rid: string) =>
+      supabase.from('reports').select(reportsSelect)
+        .eq('restaurant_id', rid).order('week', { ascending: false }).limit(13)
+    ),
+  ])
+
+  if (!restsRes.data?.length) return { allRestData: [], sortedWeeks: [] }
+
+  const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+  const mapReport = (r: any) => {
+    const { sales_data, labor_data, waste_data, cogs_data, voids_data, discounts_data, employee_performance_data, avt_data, ...report } = r
+    return {
+      report,
+      sales: pickOne(sales_data),
+      labor: pickOne(labor_data),
+      waste: pickOne(waste_data),
+      cogs: pickOne(cogs_data),
+      voids: pickOne(voids_data),
+      discounts: pickOne(discounts_data),
+      employee: pickOne(employee_performance_data),
+      avt: pickOne(avt_data),
+    }
+  }
+
+  const byRest: Record<string, any[]> = {}
+  reportsByRest.forEach((res: any, idx: number) => {
+    const rid = restIds[idx]
+    byRest[rid] = ((res?.data as any[]) || []).map(mapReport)
+  })
+
+  const allRestData = restsRes.data.map((rest: any) => ({
+    restaurant: rest,
+    weeks: (byRest[rest.id] || []).slice().reverse(),
+  }))
+
+  const weekSet = new Set<string>()
+  allRestData.forEach((r: any) => r.weeks.forEach((w: any) => weekSet.add(w.report.week)))
+  const sortedWeeks = Array.from(weekSet).sort().reverse()
+
+  return { allRestData, sortedWeeks }
+}
+
 export default function CeoDashboard() {
   const { currentOrganization } = useAuth()
-  const [loading, setLoading] = useState(true)
-  const [restaurantsData, setRestaurantsData] = useState<any[]>([])
   const [selectedRestaurant, setSelectedRestaurant] = useState<string>('all')
   const [activeTab, setActiveTab] = useState<Tab>('resumen')
-  const [allWeeks, setAllWeeks] = useState<string[]>([])
   const [selectedWeek, setSelectedWeek] = useState('')
 
+  // SWR cache: 5 min stale time, revalidate on focus.
+  // Cuando el user navega a otra pestaña y regresa a CEO, los datos vienen
+  // del cache instantáneamente; SWR los revalida en background si están
+  // stale, sin bloquear la UI.
+  const { data, isLoading } = useSWR(
+    currentOrganization ? ['ceo-data', currentOrganization.id] : null,
+    fetchCeoData,
+    {
+      dedupingInterval: 60_000,     // 1 min: ignora request duplicadas
+      revalidateOnFocus: true,       // re-fetch al volver a la tab
+      revalidateIfStale: true,
+      keepPreviousData: true,        // muestra data anterior mientras revalida
+    }
+  )
+
+  const restaurantsData = data?.allRestData || []
+  const allWeeks = data?.sortedWeeks || []
+  const loading = isLoading && !data
+
+  // Default selectedWeek al primero disponible (solo si no hay uno ya).
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (!data.user) window.location.href = '/'
-      else loadData()
-    })
-  }, [currentOrganization])
-
-  async function loadData() {
-    setLoading(true)
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { setLoading(false); return }
-
-    // 3 queries en paralelo: user_restaurants, restaurants y todos los reports
-    // con embedded select. Antes: 2 + R + R*52 + R*52*8 (con R=2, 938 queries).
-    // Ahora: 3 queries totales, sin importar cuántos restaurantes ni semanas.
-    const userRestRes = await supabase.from('user_restaurants')
-      .select('restaurant_id, role').eq('user_id', user.id)
-    if (!userRestRes.data?.length) { setLoading(false); return }
-    const restIds = userRestRes.data.map((r: any) => r.restaurant_id)
-
-    // 1 query a restaurants + N queries en paralelo (una por restaurante con
-    // limit 52 propio para no sesgar el orden si un restaurante tiene más
-    // historia que otro). Antes con multi-restaurante eran 938 queries.
-    const reportsSelect = `
-      id, week, week_start, week_end, restaurant_id,
-      sales_data(net_sales, gross_sales, orders, guests, categories, lunch_dinner),
-      labor_data(total_pay, total_hours, total_ot_hours, by_position),
-      waste_data(total_cost),
-      cogs_data(total, by_category),
-      voids_data(total, items),
-      discounts_data(total, items),
-      employee_performance_data(employees),
-      avt_data(net_variance, total_shortage_dollar, total_overage_dollar)
-    `
-    const [restsRes, ...reportsByRest] = await Promise.all([
-      supabase.from('restaurants').select('*').in('id', restIds),
-      ...restIds.map((rid: string) =>
-        supabase.from('reports').select(reportsSelect)
-          .eq('restaurant_id', rid).order('week', { ascending: false }).limit(52)
-      ),
-    ])
-
-    if (!restsRes.data?.length) { setLoading(false); return }
-
-    const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
-    const mapReport = (r: any) => {
-      const { sales_data, labor_data, waste_data, cogs_data, voids_data, discounts_data, employee_performance_data, avt_data, ...report } = r
-      return {
-        report,
-        sales: pickOne(sales_data),
-        labor: pickOne(labor_data),
-        waste: pickOne(waste_data),
-        cogs: pickOne(cogs_data),
-        voids: pickOne(voids_data),
-        discounts: pickOne(discounts_data),
-        employee: pickOne(employee_performance_data),
-        avt: pickOne(avt_data),
-      }
+    if (!selectedWeek && allWeeks.length > 0) {
+      setSelectedWeek(allWeeks[0])
     }
-
-    const byRest: Record<string, any[]> = {}
-    reportsByRest.forEach((res: any, idx: number) => {
-      const rid = restIds[idx]
-      byRest[rid] = ((res?.data as any[]) || []).map(mapReport)
-    })
-
-    const allRestData = restsRes.data.map((rest: any) => ({
-      restaurant: rest,
-      // weeks llegan más-reciente-primero; el resto del código asume orden ascendente.
-      weeks: (byRest[rest.id] || []).slice().reverse(),
-    }))
-
-    setRestaurantsData(allRestData)
-    const weekSet = new Set<string>()
-    allRestData.forEach((r: any) => r.weeks.forEach((w: any) => weekSet.add(w.report.week)))
-    const sortedWeeks = Array.from(weekSet).sort().reverse()
-    setAllWeeks(sortedWeeks)
-    if (sortedWeeks.length > 0) {
-      setSelectedWeek(sortedWeeks[0])
-    }
-    setLoading(false)
-  }
+  }, [allWeeks, selectedWeek])
 
   const activeRests = useMemo(
     () => selectedRestaurant === 'all'
@@ -217,7 +230,50 @@ export default function CeoDashboard() {
 
   const tooltipStyle = { backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }
 
-  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center"><p className="text-gray-400">Cargando CEO Dashboard...</p></div>
+  if (loading) {
+    // Skeleton UI: muestra estructura mientras la data llega.
+    // Reduce sensación de espera y evita "jump" cuando el contenido aparece.
+    return (
+      <div className="min-h-screen bg-gray-950">
+        <div className="border-b border-gray-800 bg-gray-900 px-6 py-4">
+          <div className="h-6 w-48 bg-gray-800 rounded animate-pulse mb-2" />
+          <div className="h-3 w-32 bg-gray-800 rounded animate-pulse" />
+        </div>
+        <main className="max-w-7xl mx-auto px-6 py-6 space-y-4">
+          {/* Tabs skeleton */}
+          <div className="flex gap-2 mb-4">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-8 w-24 bg-gray-800 rounded animate-pulse" />
+            ))}
+          </div>
+          {/* KPI grid skeleton */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <div className="h-3 w-20 bg-gray-800 rounded animate-pulse mb-3" />
+                <div className="h-7 w-24 bg-gray-800 rounded animate-pulse" />
+              </div>
+            ))}
+          </div>
+          {/* Chart skeleton */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-72">
+            <div className="h-4 w-40 bg-gray-800 rounded animate-pulse mb-4" />
+            <div className="h-full bg-gray-800/40 rounded animate-pulse" />
+          </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-48">
+              <div className="h-4 w-32 bg-gray-800 rounded animate-pulse mb-4" />
+              <div className="h-full bg-gray-800/40 rounded animate-pulse" />
+            </div>
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-48">
+              <div className="h-4 w-32 bg-gray-800 rounded animate-pulse mb-4" />
+              <div className="h-full bg-gray-800/40 rounded animate-pulse" />
+            </div>
+          </div>
+        </main>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gray-950">
