@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import * as XLSX from 'xlsx'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -35,6 +36,7 @@ export default function FoodCostPage() {
   const [compareA, setCompareA] = useState<string>('')
   const [compareB, setCompareB] = useState<string>('')
   const [hiddenLines, setHiddenLines] = useState<string[]>([])
+  const [tableMetric, setTableMetric] = useState<'pct' | 'money'>('pct')
 
   const CATEGORIES = CATEGORIES_BASE.map(cat => ({
     ...cat,
@@ -225,6 +227,78 @@ export default function FoodCostPage() {
     { key: 'month', label: 'Este mes' },
     { key: 'custom', label: 'Custom' },
   ]
+
+  // ── Export a Excel ──────────────────────────────────────────────────────
+  function exportToExcel() {
+    // Weeks del rango filtrado, más reciente primero (como la tabla).
+    const rows = [...filtered].reverse().map(w => ({ raw: w, d: buildWeekData(w) }))
+
+    // Sheet 1: Porcentaje (% Real por categoría)
+    const pctSheetData = [
+      ['Semana', 'Fecha inicio', 'Fecha fin',
+       'Food %', 'NA Beverage %', 'Liquor %', 'Beer %', 'Wine %',
+       'Total A&B %',
+       'Ventas Food $', 'Ventas NA Bev $', 'Ventas Liquor $', 'Ventas Beer $', 'Ventas Wine $',
+       'Ventas A&B $', 'Ventas Netas $', 'Total Compras $'],
+      ...rows.map(({ raw, d }) => [
+        raw.report.week, raw.report.week_start, raw.report.week_end,
+        d.food || null, d.na_beverage || null, d.liquor || null,
+        d.beer || null, d.wine || null,
+        d.totalAB || null,
+        Math.round(d.foodSales), Math.round(d.naBevSales), Math.round(d.liquorSales),
+        Math.round(d.beerSales), Math.round(d.wineSales),
+        Math.round(d.totalABSales), Math.round(d.netSales), Math.round(d['total$'] as number),
+      ]),
+    ]
+
+    // Sheet 2: Dinero de compra por categoría
+    const moneySheetData = [
+      ['Semana', 'Fecha inicio', 'Fecha fin',
+       'Food $', 'NA Beverage $', 'Liquor $', 'Beer $', 'Wine $',
+       'Total A&B $',
+       'Ventas Food $', 'Ventas NA Bev $', 'Ventas Liquor $', 'Ventas Beer $', 'Ventas Wine $',
+       'Ventas A&B $', 'Ventas Netas $', 'Total Compras $'],
+      ...rows.map(({ raw, d }) => {
+        const totalABMoney = (d['food$'] as number) + (d['na_beverage$'] as number)
+          + (d['liquor$'] as number) + (d['beer$'] as number) + (d['wine$'] as number)
+        return [
+          raw.report.week, raw.report.week_start, raw.report.week_end,
+          Math.round(d['food$'] as number), Math.round(d['na_beverage$'] as number),
+          Math.round(d['liquor$'] as number), Math.round(d['beer$'] as number),
+          Math.round(d['wine$'] as number),
+          Math.round(totalABMoney),
+          Math.round(d.foodSales), Math.round(d.naBevSales), Math.round(d.liquorSales),
+          Math.round(d.beerSales), Math.round(d.wineSales),
+          Math.round(d.totalABSales), Math.round(d.netSales), Math.round(d['total$'] as number),
+        ]
+      }),
+    ]
+
+    const wb = XLSX.utils.book_new()
+    const pctSheet = XLSX.utils.aoa_to_sheet(pctSheetData)
+    const moneySheet = XLSX.utils.aoa_to_sheet(moneySheetData)
+
+    // Column widths
+    const widths = [
+      { wch: 10 }, { wch: 12 }, { wch: 12 },
+      { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+      { wch: 12 },
+      { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 },
+      { wch: 12 }, { wch: 12 }, { wch: 14 },
+    ]
+    pctSheet['!cols'] = widths
+    moneySheet['!cols'] = widths
+
+    XLSX.utils.book_append_sheet(wb, pctSheet, 'Porcentaje')
+    XLSX.utils.book_append_sheet(wb, moneySheet, 'Dinero (compra)')
+
+    const first = rows[rows.length - 1]?.raw?.report?.week || ''
+    const last = rows[0]?.raw?.report?.week || ''
+    const restSlug = restaurantName.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '')
+    const filename = `FoodCost_${restSlug}_${first}_a_${last}.xlsx`
+
+    XLSX.writeFile(wb, filename)
+  }
 
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -440,7 +514,37 @@ export default function FoodCostPage() {
             </div>
 
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h2 className="text-white font-semibold mb-4">Comparativo por semana</h2>
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                <h2 className="text-white font-semibold">Comparativo por semana</h2>
+                <div className="flex items-center gap-2">
+                  {/* Toggle % / $ */}
+                  <div className="inline-flex bg-gray-800 border border-gray-700 rounded-lg p-0.5">
+                    <button
+                      onClick={() => setTableMetric('pct')}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${
+                        tableMetric === 'pct' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
+                      }`}
+                      title="Ver % Real vs meta">
+                      % Real
+                    </button>
+                    <button
+                      onClick={() => setTableMetric('money')}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${
+                        tableMetric === 'money' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'
+                      }`}
+                      title="Ver dinero de compra por categoría">
+                      $ Compra
+                    </button>
+                  </div>
+                  {/* Export */}
+                  <button
+                    onClick={exportToExcel}
+                    className="inline-flex items-center gap-1.5 bg-green-700 hover:bg-green-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"
+                    title="Descargar Excel con las 2 vistas (%, $) + ventas por categoría">
+                    📊 Excel
+                  </button>
+                </div>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -448,16 +552,22 @@ export default function FoodCostPage() {
                       <th className="text-left text-gray-500 text-xs pb-3 font-medium">Semana</th>
                       {CATEGORIES.filter(c => c.key !== 'general').map(cat => (
                         <th key={cat.key} className="text-right text-gray-500 text-xs pb-3 font-medium">
-                          {cat.label} {cat.meta ? <span className="text-gray-700">({cat.meta}%)</span> : ''}
+                          {cat.label}
+                          {tableMetric === 'pct' && cat.meta ? <span className="text-gray-700"> ({cat.meta}%)</span> : ''}
                         </th>
                       ))}
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total A&B %</th>
-                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total $</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">
+                        Total A&B {tableMetric === 'pct' ? '%' : '$'}
+                      </th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Ventas $</th>
+                      <th className="text-right text-gray-500 text-xs pb-3 font-medium">Total Compras $</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[...filtered].reverse().map((w) => {
                       const d = buildWeekData(w)
+                      const totalABMoney = (d['food$'] as number) + (d['na_beverage$'] as number)
+                        + (d['liquor$'] as number) + (d['beer$'] as number) + (d['wine$'] as number)
                       return (
                         <tr key={w.report.id} className="border-b border-gray-800 hover:bg-gray-800 transition">
                           <td className="py-3">
@@ -465,18 +575,31 @@ export default function FoodCostPage() {
                             <p className="text-gray-600 text-xs">{w.report.week_start} → {w.report.week_end}</p>
                           </td>
                           {CATEGORIES.filter(c => c.key !== 'general').map(cat => {
-                            const val = d[cat.key as keyof typeof d] as number
+                            if (tableMetric === 'pct') {
+                              const val = d[cat.key as keyof typeof d] as number
+                              return (
+                                <td key={cat.key} className="py-3 text-right">
+                                  <span className={`font-medium ${getSemaforoColor(val, cat.meta)}`}>{val ? val + '%' : '—'}</span>
+                                </td>
+                              )
+                            }
+                            const money = d[(cat.key + '$') as keyof typeof d] as number
                             return (
                               <td key={cat.key} className="py-3 text-right">
-                                <span className={`font-medium ${getSemaforoColor(val, cat.meta)}`}>{val ? val + '%' : '—'}</span>
+                                <span className="text-gray-300 font-medium">{money ? fmt(money) : '—'}</span>
                               </td>
                             )
                           })}
                           <td className="py-3 text-right">
-                            <span className={`font-medium ${d.totalAB > 35 ? 'text-red-400' : 'text-green-400'}`}>
-                              {d.totalAB ? d.totalAB + '%' : '—'}
-                            </span>
+                            {tableMetric === 'pct' ? (
+                              <span className={`font-medium ${d.totalAB > 35 ? 'text-red-400' : 'text-green-400'}`}>
+                                {d.totalAB ? d.totalAB + '%' : '—'}
+                              </span>
+                            ) : (
+                              <span className="text-white font-medium">{totalABMoney ? fmt(totalABMoney) : '—'}</span>
+                            )}
                           </td>
+                          <td className="py-3 text-right text-blue-300 font-medium">{fmt(d.netSales)}</td>
                           <td className="py-3 text-right text-white font-medium">{fmt(w.cogs?.total)}</td>
                         </tr>
                       )
