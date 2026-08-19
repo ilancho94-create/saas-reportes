@@ -20,12 +20,17 @@ export default function ComprasPage() {
   const [currentItems, setCurrentItems] = useState<any[]>([])
   const [prevItems, setPrevItems] = useState<any[]>([])
   const [allData, setAllData] = useState<any[]>([])
-  const [activeTab, setActiveTab] = useState<'impacto' | 'tendencia' | 'proveedores' | 'tabla'>('impacto')
+  const [activeTab, setActiveTab] = useState<'impacto' | 'comparar' | 'tendencia' | 'proveedores' | 'tabla'>('impacto')
   const [selectedCategory, setSelectedCategory] = useState('Todas')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedItem, setSelectedItem] = useState<string | null>(null)
   const [showAllTendencia, setShowAllTendencia] = useState(false)
   const [showAllProveedores, setShowAllProveedores] = useState(false)
+  // Comparar semanas (tab 'comparar')
+  const [compareWeekA, setCompareWeekA] = useState('')  // más antigua
+  const [compareWeekB, setCompareWeekB] = useState('')  // más nueva
+  const [compareFilter, setCompareFilter] = useState<'all' | 'up' | 'down' | 'new' | 'removed' | 'same'>('all')
+  const [compareSort, setCompareSort] = useState<'impact' | 'pct' | 'name'>('impact')
 
   useEffect(() => {
     if (restaurantIdHook) loadData()
@@ -59,7 +64,36 @@ export default function ComprasPage() {
     const uniqueWeeks = [...new Set(allRows.map(r => r.week))].sort().reverse()
     setWeeks(uniqueWeeks)
     setSelectedWeek(uniqueWeeks[0])
+    // Default comparar: A = más antigua, B = más reciente.
+    setCompareWeekA(uniqueWeeks[uniqueWeeks.length - 1])
+    setCompareWeekB(uniqueWeeks[0])
     setLoading(false)
+  }
+
+  // Agrega múltiples entradas del mismo item en una semana usando promedio
+  // ponderado por qty (fiel al costo real por unidad de esa semana).
+  function aggregateWeekItems(week: string): Map<string, { unit_cost: number; total_qty: number; total_cost: number; vendor: string; category: string; uom: string; item_name: string }> {
+    const rows = allData.filter(r => r.week === week)
+    const map = new Map<string, { unit_cost: number; total_qty: number; total_cost: number; vendor: string; category: string; uom: string; item_name: string }>()
+    for (const r of rows) {
+      const existing = map.get(r.item_name)
+      if (existing) {
+        existing.total_qty += Number(r.total_qty || 0)
+        existing.total_cost += Number(r.total_cost || 0)
+        existing.unit_cost = existing.total_qty > 0 ? existing.total_cost / existing.total_qty : existing.unit_cost
+      } else {
+        map.set(r.item_name, {
+          item_name: r.item_name,
+          unit_cost: Number(r.unit_cost || 0),
+          total_qty: Number(r.total_qty || 0),
+          total_cost: Number(r.total_cost || 0),
+          vendor: r.vendor || '',
+          category: r.category || '',
+          uom: r.uom || '',
+        })
+      }
+    }
+    return map
   }
 
   async function loadWeekData(week: string) {
@@ -135,6 +169,81 @@ export default function ComprasPage() {
     return Object.entries(byVendor).map(([vendor, data]) => ({ vendor, ...data })).sort((a, b) => a.avg_cost - b.avg_cost)
   }
 
+  // ── Comparar semanas: precio actual (B) vs referencia (A) ──────────────
+  const compareData = (() => {
+    if (!compareWeekA || !compareWeekB || compareWeekA === compareWeekB) {
+      return { rows: [], summary: { total: 0, up: 0, down: 0, same: 0, newItems: 0, removed: 0, totalImpact: 0 } }
+    }
+    const mapA = aggregateWeekItems(compareWeekA)
+    const mapB = aggregateWeekItems(compareWeekB)
+    const allNames = new Set<string>([...mapA.keys(), ...mapB.keys()])
+    type Row = {
+      item_name: string; category: string; vendor: string; uom: string
+      costA: number | null; costB: number | null
+      diff: number | null; pct: number | null
+      qtyB: number; impact: number  // impact = diff × qtyB (extrapolado al volumen de B)
+      status: 'up' | 'down' | 'same' | 'new' | 'removed'
+    }
+    const rows: Row[] = []
+    for (const name of allNames) {
+      const a = mapA.get(name)
+      const b = mapB.get(name)
+      let status: Row['status']
+      let diff: number | null = null
+      let pct: number | null = null
+      let impact = 0
+      if (a && b) {
+        diff = b.unit_cost - a.unit_cost
+        pct = a.unit_cost > 0 ? (diff / a.unit_cost) * 100 : null
+        impact = diff * b.total_qty
+        status = Math.abs(diff) < 0.001 ? 'same' : (diff > 0 ? 'up' : 'down')
+      } else if (b && !a) {
+        status = 'new'
+      } else {
+        status = 'removed'
+      }
+      const meta = b || a!
+      rows.push({
+        item_name: name,
+        category: meta.category, vendor: meta.vendor, uom: meta.uom,
+        costA: a?.unit_cost ?? null,
+        costB: b?.unit_cost ?? null,
+        diff, pct, impact,
+        qtyB: b?.total_qty ?? 0,
+        status,
+      })
+    }
+    const summary = {
+      total: rows.length,
+      up: rows.filter(r => r.status === 'up').length,
+      down: rows.filter(r => r.status === 'down').length,
+      same: rows.filter(r => r.status === 'same').length,
+      newItems: rows.filter(r => r.status === 'new').length,
+      removed: rows.filter(r => r.status === 'removed').length,
+      totalImpact: rows.filter(r => r.status === 'up' || r.status === 'down').reduce((s, r) => s + r.impact, 0),
+    }
+    return { rows, summary }
+  })()
+
+  const filteredCompareRows = (() => {
+    let r = compareData.rows
+    if (selectedCategory !== 'Todas') r = r.filter(row => row.category === selectedCategory)
+    if (compareFilter !== 'all') {
+      const map = { up: 'up', down: 'down', new: 'new', removed: 'removed', same: 'same' } as const
+      r = r.filter(row => row.status === (map as any)[compareFilter])
+    }
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase()
+      r = r.filter(row => row.item_name.toLowerCase().includes(q) || row.vendor.toLowerCase().includes(q))
+    }
+    r = [...r].sort((a, b) => {
+      if (compareSort === 'name') return a.item_name.localeCompare(b.item_name)
+      if (compareSort === 'pct') return Math.abs(b.pct ?? 0) - Math.abs(a.pct ?? 0)
+      return Math.abs(b.impact) - Math.abs(a.impact)
+    })
+    return r
+  })()
+
   // Calcular qty promedio semanal comprada para proyecciones de ahorro
   const avgWeeklyQty = (itemName: string) => {
     const history = allData.filter(r => r.item_name === itemName)
@@ -173,6 +282,7 @@ export default function ComprasPage() {
         <div className="flex gap-1">
           {[
             { key: 'impacto', label: '📈 Impacto Semanal' },
+            { key: 'comparar', label: '🔀 Comparar Semanas' },
             { key: 'tendencia', label: '📉 Tendencia por Item' },
             { key: 'proveedores', label: '🏭 Proveedores' },
             { key: 'tabla', label: '📋 Tabla Completa' },
@@ -300,6 +410,180 @@ export default function ComprasPage() {
               </div>
             )}
           </>
+
+        ) : activeTab === 'comparar' ? (
+          <div className="space-y-6">
+            {/* Selector de semanas */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-4">Comparar precios entre semanas</h2>
+              <p className="text-gray-500 text-xs mb-4">Elige una semana de <strong className="text-gray-400">referencia</strong> (más antigua) y una <strong className="text-gray-400">actual</strong>. Se muestra el cambio de precio unitario por artículo entre ambas. Impacto $ = Δ precio × cantidad comprada en la semana actual.</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1.5">Semana de referencia (A)</label>
+                  <select value={compareWeekA} onChange={e => setCompareWeekA(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+                    {weeks.map(w => <option key={w} value={w}>{w}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1.5">Semana actual (B)</label>
+                  <select value={compareWeekB} onChange={e => setCompareWeekB(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+                    {weeks.map(w => <option key={w} value={w}>{w}</option>)}
+                  </select>
+                </div>
+              </div>
+              {compareWeekA === compareWeekB && (
+                <p className="text-yellow-400 text-xs mt-3">⚠️ Semanas iguales — elige dos distintas para comparar.</p>
+              )}
+            </div>
+
+            {compareWeekA !== compareWeekB && (
+              <>
+                {/* KPIs resumen */}
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs">Items comparados</p>
+                    <p className="text-xl font-bold text-white">{compareData.summary.total}</p>
+                  </div>
+                  <div className="bg-gray-900 border border-red-900/50 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs">Subieron</p>
+                    <p className="text-xl font-bold text-red-400">{compareData.summary.up}</p>
+                  </div>
+                  <div className="bg-gray-900 border border-green-900/50 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs">Bajaron</p>
+                    <p className="text-xl font-bold text-green-400">{compareData.summary.down}</p>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs">Sin cambio</p>
+                    <p className="text-xl font-bold text-gray-400">{compareData.summary.same}</p>
+                  </div>
+                  <div className="bg-gray-900 border border-blue-900/50 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs">Nuevos en B</p>
+                    <p className="text-xl font-bold text-blue-400">{compareData.summary.newItems}</p>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                    <p className="text-gray-500 text-xs">Removidos</p>
+                    <p className="text-xl font-bold text-gray-400">{compareData.summary.removed}</p>
+                  </div>
+                </div>
+
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <div>
+                      <p className="text-gray-500 text-xs">Impacto neto en dinero</p>
+                      <p className={`text-3xl font-bold ${compareData.summary.totalImpact > 0 ? 'text-red-400' : compareData.summary.totalImpact < 0 ? 'text-green-400' : 'text-gray-400'}`}>
+                        {compareData.summary.totalImpact > 0 ? '+' : ''}{fmt(compareData.summary.totalImpact)}
+                      </p>
+                      <p className="text-gray-600 text-xs mt-1">
+                        Δ precio × cantidad comprada en {compareWeekB} para items que existen en ambas semanas
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Filtros de tabla */}
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <div className="inline-flex bg-gray-800 border border-gray-700 rounded-lg p-0.5">
+                      {[
+                        { key: 'all', label: 'Todos' },
+                        { key: 'up', label: '↑ Subieron' },
+                        { key: 'down', label: '↓ Bajaron' },
+                        { key: 'new', label: 'Nuevos' },
+                        { key: 'removed', label: 'Removidos' },
+                        { key: 'same', label: 'Sin cambio' },
+                      ].map(f => (
+                        <button key={f.key} onClick={() => setCompareFilter(f.key as any)}
+                          className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${compareFilter === f.key ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Buscar item o proveedor..."
+                      className="flex-1 min-w-[200px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <select value={compareSort} onChange={e => setCompareSort(e.target.value as any)}
+                      className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm">
+                      <option value="impact">Ordenar: mayor impacto $</option>
+                      <option value="pct">Ordenar: mayor variación %</option>
+                      <option value="name">Ordenar: nombre A-Z</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Tabla */}
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-800">
+                          <th className="text-left text-gray-500 text-xs pb-3">Item</th>
+                          <th className="text-left text-gray-500 text-xs pb-3">Cat.</th>
+                          <th className="text-left text-gray-500 text-xs pb-3">Proveedor</th>
+                          <th className="text-right text-gray-500 text-xs pb-3">{compareWeekA} (A)</th>
+                          <th className="text-right text-gray-500 text-xs pb-3">{compareWeekB} (B)</th>
+                          <th className="text-right text-gray-500 text-xs pb-3">Δ $</th>
+                          <th className="text-right text-gray-500 text-xs pb-3">Δ %</th>
+                          <th className="text-right text-gray-500 text-xs pb-3">Qty B</th>
+                          <th className="text-right text-gray-500 text-xs pb-3">Impacto $</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredCompareRows.length === 0 ? (
+                          <tr><td colSpan={9} className="py-8 text-center text-gray-500 text-sm">Sin resultados con estos filtros.</td></tr>
+                        ) : filteredCompareRows.map((r, i) => (
+                          <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
+                            <td className="py-2.5">
+                              <p className="text-white text-sm font-medium">{r.item_name}</p>
+                              <p className="text-gray-600 text-xs">{r.uom}</p>
+                            </td>
+                            <td className="py-2.5 text-gray-500 text-xs">{r.category}</td>
+                            <td className="py-2.5 text-gray-400 text-xs">{r.vendor}</td>
+                            <td className="py-2.5 text-right text-gray-400 text-xs">{r.costA === null ? '—' : fmt(r.costA)}</td>
+                            <td className="py-2.5 text-right text-gray-200 text-xs font-medium">{r.costB === null ? '—' : fmt(r.costB)}</td>
+                            <td className="py-2.5 text-right text-xs">
+                              {r.diff === null ? (
+                                <span className={r.status === 'new' ? 'text-blue-400' : 'text-gray-600'}>{r.status === 'new' ? 'Nuevo' : 'Removido'}</span>
+                              ) : r.status === 'same' ? (
+                                <span className="text-gray-600">—</span>
+                              ) : (
+                                <span className={r.diff > 0 ? 'text-red-400' : 'text-green-400'}>
+                                  {r.diff > 0 ? '+' : ''}{fmt(r.diff)}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 text-right text-xs">
+                              {r.pct === null ? '—' : r.status === 'same' ? <span className="text-gray-600">—</span> : (
+                                <span className={r.pct > 0 ? 'text-red-400 font-medium' : 'text-green-400 font-medium'}>
+                                  {r.pct > 0 ? '+' : ''}{r.pct.toFixed(1)}%
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 text-right text-gray-400 text-xs">{r.qtyB > 0 ? Number(r.qtyB).toFixed(2) : '—'}</td>
+                            <td className="py-2.5 text-right text-xs font-bold">
+                              {r.status === 'up' || r.status === 'down' ? (
+                                <span className={r.impact > 0 ? 'text-red-400' : 'text-green-400'}>
+                                  {r.impact > 0 ? '+' : ''}{fmt(r.impact)}
+                                </span>
+                              ) : (
+                                <span className="text-gray-600">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {filteredCompareRows.length > 0 && (
+                    <p className="text-gray-600 text-xs mt-3">{filteredCompareRows.length} items · {compareFilter !== 'all' ? `Filtro activo: ${compareFilter}` : 'Sin filtro de estado'}</p>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
 
         ) : activeTab === 'tendencia' ? (
           <div className="space-y-6">
