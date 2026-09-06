@@ -8,6 +8,9 @@
 // Este módulo NO cambia fórmulas. Cualquier cambio a la semántica debe
 // ir en un commit separado con pruebas antes/después.
 
+import { diagnoseWeek, diagnosePeriod, diagnoseSeries, type Diagnostics, type DiagnosticsContext } from './diagnostics'
+export type { Diagnostic, DiagnosticType, Diagnostics, CheckState } from './diagnostics'
+
 export type CategoryKey = 'food' | 'na_beverage' | 'liquor' | 'beer' | 'wine'
 
 export const ACCOUNT_MAP: Record<string, CategoryKey> = {
@@ -51,6 +54,11 @@ export interface EngineContext {
   operatingDays: number
   /** costTargets por categoría (override de defaultMeta). */
   costTargets: Record<string, number>
+  /**
+   * Rango solicitado por la UI (from/to en formato YYYY-Wnn). Solo se usa
+   * para diagnósticos de interval_extended — no afecta el cálculo. Opcional.
+   */
+  requestedRange?: { from: string; to: string } | null
 }
 
 // ── Puras (sin ctx) ────────────────────────────────────────────────────
@@ -79,6 +87,17 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     ...cat,
     meta: ctx.costTargets[cat.key] !== undefined ? ctx.costTargets[cat.key] : cat.defaultMeta,
   }))
+
+  // Contexto para diagnósticos. `activeCategories` sale de los mappings
+  // configurados del restaurante — no presupone las 5 canónicas.
+  const activeCategories: string[] = Array.from(
+    new Set(ctx.mappings.map(m => m.mapped_to).filter(Boolean))
+  )
+  const diagCtx: DiagnosticsContext = {
+    activeCategories,
+    accountMap: ACCOUNT_MAP,
+    requestedRange: ctx.requestedRange ?? null,
+  }
 
   function getOpDiscountTotal(w: any): number {
     if (!ctx.includeOpDiscounts || !ctx.opDiscountMappings.length) return 0
@@ -239,6 +258,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       : null
     result.totalTheoComplete = !anyIncludedCatMissingTheo
     result.hasAnyAdj = hasAdjustments(week)
+    result.diagnostics = diagnoseWeek(w, diagCtx)
     return result
   }
 
@@ -366,6 +386,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       : null
     result.totalTheoComplete = !anyIncludedCatMissingTheo
     result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
+    result.diagnostics = diagnosePeriod(anchor, intermediates, closing, diagCtx)
     return result
   }
 
@@ -389,6 +410,20 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       intermediates = []
     }
     return series
+  }
+
+  /**
+   * Diagnósticos a nivel serie / rango.
+   * Debe llamarse con el MISMO `weekList` que se pasó a buildPeriodSeries y la
+   * `series` que produjo. Los períodos aportan sus diagnósticos individuales
+   * y aquí se agregan los que solo tienen sentido a nivel serie (unclosed_tail,
+   * duplicate_week, interval_extended).
+   */
+  function diagnoseRange(weekList: any[], series: any[]): Diagnostics {
+    const periodDiags: Diagnostics[] = series
+      .map(s => s.diagnostics as Diagnostics)
+      .filter(Boolean)
+    return diagnoseSeries(weekList, ctx.weeks, periodDiags, series, diagCtx)
   }
 
   function aggregateSeries(series: any[]): any {
@@ -462,6 +497,14 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       ? parseFloat((totalUso - totalTheo).toFixed(2))
       : null
     result.totalTheoComplete = !anyIncludedCatMissingTheo
+    // Los diagnósticos del agregado consolidan los de sus períodos
+    // (dedup por firma). Los de nivel serie (unclosed_tail, duplicates,
+    // interval_extension) se añaden al llamar a diagnoseRange desde el
+    // consumidor, no aquí, porque no sabemos cuál weekList originó la serie.
+    const periodDiags: Diagnostics[] = series
+      .map(s => s.diagnostics as Diagnostics)
+      .filter(Boolean)
+    result.diagnostics = diagnoseSeries([], ctx.weeks, periodDiags, series, diagCtx)
     return result
   }
 
@@ -473,6 +516,8 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     findAnchorBefore, getWeeksBetween,
     // fórmulas núcleo
     buildWeekData, buildPeriodData, buildPeriodSeries, aggregateSeries,
+    // diagnósticos a nivel serie (invocar tras buildPeriodSeries)
+    diagnoseRange,
   }
 }
 
