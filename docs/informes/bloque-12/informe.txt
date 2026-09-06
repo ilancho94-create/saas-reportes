@@ -1,0 +1,218 @@
+Bloque 12 — Cierre de diferencias UI↔PPTX antes de verificar
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · MODO LIGERO, SIN TURNO PESADO
+
+1. COMMIT Y ESTADO FINAL
+
+  Rama: costo-uso-validation-2026-09-06 (local, sin push)
+  Commit añadido en este bloque:
+    efde3c7  fix(costo-uso,pptx): share preparation with UI, richer
+             context, explicit sales base, safe null-days
+  HEAD previo: 2108ea6 (informe bloque 11)
+  git status -s tras el commit: limpio.
+
+  No se ejecutaron pruebas, tipos, build, servidores, navegadores,
+  instalaciones ni generación de documentos. Solo edición de código
+  y lectura acotada.
+
+2. CÓMO UI Y PPTX COMPARTEN AHORA LA PREPARACIÓN
+
+  Ambos consumen prepareCostoUsoResult(input) con exactamente el
+  mismo motor. La función acepta ahora DOS modos mutuamente
+  exclusivos:
+
+    requestedRange: { from, to }
+      Uso: PPTX. El helper filtra weeks por [from, to] cronológico y
+      genera etiquetas requestedRange / effectiveRange /
+      externalAnchorWeek.
+
+    weekList: any[]
+      Uso: /dashboard/costo-uso. La UI aplica sus filtros locales
+      (semana única / last4 / last8 / month / custom) y pasa el
+      subset resultante. El helper NO reintenta filtrar.
+
+  Se lanza excepción si se pasan ambos o ninguno; no hay caminos
+  silenciosos ni defaults tácitos.
+
+  Confirmaciones documentales (por lectura del código, no por
+  ejecución):
+    - Mismo restaurante:  cada select de data-fetcher se filtra por
+                          restaurant_id.
+    - Mappings:            costoUsoContext.mappings.
+    - Ajustes:            costoUsoContext.adjustments.
+    - Descuentos:         costoUsoContext.opDiscountMappings, ligado
+                          al modo net/gross vía includeOpDiscounts.
+    - Presencia teórica:  buildWeekData / buildPeriodData /
+                          aggregateSeries respetan
+                          Object.prototype.hasOwnProperty y el flag
+                          hasProductMix (misma lógica para UI y PPTX).
+    - Diagnósticos:       rangeDiagnostics se produce con el mismo
+                          diagnoseRange en ambos consumidores.
+    - Consolidación:      la absorción del anchor externo y las
+                          intermedias es la misma (misma serie).
+
+3. CONTEXTO ANTERIOR AL FILTRO
+
+  data-fetcher.ts ahora descarga TODAS las semanas del restaurante
+  (hasta 52, mismo criterio que la página productiva) en el campo
+  costoUsoContext.engineWeeks. Este universo permite que
+  buildPeriodSeries encuentre:
+    - Anchor externo (semana previa al primer week seleccionado).
+    - Semanas intermedias sin inventario dentro del período efectivo.
+
+  Las ventas y compras de semanas FUERA del período efectivo NO se
+  incluyen en el cálculo — el motor las excluye del cierre. Se agrega
+  aislamiento con RLS por restaurant_id.
+
+  Selección no consecutiva:
+    config.weeks se guarda tal cual en costoUsoContext.requestedWeeks.
+    Nueva utilidad areConsecutiveWeeks() en generate-pptx detecta
+    saltos (por ejemplo, W10 + W15). Cuando no son consecutivas, la
+    diapositiva:
+      - NO reduce la selección a un rango [min..max].
+      - Muestra advertencia con las semanas exactas seleccionadas.
+      - Indica que el período efectivo lo determinó el motor y no
+        el intervalo continuo entre extremos.
+
+4. OPCIONES DE VENTAS Y ETIQUETAS
+
+  Nuevo tipo CostoUsoSalesBase = 'net' | 'gross'.
+  ExportConfig.costoUsoSalesBase se conecta a includeOpDiscounts.
+
+  Etiquetas visibles en el Export Center:
+    Ventas netas  — "Equivale al toggle '+Desc. Op.' OFF de la UI."
+    Ventas brutas — "Incluye la diferencia completa net→gross. NO
+                     aísla descuentos operativos."
+
+  La diapositiva agrega SIEMPRE una advertencia con la base de
+  ventas usada y el equivalente en la UI, para poder comparar
+  resultados con el mismo contexto sin ambigüedad. La corrección
+  comercial "solo descuentos operativos" sigue pendiente; ninguna
+  opción de la exportación pretende que ya se aísla.
+
+  Correspondencia UI ↔ PPTX:
+    UI toggle "+Desc. Op." OFF  ↔  PPTX 'net'
+    UI toggle "+Desc. Op." ON   ↔  PPTX 'gross'
+
+5. DÍAS DE OPERACIÓN AUSENTES
+
+  Cambios en el motor:
+    EngineContext.operatingDays acepta number | null.
+    buildWeekData / buildPeriodData / aggregateSeries devuelven
+    dias_inv = null cuando operatingDays es null. Ninguna otra
+    métrica se ve afectada — uso, teórico, %s, variación, ventas y
+    diagnósticos siguen calculando igual.
+
+  Cambios en data-fetcher.ts:
+    operatingDays pasa `restRes.data?.operating_days ?? null` sin
+    fallback silencioso.
+
+  Cambios en generate-pptx.ts:
+    Sin fallback a 6. Cuando operatingDays es null la diapositiva
+    emite:
+      "operating_days no definido: días de inventario queda como no
+       calculable en esta exportación."
+    El resto del reporte se publica normal — ninguna otra métrica
+    se bloquea por esta configuración ausente. No se cambia la
+    configuración del restaurante.
+
+  La UI mantiene su carga previa (`restRes.data?.operating_days || 6`),
+  para no cambiar sin aviso el comportamiento visible del dashboard;
+  ese es un pendiente separado que se puede coordinar cuando toque.
+
+6. TRATAMIENTO DE ERRORES DE CONSULTA
+
+  data-fetcher.ts:
+    - Distingue error de consulta vs respuesta vacía. Los errores
+      de category_mappings / costo_uso_adjustments /
+      skipped_inventory_weeks / discount_mappings / cost_targets /
+      reports_context / reports_context_embed se guardan en
+      costoUsoContext.loadErrors[].
+    - Reports embed que falle se registra en loadErrors sin
+      inventar contexto vacío.
+    - restRes.error o reportsRes.error → retorno null (mismo
+      criterio que antes; imposible generar la sección).
+
+  generate-pptx.ts:
+    - Cuando loadErrors[] tiene contenido, la diapositiva agrega
+      advertencia "Error de carga del contexto de Costo de Uso: ...
+      Las cifras pueden estar incompletas."
+
+  Tipos:
+    - WeekData.discounts y WeekData.voids declarados (any | null).
+      Se retiraron los `(w as any).discounts / .voids`.
+    - Nuevo tipo CostoUsoSalesBase exportado desde data-fetcher.
+    - engineWeeks tipado explícitamente dentro del contrato de
+      costoUsoContext.
+
+7. PRUEBAS PREPARADAS (NO EJECUTADAS EN ESTE BLOQUE)
+
+  src/lib/costo-uso/__tests__/prepare-result.test.ts (extendido):
+    · Modo weekList (UI) vs modo requestedRange (PPTX) — mismo
+      detailData en cifras clave.
+    · Semanas intermedias necesarias: con el universo completo el
+      cálculo absorbe w11; sin ella, el resultado difiere.
+    · Base de ventas net vs gross: food_sales cambia (8000 → 8500);
+      uso y variación permanecen; %s cambian por el denominador.
+    · operatingDays=null → días_inv null; resto de métricas
+      idénticas al caso con 6.
+    · Error de consulta vs vacío válido — documentación del
+      contrato: el consumidor debe leer loadErrors.
+    · Teórico ausente vs cero explícito (refuerzo).
+    · Selección no consecutiva — documento del helper interno
+      areConsecutiveWeeks del PPTX; la verificación real vive en el
+      próximo turno pesado al inspeccionar la diapositiva.
+
+  NO se corrió vitest, ni tsc, ni next build, ni Playwright, ni
+  generación de PPTX en este bloque.
+
+8. LIMITACIONES QUE SIGUEN PENDIENTES
+
+  - Verificación real del archivo PPTX (cifras, signos, etiquetas,
+    advertencias, ausencia de desbordamientos) — reservada para el
+    próximo turno pesado. Comparar el PPTX viejo con el nuevo NO
+    probaría exactitud; los tests presentes lo hacen contra
+    expectativas independientes.
+  - Interacciones reales: filtros en /dashboard/costo-uso, modal de
+    Análisis de variación, activación de explicaciones por toque y
+    teclado — todas quedan para el próximo turno pesado.
+  - Política de consumo negativo: Math.max sigue activo tal como
+    estaba. No se ha aprobado ningún cambio; únicamente se ha
+    conservado el comportamiento existente.
+  - includeOpDiscounts en la vista productiva no cambia; el nuevo
+    control 'net'/'gross' solo aplica al PPTX (la UI ya tiene su
+    toggle propio).
+  - operating_days ausente en la UI sigue con fallback histórico a
+    6 en loadData; sólo el PPTX lo trata como null.
+
+9. VERIFICACIONES CONCRETAS RESERVADAS PARA EL PRÓXIMO TURNO PESADO
+
+  T-PPTX-1  npx vitest run — 89 pasadas previas + los 8 nuevos casos
+            de prepare-result deben quedar en verde.
+  T-PPTX-2  npx tsc --noEmit — cero errores tras el cambio de tipos.
+  T-PPTX-3  npx next build — OK.
+  T-PPTX-4  Generar PPTX desde el Export Center con:
+              a. Restaurante con datos completos, semanas
+                 consecutivas, ambas bases (net y gross).
+              b. Restaurante con selección no consecutiva.
+              c. Restaurante con teórico parcial (totalVariacion
+                 null).
+              d. Restaurante con operating_days ausente.
+              Inspeccionar la diapositiva Costo de Uso y validar
+              cifras, motivos "no calculable", ausencia de "$0" para
+              null, advertencias correctas y ausencia de
+              desbordamientos.
+  T-PPTX-5  Simular loadError (por ejemplo, revocando temporalmente
+            SELECT en category_mappings) y confirmar que la
+            diapositiva muestra la advertencia "Error de carga del
+            contexto".
+  T-UI-1..3 Modal, filtros y toque/teclado en la UI real
+            (P-UI-1..P-UI-3 del bloque 11).
+
+  Solo tras T-PPTX-1..5 se podrá retirar la etiqueta NO VALIDADO
+  del PPTX. Este bloque sigue registrándola como:
+    "Implementación preparada; pruebas y verificación del archivo
+     pendientes."
+
+10. ESTADO FINAL
+    MODO LIGERO, SIN TURNO PESADO.
