@@ -23,14 +23,17 @@ export type VarianceReason =
   | 'zero_sales'             // catSales === 0
   | 'negative_sales'         // catSales < 0
   | 'partial_total_theo'     // (solo para totales) alguna cat. con ventas sin teórico
+  | 'no_initial_inventory'   // sin anchor y closing sin cuenta con previous_value en la categoría
 
 function reasonForCategory(
   catSales: number,
   theoPresent: boolean,
   hasProductMix: boolean,
+  invPreviousPresent: boolean = true,
 ): VarianceReason {
   if (catSales < 0) return 'negative_sales'
   if (catSales === 0) return 'zero_sales'
+  if (!invPreviousPresent) return 'no_initial_inventory'
   if (theoPresent) return 'ok'
   return hasProductMix ? 'partial_theo' : 'no_theo_source'
 }
@@ -356,6 +359,24 @@ export function createCostoUsoEngine(ctx: EngineContext) {
         invPrevious = closingInv.previous + adjClosingPrev
       }
 
+      // Presencia de inventario inicial: cuando NO hay anchor, dependemos
+      // del previous_value del closing por categoría. Solo se considera
+      // "presente" si al menos una cuenta esperada de la categoría trae
+      // el campo previous_value NO nulo/undefined en by_account (cero
+      // explícito califica como presente). Sin cuentas esperadas O sin
+      // registros → invPreviousPresent = false.
+      let invPreviousPresent: boolean
+      if (anchor) {
+        invPreviousPresent = true
+      } else {
+        const expected = Object.entries(ACCOUNT_MAP)
+          .filter(([, c]) => c === cat.key).map(([acc]) => acc)
+        const accounts = closing.inventory?.by_account || []
+        invPreviousPresent = expected.length > 0 && accounts.some((a: any) =>
+          expected.includes(a.account) && a.previous_value !== undefined && a.previous_value !== null
+        )
+      }
+
       const closingInv = getInventoryByCategory(closing.inventory?.by_account || [], cat.key)
       const adjClosingCurr = getAdj(closing.report.week, cat.key, 'inv_current')
       const invCurrent = closingInv.current + adjClosingCurr
@@ -394,12 +415,14 @@ export function createCostoUsoEngine(ctx: EngineContext) {
 
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = catSales > 0 && theoPresent
+      // variacion requiere ADEMÁS invPreviousPresent === true; sin
+      // límite inicial no se publica cifra.
+      const variacionDolares = catSales > 0 && theoPresent && invPreviousPresent
         ? parseFloat((uso - theoCost).toFixed(2))
         : null
 
       const totalOpDays = ctx.operatingDays !== null ? periodWeeks.length * ctx.operatingDays : null
-      const diasInv = uso > 0 && totalOpDays !== null
+      const diasInv = uso > 0 && totalOpDays !== null && invPreviousPresent
         ? parseFloat((((invCurrent + invPrevious) / 2) / uso * totalOpDays).toFixed(1))
         : null
 
@@ -416,10 +439,11 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       result[cat.key + '_uso_pct'] = realPct || 0
       result[cat.key + '_theo_pct'] = mixPct || 0
       result[cat.key + '_variacion'] = variacionDolares
-      result[cat.key + '_variacion_reason'] = reasonForCategory(catSales, theoPresent, hasPmixInPeriod)
+      result[cat.key + '_variacion_reason'] = reasonForCategory(catSales, theoPresent, hasPmixInPeriod, invPreviousPresent)
       result[cat.key + '_dias_inv'] = diasInv
       result[cat.key + '_inv_current'] = invCurrent
       result[cat.key + '_inv_previous'] = invPrevious
+      result[cat.key + '_inv_previous_present'] = invPreviousPresent
       result[cat.key + '_purchases'] = purchases
       result[cat.key + '_sales'] = catSales
       result[cat.key + '_has_adj'] = hasAdj

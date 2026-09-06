@@ -637,6 +637,76 @@ describe('[EXACT] Selección consecutiva produce valores esperados', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────
+// no_prior: distinguir inventario inicial presente / cero / ausente
+// por categoría cuando no hay anchor previo.
+// ─────────────────────────────────────────────────────────────────────
+describe('[EXACT] Sin anchor: inv_previous presente vs cero explícito vs ausente por categoría', () => {
+  const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+
+  it('sin anchor y previous_value NUMÉRICO en food → invPreviousPresent=true; variación calculable', () => {
+    // closing sí trae previous_value = 900 en Food Inventory
+    const w = makeWeek({
+      week: '2026-W10', weekStart: '2026-03-01', weekEnd: '2026-03-07',
+      salesCats: [{ name: 'FOOD', net: 5000 }],
+      cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 800, previous_value: 900 }],
+      theoCostByCat: { food: 480 },
+    })
+    const prep = prepareCostoUsoResult({
+      ...BASE, mappings, weeks: [w],
+      requestedRange: { from: '2026-W10', to: '2026-W10' },
+    })
+    const d = prep.detailData
+    expect(d.food_inv_previous_present).toBe(true)
+    expect(d.food_inv_previous).toBe(900)
+    // uso = 900 + 500 − 800 = 600; variacion = 600 − 480 = 120
+    expect(d.food_uso).toBe(600)
+    expect(d.food_variacion).toBe(120)
+    expect(d.food_variacion_reason).toBe('ok')
+  })
+
+  it('sin anchor y previous_value = 0 EXPLÍCITO → invPreviousPresent=true; variación calculable', () => {
+    const w = makeWeek({
+      week: '2026-W11', weekStart: '2026-03-08', weekEnd: '2026-03-14',
+      salesCats: [{ name: 'FOOD', net: 5000 }],
+      cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 100, previous_value: 0 }],
+      theoCostByCat: { food: 480 },
+    })
+    const prep = prepareCostoUsoResult({
+      ...BASE, mappings, weeks: [w],
+      requestedRange: { from: '2026-W11', to: '2026-W11' },
+    })
+    const d = prep.detailData
+    expect(d.food_inv_previous_present).toBe(true)
+    // uso = 0 + 500 − 100 = 400
+    expect(d.food_uso).toBe(400)
+    expect(d.food_variacion).toBe(400 - 480)
+  })
+
+  it('sin anchor y sin ninguna cuenta esperada de la categoría → invPreviousPresent=false; variación null con motivo no_initial_inventory', () => {
+    // El closing trae solo Alcoholic Inventory; Food Inventory está ausente.
+    const w = makeWeek({
+      week: '2026-W12', weekStart: '2026-03-15', weekEnd: '2026-03-21',
+      salesCats: [{ name: 'FOOD', net: 5000 }],
+      cogs: { food: 500 },
+      inventory: [{ account: 'Alcoholic Inventory', current_value: 300, previous_value: 300 }],
+      theoCostByCat: { food: 480 },
+    })
+    const prep = prepareCostoUsoResult({
+      ...BASE, mappings, weeks: [w],
+      requestedRange: { from: '2026-W12', to: '2026-W12' },
+    })
+    const d = prep.detailData
+    expect(d.food_inv_previous_present).toBe(false)
+    expect(d.food_variacion).toBeNull()
+    expect(d.food_variacion_reason).toBe('no_initial_inventory')
+    // días de inventario tampoco es calculable con límite inicial ausente
+    expect(d.food_dias_inv).toBeNull()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────
 // Caso PPTX: la sección Costo de Uso debe recibir el mismo detailData
 // (verificación de contrato — no se genera archivo aquí).
 // ─────────────────────────────────────────────────────────────────────

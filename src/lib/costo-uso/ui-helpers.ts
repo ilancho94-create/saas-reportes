@@ -83,6 +83,7 @@ export const VARIANCE_REASON_LABEL: Record<string, string> = {
   zero_sales: 'no calculable · ventas iguales a cero',
   negative_sales: 'no calculable · ventas negativas con la regla actual',
   partial_total_theo: 'no calculable · falta teórico en al menos una categoría con ventas',
+  no_initial_inventory: 'no calculable · sin inventario inicial de referencia en la categoría',
 }
 
 export const VARIANCE_REASON_LONG: Record<string, string> = {
@@ -92,6 +93,7 @@ export const VARIANCE_REASON_LONG: Record<string, string> = {
   zero_sales: 'Las ventas de esta categoría son cero, así que interpretar la variación no aporta información.',
   negative_sales: 'Las ventas son negativas (devoluciones netas). La regla actual del sistema no calcula variación en ese caso.',
   partial_total_theo: 'Al menos una categoría con ventas incluidas no tiene costo teórico. Presentar un total sería omitir información de esa categoría.',
+  no_initial_inventory: 'No hay conteo de inventario anterior para esta categoría y el reporte actual no trae el campo previous_value. Sin límite inicial, la variación no es calculable.',
 }
 
 export function formatDiagLine(it: any): string {

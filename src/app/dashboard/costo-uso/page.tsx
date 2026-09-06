@@ -26,6 +26,8 @@ import { DiagBadge } from './_components/DiagBadge'
 import { RangeSummary } from './_components/RangeSummary'
 import { UnclosedRangeCard } from './_components/UnclosedRangeCard'
 import { prepareCostoUsoResult } from '@/lib/costo-uso/prepare-result'
+import { loadCostoUsoContext } from '@/lib/export/costo-uso-context-loader'
+import { createSupabaseContextProvider } from '@/lib/costo-uso/supabase-context-provider'
 
 const ADJUSTMENT_FIELDS = [
   { key: 'inv_previous', label: 'Inv. Anterior' },
@@ -41,6 +43,14 @@ export default function CostoUsoPage() {
   const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
+  // Contexto adicional cargado por el loader iterativo cuando la
+  // selección requiere anchor externo fuera del universo inicial de
+  // 52 semanas. Se une con `weeks` para alimentar prepareCostoUsoResult.
+  // Cada carga incrementa `contextLoadId`; solo se aplican respuestas
+  // cuyo id coincida con el último — descarta respuestas fuera de orden.
+  const [contextWeeks, setContextWeeks] = useState<any[]>([])
+  const [contextStatus, setContextStatus] = useState<'idle' | 'loading' | 'complete' | 'no_prior' | 'insufficient' | 'error'>('idle')
+  const [contextLoadId, setContextLoadId] = useState(0)
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [alerts, setAlerts] = useState<string[]>([])
@@ -371,6 +381,62 @@ export default function CostoUsoPage() {
     return weeks.slice(-4)
   }, [weeks, shortcut, selectedWeek, customFrom, customTo])
 
+  // ── Contexto iterativo compartido con el PPTX ──────────────────────
+  // Cuando la selección de la UI cambia, disparamos el mismo loader que
+  // usa el fetcher del PPTX para asegurar contexto EQUIVALENTE (misma
+  // política de anchor + max lookback). Cada carga incrementa un id;
+  // solo la respuesta con id vigente se aplica — descarta respuestas
+  // fuera de orden.
+  useEffect(() => {
+    if (!restaurantId || filtered.length === 0) {
+      setContextWeeks([]); setContextStatus('idle')
+      return
+    }
+    const myId = contextLoadId + 1
+    setContextLoadId(myId)
+    setContextStatus('loading')
+    let cancelled = false
+    ;(async () => {
+      const weekIds = filtered.map((w: any) => w.report.week)
+      const provider = createSupabaseContextProvider(supabase as any, restaurantId, weekIds)
+      const res = await loadCostoUsoContext(provider)
+      if (cancelled) return
+      // Ignora si esta ya no es la carga más reciente.
+      setContextLoadId(curr => {
+        if (curr !== myId) return curr
+        setContextWeeks(res.weeks)
+        setContextStatus(res.status)
+        return curr
+      })
+    })().catch(() => {
+      if (!cancelled) {
+        setContextLoadId(curr => {
+          if (curr !== myId) return curr
+          setContextStatus('error')
+          return curr
+        })
+      }
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restaurantId, filtered])
+
+  // Universo efectivo que pasamos al helper: si el loader trajo
+  // contexto adicional, tiene precedencia sobre los weeks iniciales
+  // (dedup por report.id, orden ascendente).
+  const contextualWeeks = useMemo(() => {
+    if (contextWeeks.length === 0) return weeks
+    const seen = new Set<string>()
+    const merged: any[] = []
+    for (const w of [...contextWeeks, ...weeks]) {
+      if (seen.has(w.report.id)) continue
+      seen.add(w.report.id)
+      merged.push(w)
+    }
+    merged.sort((a, b) => a.report.week < b.report.week ? -1 : a.report.week > b.report.week ? 1 : 0)
+    return merged
+  }, [weeks, contextWeeks])
+
   function fmt(n: any) { if (n === null || n === undefined) return '—'; return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }) }
   function fmtPct(n: any) { if (n === null || n === undefined) return '—'; return Number(n).toFixed(1) + '%' }
   const getMappedSales = engine.getMappedSales
@@ -541,7 +607,7 @@ export default function CostoUsoPage() {
   // usa el exportador — si la aritmética coincide aquí, coincide ahí.
   const prep = useMemo(
     () => prepareCostoUsoResult({
-      weeks,
+      weeks: contextualWeeks,       // universo = weeks iniciales + contexto iterativo del loader
       mappings,
       adjustments,
       skippedWeekSet,
@@ -553,7 +619,7 @@ export default function CostoUsoPage() {
       weekList: filtered,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [weeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets, fiscalYearStart, filtered]
+    [contextualWeeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets, fiscalYearStart, filtered]
   )
   const periodSeries = prep.periodSeries
   const detailData = prep.detailData
