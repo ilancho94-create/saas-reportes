@@ -59,6 +59,12 @@ export interface EngineContext {
    * para diagnósticos de interval_extended — no afecta el cálculo. Opcional.
    */
   requestedRange?: { from: string; to: string } | null
+  /**
+   * Fecha ISO YYYY-MM-DD del inicio del año fiscal del restaurante
+   * (restaurants.fiscal_year_start). Solo se usa para etiquetar la evidencia
+   * de diagnósticos temporales. Opcional.
+   */
+  fiscalYearStart?: string | null
 }
 
 // ── Puras (sin ctx) ────────────────────────────────────────────────────
@@ -97,6 +103,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     activeCategories,
     accountMap: ACCOUNT_MAP,
     requestedRange: ctx.requestedRange ?? null,
+    fiscalYearStart: ctx.fiscalYearStart ?? null,
   }
 
   function getOpDiscountTotal(w: any): number {
@@ -386,7 +393,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       : null
     result.totalTheoComplete = !anyIncludedCatMissingTheo
     result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
-    result.diagnostics = diagnosePeriod(anchor, intermediates, closing, diagCtx)
+    result.diagnostics = diagnosePeriod(anchor, intermediates, closing, diagCtx, getAdj)
     return result
   }
 

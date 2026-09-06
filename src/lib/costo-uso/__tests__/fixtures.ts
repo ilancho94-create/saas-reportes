@@ -21,6 +21,7 @@ export interface WeekBuildArgs {
   cogs?: Partial<Record<string, number>>
   inventory?: Array<{ account: string; current_value: number; previous_value: number }> | null
   theoCostByCat?: Partial<Record<string, number>>
+  productMixRaw?: Record<string, unknown>
   discountsItems?: Array<{ name: string; amount: number }>
   discountsTotal?: number
 }
@@ -45,7 +46,10 @@ export function makeWeek(a: WeekBuildArgs) {
       grand_total_current: inv.reduce((s, x) => s + x.current_value, 0),
       grand_total_previous: inv.reduce((s, x) => s + x.previous_value, 0),
     } : null),
-    productMix: a.theoCostByCat ? { theo_cost_by_category: a.theoCostByCat } : null,
+    productMix: (a.theoCostByCat || a.productMixRaw) ? {
+      theo_cost_by_category: a.theoCostByCat || {},
+      raw_data: a.productMixRaw || undefined,
+    } : null,
     discounts: (a.discountsItems || a.discountsTotal) ? {
       total: a.discountsTotal || 0,
       items: a.discountsItems || [],

@@ -46,16 +46,19 @@ describe('[EXACT] A — semanas ausentes y presentes sin conteo', () => {
     expect(missing[0].week).toBe('2026-W21')
   })
 
-  it('secuencia calendario con hueco → missing_week', () => {
+  it('gap por fechas: W20 (04-27 al 05-03) → W22 (05-11 al 05-17), falta ~1 semana', () => {
+    // 14 días entre 05-03 y 05-11 → 13 días de gap → estimatedMissingWeeks = floor(12/7) = 1.
+    // (Nota: 05-11 − 05-03 = 8 días → 8 − 1 = 7 días exclusivos → falta 1 semana.)
     const w20 = makeWeek({
       week: '2026-W20', reportId: 'r20',
+      weekStart: '2026-04-27', weekEnd: '2026-05-03',
       salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
       inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
       theoCostByCat: { food: 90 },
     })
-    // Falta W21 (no está en el array)
     const w22 = makeWeek({
       week: '2026-W22', reportId: 'r22',
+      weekStart: '2026-05-11', weekEnd: '2026-05-17',
       salesCats: [{ name: 'FOOD', net: 1200 }], cogs: { food: 150 },
       inventory: [{ account: 'Food Inventory', current_value: 550, previous_value: 500 }],
       theoCostByCat: { food: 110 },
@@ -64,31 +67,59 @@ describe('[EXACT] A — semanas ausentes y presentes sin conteo', () => {
     const p = engine.buildPeriodData(w20, [], w22)
     const missing = (p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')
     expect(missing).toHaveLength(1)
-    expect(missing[0].week).toBe('2026-W21')
+    expect(missing[0].weekRange).toEqual(['2026-W20', '2026-W22'])
+    expect(missing[0].evidence.previousWeekEnd).toBe('2026-05-03')
+    expect(missing[0].evidence.nextWeekStart).toBe('2026-05-11')
+    expect(missing[0].evidence.estimatedMissingWeeks).toBe(1)
     expect(p.diagnostics.checks.calendarCoverage).toBe('present')
   })
 
-  it('cambio de año: W52 → W02 detecta W53? NO (limita a 52) y W01 sí', () => {
-    // Documenta que el detector usa isoWeeksBetween con corte en W52.
-    // Los años con W53 fiscal caerían fuera; queda como limitación conocida.
-    const w52 = makeWeek({
-      week: '2025-W52',
+  it('cambio de año fiscal con W53: fechas consecutivas 2025-12-29 al 2026-01-04 → sin hueco', () => {
+    // Un restaurante con fiscal_year_start que produce 53 semanas: la app
+    // guarda etiquetas "2025-W53" y "2026-W01" seguidas. El detector NO
+    // reinventa etiquetas; solo mira que week_end + 1día === next.week_start.
+    const w53 = makeWeek({
+      week: '2025-W53',
+      weekStart: '2025-12-22', weekEnd: '2025-12-28',
       salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
       inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
       theoCostByCat: { food: 90 },
     })
-    const w02 = makeWeek({
-      week: '2026-W02',
+    const w01 = makeWeek({
+      week: '2026-W01',
+      weekStart: '2025-12-29', weekEnd: '2026-01-04',
       salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
       inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
       theoCostByCat: { food: 90 },
     })
-    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w52, w02] })
-    const p = engine.buildPeriodData(w52, [], w02)
-    const missing = (p.diagnostics.items as any[])
-      .filter(i => i.type === 'missing_week').map(i => i.week)
-    expect(missing).toContain('2026-W01')
-    // Nota / limitación: el detector no distingue W53 fiscal por año.
+    const engine = createCostoUsoEngine({
+      ...BASE_CTX, weeks: [w53, w01],
+      fiscalYearStart: '2025-01-06',   // domingo — 53 semanas hasta 2026-01-04
+    })
+    const p = engine.buildPeriodData(w53, [], w01)
+    const missing = (p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')
+    expect(missing).toHaveLength(0)
+    expect(p.diagnostics.checks.calendarCoverage).toBe('ok')
+  })
+
+  it('sin week_start/week_end → calendarCoverage = not_determinable', () => {
+    const w1 = makeWeek({
+      week: '2026-W10', reportId: 'r10',
+      // sin weekStart/weekEnd
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const w2 = makeWeek({
+      week: '2026-W11', reportId: 'r11',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w2] })
+    const p = engine.buildPeriodData(w1, [], w2)
+    expect((p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')).toHaveLength(0)
+    expect(p.diagnostics.checks.calendarCoverage).toBe('not_determinable')
   })
 })
 
@@ -181,6 +212,80 @@ describe('[EXACT] C — cuentas esperadas por categoría', () => {
       .filter(i => i.type === 'inventory_account_missing')
     expect(missing).toHaveLength(0)   // no marca liquor porque no está mapeado
   })
+
+  it('inventario/compras/pmix presentes para categoría SIN mapping de ventas → unmapped_activity_category', () => {
+    // Solo food está mapeado; pero R365 nos manda datos de liquor
+    // (inventario, compras y teórico). Esas ventas no llegan porque
+    // el mapping de ventas no existe. Debe alertarse.
+    const restrictedMappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const w = makeWeek({
+      week: '2026-W17', reportId: 'r17',
+      salesCats: [{ name: 'FOOD', net: 5000 }],
+      cogs: { food: 800, liquor: 300 },   // liquor SIN mapping de ventas
+      inventory: [
+        { account: 'Food Inventory',      current_value: 500, previous_value: 500 },
+        { account: 'Alcoholic Inventory', current_value: 200, previous_value: 200 },   // → liquor
+      ],
+      theoCostByCat: { food: 700, liquor: 250 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, mappings: restrictedMappings, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    const unmapped = (d.diagnostics.items as any[])
+      .filter(i => i.type === 'unmapped_activity_category')
+    expect(unmapped.map(i => i.category)).toContain('liquor')
+    const evLiquor = unmapped.find(i => i.category === 'liquor').evidence
+    expect(evLiquor.seenIn).toEqual(expect.arrayContaining(['cogs', 'productMix', 'inventory']))
+    expect(d.diagnostics.checks.unmappedActivity).toBe('present')
+  })
+})
+
+describe('[EXACT] E — unmatched_pmix_items: lista ausente ≠ cero', () => {
+  it('productMix presente sin raw_data → unmatchedPmixItems = not_determinable', () => {
+    const w = makeWeek({
+      week: '2026-W30',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 450 },
+      // sin productMixRaw
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.diagnostics.checks.unmatchedPmixItems).toBe('not_determinable')
+    // Y no debe existir un item unmatched (no inventamos count=0)
+    expect((d.diagnostics.items as any[]).some(i => i.type === 'unmatched_pmix_items')).toBe(false)
+  })
+
+  it('raw_data.unmatched_items = [] → not_determinable resuelto a ok', () => {
+    const w = makeWeek({
+      week: '2026-W31',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 450 },
+      productMixRaw: { unmatched_items: [] },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.diagnostics.checks.unmatchedPmixItems).toBe('ok')
+  })
+
+  it('unmatched_items con datos → present + item con conteo y totalTheo', () => {
+    const w = makeWeek({
+      week: '2026-W32',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 450 },
+      productMixRaw: { unmatched_items: [
+        { name: 'Item A', theo_cost: 12.5 },
+        { name: 'Item B', theo_cost: 7.25 },
+      ] },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.diagnostics.checks.unmatchedPmixItems).toBe('present')
+    const it = (d.diagnostics.items as any[]).find(i => i.type === 'unmatched_pmix_items')
+    expect(it.evidence.count).toBe(2)
+    expect(it.evidence.totalTheoCost).toBe(19.75)
+  })
 })
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -202,12 +307,36 @@ describe('[EXACT] D — inventory_carry_mismatch', () => {
   const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w2] })
   const p = engine.buildPeriodData(w1, [], w2)
 
-  it('detecta ambos valores sin sobrescribir ni elegir fuente', () => {
+  it('detecta ambos valores sin sobrescribir ni elegir fuente, con ajustes explícitos', () => {
     const mm = (p.diagnostics.items as any[]).filter(i => i.type === 'inventory_carry_mismatch')
     expect(mm).toHaveLength(1)
-    expect(mm[0].evidence.anchorInvCurrent).toBe(1000)
-    expect(mm[0].evidence.closingInvPrevious).toBe(950)
+    expect(mm[0].evidence.anchor.rawValue).toBe(1000)
+    expect(mm[0].evidence.anchor.adjustment).toBe(0)
+    expect(mm[0].evidence.anchor.adjustedValue).toBe(1000)
+    expect(mm[0].evidence.closing.rawValue).toBe(950)
+    expect(mm[0].evidence.closing.adjustment).toBe(0)
+    expect(mm[0].evidence.closing.adjustedValue).toBe(950)
     expect(mm[0].evidence.diff).toBe(-50)
+  })
+
+  it('con ajustes manuales, la evidencia registra bruto y ajustado por separado', () => {
+    const engine2 = createCostoUsoEngine({
+      ...BASE_CTX, weeks: [w1, w2],
+      adjustments: [
+        { week: '2026-W10', category: 'food', field: 'inv_current',  adjustment_value:  20 },
+        { week: '2026-W11', category: 'food', field: 'inv_previous', adjustment_value: -30 },
+      ],
+    })
+    const p2 = engine2.buildPeriodData(w1, [], w2)
+    const mm = (p2.diagnostics.items as any[]).filter(i => i.type === 'inventory_carry_mismatch')
+    expect(mm).toHaveLength(1)
+    expect(mm[0].evidence.anchor.rawValue).toBe(1000)
+    expect(mm[0].evidence.anchor.adjustment).toBe(20)
+    expect(mm[0].evidence.anchor.adjustedValue).toBe(1020)
+    expect(mm[0].evidence.closing.rawValue).toBe(950)
+    expect(mm[0].evidence.closing.adjustment).toBe(-30)
+    expect(mm[0].evidence.closing.adjustedValue).toBe(920)
+    expect(mm[0].evidence.diff).toBe(-100)   // 920 − 1020
   })
 
   it('diferencia < 0.005 no se marca (precisión monetaria técnica)', () => {
@@ -435,19 +564,22 @@ describe('[EXACT] Agregación conserva y no duplica diagnósticos', () => {
   it('mismo missing_week presente en dos períodos aparece una sola vez agregado', () => {
     const w20 = makeWeek({
       week: '2026-W20', reportId: 'r20',
+      weekStart: '2026-04-27', weekEnd: '2026-05-03',
       salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
       inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
       theoCostByCat: { food: 90 },
     })
-    // Falta W21
+    // Falta W21 (2026-05-04 al 2026-05-10)
     const w22 = makeWeek({
       week: '2026-W22', reportId: 'r22',
+      weekStart: '2026-05-11', weekEnd: '2026-05-17',
       salesCats: [{ name: 'FOOD', net: 1200 }], cogs: { food: 150 },
       inventory: [{ account: 'Food Inventory', current_value: 550, previous_value: 500 }],
       theoCostByCat: { food: 110 },
     })
     const w23 = makeWeek({
       week: '2026-W23', reportId: 'r23',
+      weekStart: '2026-05-18', weekEnd: '2026-05-24',
       salesCats: [{ name: 'FOOD', net: 1300 }], cogs: { food: 160 },
       inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 550 }],
       theoCostByCat: { food: 120 },
@@ -455,9 +587,10 @@ describe('[EXACT] Agregación conserva y no duplica diagnósticos', () => {
     const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w20, w22, w23] })
     const series = engine.buildPeriodSeries([w20, w22, w23])
     const agg = engine.aggregateSeries(series)
-    const missingCount = (agg.diagnostics.items as any[])
-      .filter((i: any) => i.type === 'missing_week' && i.week === '2026-W21').length
-    expect(missingCount).toBe(1)
+    const missings = (agg.diagnostics.items as any[])
+      .filter((i: any) => i.type === 'missing_week')
+    expect(missings).toHaveLength(1)
+    expect(missings[0].weekRange).toEqual(['2026-W20', '2026-W22'])
   })
 
   it('rango sin cierre: el agregado devuelve null pero diagnoseRange sí reporta el tail', () => {
