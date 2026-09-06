@@ -10,23 +10,11 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, Cell
 } from 'recharts'
-
-const ACCOUNT_MAP: Record<string, string> = {
-  'Food Inventory': 'food',
-  'Food bar Inventory': 'liquor',
-  'Beer': 'beer',
-  'Alcoholic Inventory': 'liquor',
-  'Beverage Inventory': 'na_beverage',
-  'Wine Inventory': 'wine',
-}
-
-const CATEGORIES_BASE = [
-  { key: 'food', label: 'Food', color: '#f97316', defaultMeta: 28 },
-  { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', defaultMeta: 8 },
-  { key: 'liquor', label: 'Liquor', color: '#a855f7', defaultMeta: 20 },
-  { key: 'beer', label: 'Beer', color: '#eab308', defaultMeta: 20 },
-  { key: 'wine', label: 'Wine', color: '#ec4899', defaultMeta: 20 },
-]
+import {
+  ACCOUNT_MAP,
+  CATEGORIES_BASE,
+  createCostoUsoEngine,
+} from '@/lib/costo-uso/engine'
 
 const ADJUSTMENT_FIELDS = [
   { key: 'inv_previous', label: 'Inv. Anterior' },
@@ -89,10 +77,27 @@ export default function CostoUsoPage() {
     period: any
   }>(null)
 
-  const CATEGORIES = CATEGORIES_BASE.map(cat => ({
-    ...cat,
-    meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
-  }))
+  const skippedWeekSet = useMemo(
+    () => new Set<string>(skippedWeeks.map((s: any) => s.week)),
+    [skippedWeeks]
+  )
+
+  // Engine único (misma implementación que usan las pruebas)
+  const engine = useMemo(
+    () => createCostoUsoEngine({
+      weeks,
+      mappings,
+      adjustments,
+      skippedWeekSet,
+      opDiscountMappings,
+      includeOpDiscounts,
+      operatingDays,
+      costTargets,
+    }),
+    [weeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets],
+  )
+
+  const CATEGORIES = engine.CATEGORIES
 
   const canEdit = can(userRole, 'costo_uso', 'edit', userCustomPerms)
   const { isSuperAdmin, user } = useAuth()
@@ -203,21 +208,11 @@ export default function CostoUsoPage() {
     setLoading(false)
   }
 
-  // ── NUEVO: calcular total descuentos operativos de una semana ─────────────
-  function getOpDiscountTotal(w: any): number {
-    if (!includeOpDiscounts || !opDiscountMappings.length) return 0
-    const items: any[] = w.discounts?.items || []
-    return items
-      .filter((item: any) => opDiscountMappings.includes(item.name))
-      .reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0)
-  }
-
-  function getAdj(week: string, category: string, field: string): number {
-    return adjustments.filter(a => a.week === week && a.category === category && a.field === field)
-      .reduce((sum, a) => sum + Number(a.adjustment_value), 0)
-  }
-  function hasAdjustments(week: string): boolean { return adjustments.some(a => a.week === week) }
-  function getWeekAdjustments(week: string): any[] { return adjustments.filter(a => a.week === week) }
+  // ── Funciones bindeadas al engine (misma semántica que la extracción) ────
+  const getOpDiscountTotal = engine.getOpDiscountTotal
+  const getAdj = engine.getAdj
+  const hasAdjustments = engine.hasAdjustments
+  const getWeekAdjustments = engine.getWeekAdjustments
 
   async function saveAdjustment() {
     if (!adjValue || !adjNote.trim()) { setAdjError('Debes ingresar un valor y una nota explicativa'); return }
@@ -328,350 +323,17 @@ export default function CostoUsoPage() {
 
   function fmt(n: any) { if (n === null || n === undefined) return '—'; return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }) }
   function fmtPct(n: any) { if (n === null || n === undefined) return '—'; return Number(n).toFixed(1) + '%' }
-  function pct(part: any, total: any) { if (!part || !total) return null; return parseFloat((Number(part) / Number(total) * 100).toFixed(1)) }
+  const getMappedSales = engine.getMappedSales
+  const getMappedGross = engine.getMappedGross
 
-  function getMappedSales(categories: any[], targetType: string) {
-    if (!categories || !mappings.length) return 0
-    return categories.filter((cat: any) => {
-      const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
-      return mapping?.mapped_to === targetType
-    }).reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
-  }
-
-
-  // Ventas brutas (net + descuentos) por categoria — para modo + Desc. Operativos
-  function getMappedGross(categories: any[], targetType: string) {
-    if (!categories || !mappings.length) return 0
-    return categories.filter((cat: any) => {
-      const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
-      return mapping?.mapped_to === targetType
-    }).reduce((sum: number, cat: any) => sum + Number(cat.gross || cat.net || 0), 0)
-  }
-
-  function getInventoryByCategory(invAccounts: any[], categoryKey: string) {
-    if (!invAccounts) return { current: 0, previous: 0 }
-    const accounts = Object.entries(ACCOUNT_MAP).filter(([_, cat]) => cat === categoryKey).map(([acc]) => acc)
-    return {
-      current: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.current_value || 0), 0),
-      previous: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.previous_value || 0), 0),
-    }
-  }
-
-  function buildWeekData(w: any) {
-    const netSales = w.sales?.net_sales || 0
-    const cogsCat = w.cogs?.by_category || {}
-    const invAccounts = w.inventory?.by_account || []
-    const salesCategories = w.sales?.categories || []
-    const theoCostByCat = w.productMix?.theo_cost_by_category || {}
-    const hasInventory = invAccounts.length > 0
-    const week = w.report.week
-
-    // ── NUEVO: total descuentos operativos de la semana ───────────────────
-    const opDiscTotal = getOpDiscountTotal(w)
-
-    const result: any = { week: week.replace('2026-', ''), fullWeek: week, reportId: w.report.id, netSales, hasInventory, hasProductMix: !!w.productMix, opDiscTotal }
-    let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
-
-    CATEGORIES.forEach(cat => {
-      const inv = getInventoryByCategory(invAccounts, cat.key)
-      const adjInvPrev = getAdj(week, cat.key, 'inv_previous')
-      const adjPurchases = getAdj(week, cat.key, 'purchases')
-      const adjInvCurr = getAdj(week, cat.key, 'inv_current')
-      const adjTheo = getAdj(week, cat.key, 'theo_cost')
-      const invPrevious = inv.previous + adjInvPrev
-      const purchases = (cogsCat[cat.key] || 0) + adjPurchases
-      const invCurrent = inv.current + adjInvCurr
-      const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
-      const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
-      // Con toggle activo: usar ventas brutas (net + descuentos) + ajuste manual de ventas
-      const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
-      const adjSales = getAdj(week, cat.key, 'sales_adjustment')
-      const catSales = includeOpDiscounts && catSalesGross > catSalesBase
-        ? catSalesGross + adjSales
-        : catSalesBase
-
-      const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
-      const realPct = catSales > 0 ? pct(uso, catSales) : null
-      const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
-      const diasInv = uso > 0 ? parseFloat((((invCurrent + invPrevious) / 2) / uso * operatingDays).toFixed(1)) : null
-      const hasAdj = adjInvPrev !== 0 || adjPurchases !== 0 || adjInvCurr !== 0 || adjTheo !== 0
-      result[cat.key + '_uso'] = uso
-      result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0
-      result[cat.key + '_variacion'] = variacionDolares
-      result[cat.key + '_dias_inv'] = diasInv
-      result[cat.key + '_inv_current'] = invCurrent
-      result[cat.key + '_inv_previous'] = invPrevious
-      result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = catSales
-      result[cat.key + '_has_adj'] = hasAdj
-      result[cat.key + '_theo_cost'] = theoCost
-      if (uso > 0) totalUsoCost += uso
-      if (theoCost > 0) totalTheoCost += theoCost
-      if (catSales > 0) totalABSales += catSales
-    })
-
-    result.totalUsoCost = totalUsoCost; result.totalTheoCost = totalTheoCost
-    result.totalABSales = totalABSales
-    result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
-    result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
-    result.hasAnyAdj = hasAdjustments(week)
-    return result
-  }
-
-  // ──────────────────────────────────────────────────────────────────────
-  // PERIOD-BASED CONSOLIDATION MODEL
-  //
-  // Un PERÍODO va de un check-point de inventario (anchor) al siguiente
-  // (closing). Semanas saltadas o sin inventario entre anchor y closing
-  // se ABSORBEN dentro del período (sus ventas/compras se suman).
-  //
-  // Fórmula correcta:
-  //   inv_start  = anchor.inv_current   (cierre del check-point previo)
-  //                — o R365's inv_previous del closing si no hay anchor
-  //   inv_end    = closing.inv_current  (cierre del nuevo check-point)
-  //   purchases  = Σ(compras de intermediates + closing)
-  //   sales      = Σ(ventas de intermediates + closing)
-  //   uso        = inv_start + purchases − inv_end
-  //
-  // Esto reemplaza el modelo anterior (buildRangeData + effectiveFiltered)
-  // que tenía dos bugs:
-  //   1) Por-semana W22 con W20-W21 saltadas → inv_previous era el cierre
-  //      de W19 (3 semanas de consumo) pero ventas/compras solo de W22
-  //      → % inflado ~40%+
-  //   2) buildRangeData incluía al anchor (W19) dentro del período,
-  //      sobrecontando 1 semana
-  // ──────────────────────────────────────────────────────────────────────
-  const skippedWeekSet = new Set<string>(skippedWeeks.map((s: any) => s.week))
-
-  // Encuentra la última semana CON inventario antes de targetWeek.
-  function findAnchorBefore(targetWeek: any): any | null {
-    const idx = weeks.findIndex(w => w.report.week === targetWeek.report.week)
-    if (idx <= 0) return null
-    for (let i = idx - 1; i >= 0; i--) {
-      if (weeks[i].inventory?.by_account?.length > 0) return weeks[i]
-    }
-    return null
-  }
-
-  // Devuelve las semanas entre anchor (excl) y closing (excl) del array global `weeks`.
-  function getWeeksBetween(anchor: any | null, closing: any): any[] {
-    const closingIdx = weeks.findIndex(w => w.report.week === closing.report.week)
-    if (closingIdx < 0) return []
-    const anchorIdx = anchor ? weeks.findIndex(w => w.report.week === anchor.report.week) : -1
-    return weeks.slice(anchorIdx + 1, closingIdx)
-  }
-
-  // Calcula los datos consolidados de un período cerrado por `closing`.
-  // anchor=null → usa el inv_previous del R365 del closing como punto de inicio.
-  function buildPeriodData(anchor: any | null, intermediates: any[], closing: any) {
-    const periodWeeks = [...intermediates, closing]
-    const closingWeek = closing.report.week
-    const isConsolidated = intermediates.length > 0
-    const spannedSkippedWeeks = intermediates
-      .filter(w => skippedWeekSet.has(w.report.week))
-      .map(w => w.report.week)
-
-    const result: any = {
-      week: closingWeek.replace('2026-', ''),
-      fullWeek: closingWeek,
-      reportId: closing.report.id,
-      netSales: periodWeeks.reduce((s, w) => s + (w.sales?.net_sales || 0), 0),
-      hasInventory: true,
-      hasProductMix: !!closing.productMix,
-      opDiscTotal: periodWeeks.reduce((s, w) => s + getOpDiscountTotal(w), 0),
-      isConsolidated,
-      spannedSkippedWeeks,
-      anchorWeek: anchor?.report.week || null,
-      periodWeekCount: periodWeeks.length,
-      closingReport: closing.report,
-      closingRaw: closing,
-      periodWeeksRaw: periodWeeks,  // semanas raw del período (para análisis de varianza)
-    }
-
-    let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
-
-    CATEGORIES.forEach(cat => {
-      // inv_start: anchor's inv_current si existe, sino R365's inv_previous del closing
-      let invPrevious: number
-      if (anchor) {
-        const anchorInv = getInventoryByCategory(anchor.inventory?.by_account || [], cat.key)
-        const adjAnchorCurr = getAdj(anchor.report.week, cat.key, 'inv_current')
-        invPrevious = anchorInv.current + adjAnchorCurr
-      } else {
-        const closingInv = getInventoryByCategory(closing.inventory?.by_account || [], cat.key)
-        const adjClosingPrev = getAdj(closing.report.week, cat.key, 'inv_previous')
-        invPrevious = closingInv.previous + adjClosingPrev
-      }
-
-      const closingInv = getInventoryByCategory(closing.inventory?.by_account || [], cat.key)
-      const adjClosingCurr = getAdj(closing.report.week, cat.key, 'inv_current')
-      const invCurrent = closingInv.current + adjClosingCurr
-
-      const purchases = periodWeeks.reduce((sum, w) => {
-        const cogsCat = w.cogs?.by_category || {}
-        const adj = getAdj(w.report.week, cat.key, 'purchases')
-        return sum + (cogsCat[cat.key] || 0) + adj
-      }, 0)
-
-      const uso = Math.max(invPrevious + purchases - invCurrent, 0)
-
-      const catSales = periodWeeks.reduce((sum, w) => {
-        const salesCategories = w.sales?.categories || []
-        const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
-        const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
-        const adjSales = getAdj(w.report.week, cat.key, 'sales_adjustment')
-        return sum + (includeOpDiscounts && catSalesGross > catSalesBase ? catSalesGross + adjSales : catSalesBase)
-      }, 0)
-
-      const theoCost = periodWeeks.reduce((sum, w) => {
-        const theoByCat = w.productMix?.theo_cost_by_category || {}
-        const adj = getAdj(w.report.week, cat.key, 'theo_cost')
-        return sum + (theoByCat[cat.key] || 0) + adj
-      }, 0)
-
-      const realPct = catSales > 0 ? pct(uso, catSales) : null
-      const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
-
-      const totalOpDays = periodWeeks.length * operatingDays
-      const diasInv = uso > 0
-        ? parseFloat((((invCurrent + invPrevious) / 2) / uso * totalOpDays).toFixed(1))
-        : null
-
-      const hasAdj = periodWeeks.some(w =>
-        getAdj(w.report.week, cat.key, 'inv_previous') !== 0 ||
-        getAdj(w.report.week, cat.key, 'purchases') !== 0 ||
-        getAdj(w.report.week, cat.key, 'inv_current') !== 0 ||
-        getAdj(w.report.week, cat.key, 'theo_cost') !== 0
-      )
-
-      result[cat.key + '_uso'] = uso
-      result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0
-      result[cat.key + '_variacion'] = variacionDolares
-      result[cat.key + '_dias_inv'] = diasInv
-      result[cat.key + '_inv_current'] = invCurrent
-      result[cat.key + '_inv_previous'] = invPrevious
-      result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = catSales
-      result[cat.key + '_has_adj'] = hasAdj
-      result[cat.key + '_theo_cost'] = theoCost
-
-      if (uso > 0) totalUsoCost += uso
-      if (theoCost > 0) totalTheoCost += theoCost
-      if (catSales > 0) totalABSales += catSales
-    })
-
-    result.totalUsoCost = totalUsoCost
-    result.totalTheoCost = totalTheoCost
-    result.totalABSales = totalABSales
-    result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
-    result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
-    result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
-    return result
-  }
-
-  // Recorre weekList cronológicamente y emite UN período por cada semana inventariada.
-  // Semanas sin inventario (saltadas o pendientes) se absorben en el siguiente cierre.
-  // Si la primera semana del weekList tiene saltadas anteriores con un anchor fuera del
-  // weekList, también las absorbe.
-  function buildPeriodSeries(weekList: any[]): any[] {
-    if (!weekList.length) return []
-
-    let priorAnchor = findAnchorBefore(weekList[0])
-    // Semanas no-inventariadas entre el anchor y el inicio del weekList se absorben también
-    const preIntermediates = priorAnchor ? getWeeksBetween(priorAnchor, weekList[0]) : []
-
-    const series: any[] = []
-    let intermediates: any[] = [...preIntermediates]
-
-    for (const w of weekList) {
-      const hasInv = w.inventory?.by_account?.length > 0
-      if (!hasInv) {
-        intermediates.push(w)
-        continue
-      }
-      series.push(buildPeriodData(priorAnchor, intermediates, w))
-      priorAnchor = w
-      intermediates = []
-    }
-    // intermediates restantes al final (sin cierre todavía) no se renderizan.
-    return series
-  }
-
-  // Agrega N períodos en una sola fila resumen (matemáticamente equivalente a una
-  // consolidación full por la propiedad telescópica).
-  function aggregateSeries(series: any[]): any {
-    if (!series.length) return null
-    if (series.length === 1) return series[0]
-
-    const result: any = {
-      isConsolidated: series.some(s => s.isConsolidated),
-      spannedSkippedWeeks: series.flatMap(s => s.spannedSkippedWeeks || []),
-      periodCount: series.length,
-      hasAnyAdj: series.some(s => s.hasAnyAdj),
-      hasInventory: true,
-      hasProductMix: series[series.length - 1].hasProductMix,
-      fullWeek: series[series.length - 1].fullWeek,
-      reportId: series[series.length - 1].reportId,
-      closingReport: series[series.length - 1].closingReport,
-      closingRaw: series[series.length - 1].closingRaw,
-      opDiscTotal: series.reduce((s, p) => s + (p.opDiscTotal || 0), 0),
-      periodWeeksRaw: series.flatMap(s => s.periodWeeksRaw || []),  // todas las raw weeks del agregado
-    }
-    const totalOpDays = series.reduce((s, p) => s + (p.periodWeekCount || 1) * operatingDays, 0)
-
-    CATEGORIES.forEach(cat => {
-      const uso = series.reduce((s, p) => s + (p[cat.key + '_uso'] || 0), 0)
-      const theo = series.reduce((s, p) => s + (p[cat.key + '_theo_cost'] || 0), 0)
-      const sales = series.reduce((s, p) => s + (p[cat.key + '_sales'] || 0), 0)
-      const purchases = series.reduce((s, p) => s + (p[cat.key + '_purchases'] || 0), 0)
-      const realPct = sales > 0 ? pct(uso, sales) : null
-      const mixPct = sales > 0 ? pct(theo, sales) : null
-      const variacion = realPct !== null && mixPct !== null && sales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * sales).toFixed(2)) : null
-      const invPrev = series[0][cat.key + '_inv_previous']
-      const invCurr = series[series.length - 1][cat.key + '_inv_current']
-      const diasInv = uso > 0
-        ? parseFloat((((invCurr + invPrev) / 2) / uso * totalOpDays).toFixed(1))
-        : null
-
-      result[cat.key + '_uso'] = uso
-      result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0
-      result[cat.key + '_variacion'] = variacion
-      result[cat.key + '_inv_current'] = invCurr
-      result[cat.key + '_inv_previous'] = invPrev
-      result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = sales
-      result[cat.key + '_has_adj'] = series.some(p => p[cat.key + '_has_adj'])
-      result[cat.key + '_theo_cost'] = theo
-      result[cat.key + '_dias_inv'] = diasInv
-    })
-
-    let totalUso = 0, totalTheo = 0, totalSales = 0
-    CATEGORIES.forEach(cat => {
-      totalUso += result[cat.key + '_uso'] || 0
-      totalTheo += result[cat.key + '_theo_cost'] || 0
-      totalSales += result[cat.key + '_sales'] || 0
-    })
-    result.totalUsoCost = totalUso
-    result.totalTheoCost = totalTheo
-    result.totalABSales = totalSales
-    result.totalRealPct = totalSales > 0 ? pct(totalUso, totalSales) : null
-    result.totalMixPct = totalSales > 0 ? pct(totalTheo, totalSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalSales).toFixed(2)) : null
-    return result
-  }
+  // ── Cálculos delegados al engine (misma implementación que las pruebas) ──
+  // Ver src/lib/costo-uso/engine.ts para el PERIOD-BASED CONSOLIDATION MODEL.
+  const buildWeekData = engine.buildWeekData
+  const findAnchorBefore = engine.findAnchorBefore
+  const getWeeksBetween = engine.getWeeksBetween
+  const buildPeriodData = engine.buildPeriodData
+  const buildPeriodSeries = engine.buildPeriodSeries
+  const aggregateSeries = engine.aggregateSeries
 
   // ──────────────────────────────────────────────────────────────────────
   // ANÁLISIS DE VARIANZA
