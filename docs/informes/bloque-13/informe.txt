@@ -1,0 +1,186 @@
+Bloque 13 — Cuatro diferencias UI↔PPTX cerradas antes de verificar
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · MODO LIGERO, SIN TURNO PESADO
+
+1. COMMIT Y ESTADO
+   Rama: costo-uso-validation-2026-09-06 (local, sin push)
+   Commit añadido:
+     d3e6835  fix(costo-uso,pptx): block on critical load errors,
+              drop hidden op-days fallback, bounded context lookback,
+              gap-strict PPTX
+   HEAD previo: 7063f46
+   git status -s tras el commit: limpio.
+   Sin ejecución de pruebas, tipos, build, servidores, navegadores,
+   instalaciones ni generación de documentos.
+
+2. RESULTADO DE LOS CUATRO PUNTOS
+
+  (1) Errores de consulta → sección sin cifras
+      · Nuevo helper puro
+        src/lib/export/costo-uso-guards.ts
+          - CRITICAL_LOAD_PREFIXES:
+              category_mappings:
+              costo_uso_adjustments:
+              reports_selection_embed:
+              reports_anchor_lookback:
+          - hasCriticalLoadError(loadErrors) → boolean.
+      · generate-pptx.ts: antes de calcular nada, si
+        hasCriticalLoadError(ctx.loadErrors), la diapositiva emite:
+          "No se pudo calcular: falló la carga de información
+           necesaria."
+        No expone mensajes internos, consultas ni nombres técnicos.
+        Las demás secciones del documento se conservan íntegras.
+      · Fuentes NO indispensables (cost_targets, discount_mappings,
+        skipped_inventory_weeks) no bloquean; su ausencia se
+        procesa como respuesta vacía válida y genera aviso genérico
+        al pie sin filtrar detalles.
+      · loadErrors[] se sigue rellenando en data-fetcher.ts solo si
+        una consulta devolvió error real de Supabase; NUNCA por una
+        colección vacía. Un [] es respuesta válida — un error entra
+        con su prefijo estandarizado.
+
+  (2) Días de operación: misma regla en UI y PPTX
+      · /dashboard/costo-uso/page.tsx:
+          - operatingDays useState<number|null>(null).
+          - loadData: raw = restRes.data?.operating_days; parsed =
+            (typeof raw === 'number' && raw > 0) ? raw : null.
+            No hay "|| 6" ni "?? 6".
+          - Header: chip "Faltan días de operación" con tooltip
+            cuando null (antes "6 días/semana").
+          - Leyenda al pie: reemplaza el número por
+            "<días de operación no configurados>" cuando null.
+      · Motor (engine.ts): operatingDays: number | null. dias_inv
+        se devuelve null cuando operatingDays===null en las tres
+        funciones (buildWeekData, buildPeriodData, aggregateSeries).
+      · Consumidores de dias_inv:
+          - Tabla desktop de la página: dias !== null ? dias+'d' : '—'
+            (sin transformar null en cero).
+          - PPTX: la diapositiva no imprime dias_inv como cifra en
+            este bloque (métrica no incluida hoy en la layout);
+            queda con nota "Faltan días de operación" al pie.
+      · Configuración del restaurante NO se modifica.
+
+  (3) Contexto temporal sin recorte silencioso
+      · data-fetcher.ts sustituye el "hasta 52 semanas por
+        restaurante" por una carga ACOTADA:
+          - selEmbedRes: reports .in('week', weekIds) con el embed
+            completo.
+          - prevEmbedRes: reports .lt('week', minSelected)
+            .order('week', desc).limit(ANCHOR_LOOKBACK_WEEKS=6).
+        Se unen dedup por report.id y se ordenan asc.
+      · Nuevos campos en costoUsoContext:
+          engineWeeks:            EngineWeekShape[]
+                                  (interfaz mínima con solo los
+                                  campos consumidos por el motor;
+                                  sin any).
+          anchorLookbackWeeks:    número de semanas cargadas como
+                                  ventana previa (6).
+          anchorLookbackExhausted:true si prevEmbedRes.data.length
+                                  llegó al límite; documenta que el
+                                  anchor real podría estar todavía
+                                  más atrás.
+      · generate-pptx.ts avisa cuando anchorLookbackExhausted es
+        true, sin ampliar la ventana ni fabricar contexto vacío.
+      · Selección histórica >52 semanas atrás:
+          - Se descarga selEmbedRes exacto de esas semanas.
+          - Se descarga prevEmbedRes con las 6 semanas anteriores
+            al mínimo seleccionado.
+          - El motor absorbe el anchor externo real si está en esas
+            6; si no, publica el resto sin inventarlo.
+
+  (4) Selección no consecutiva → sección sin totales
+      · classifyConsecutive(requestedWeeks, engineWeeks) vive en
+        costo-uso-guards.ts. Usa civilDaysBetween (UTC) sobre
+        week_start / week_end reales de los reportes. Devuelve:
+          'consecutive' | 'gap' | 'not_determinable'
+      · Robusto ante W53 y calendarios fiscales — no depende de la
+        numeración YYYY-Wnn.
+      · addCostoUso invoca classifyConsecutive ANTES de llamar a
+        prepareCostoUsoResult. Si el resultado es 'gap', la
+        diapositiva muestra:
+          "Selecciona semanas consecutivas para este análisis."
+        Se listan las semanas seleccionadas y NO se publica ningún
+        total ni gráfica. Las demás secciones se conservan.
+      · Con 'not_determinable' (fechas ausentes), documenta la
+        limitación y no pretende totales dudosos.
+      · Con 'consecutive', el motor sigue con la absorción normal
+        del anchor externo y las intermedias.
+
+3. ARCHIVOS AFECTADOS
+   Nuevos:
+     src/lib/export/costo-uso-guards.ts
+     src/lib/export/__tests__/costo-uso-guards.test.ts
+   Modificados:
+     src/lib/export/data-fetcher.ts
+        - Reemplazo de "límite 52" por carga acotada.
+        - EngineWeekShape público.
+        - anchorLookbackExhausted / anchorLookbackWeeks en el ctx.
+     src/lib/export/generate-pptx.ts
+        - Bloqueo por hasCriticalLoadError.
+        - Bloqueo por classifyConsecutive === 'gap'.
+        - Aviso por anchorLookbackExhausted.
+        - Aviso por operating_days ausente reescrito a lenguaje
+          humano ("Faltan días de operación").
+        - Detalles técnicos ya no se filtran al usuario.
+     src/app/dashboard/costo-uso/page.tsx
+        - operatingDays: number | null; sin fallback.
+        - Chip + leyenda reflejan la ausencia.
+     src/lib/costo-uso/__tests__/prepare-result.test.ts
+        - Casos: operatingDays=null idéntico UI/PPTX; selección
+          histórica >52 semanas; selección consecutiva con valores
+          esperados.
+
+4. PRUEBAS PREPARADAS — NO EJECUTADAS
+   src/lib/export/__tests__/costo-uso-guards.test.ts
+     · hasCriticalLoadError: vacío, indispensable, no indispensable
+       y combinaciones.
+     · Respuesta vacía válida NO confundida con error.
+     · classifyConsecutive:
+         - una semana → consecutive.
+         - dos semanas por fechas → consecutive.
+         - cruce ISO W53 real (2026-W52 → 2026-W53 → 2027-W01) →
+           consecutive.
+         - cruce DST spring forward → consecutive.
+         - gap por fecha → gap.
+         - reporte no cargado en engineWeeks → not_determinable.
+         - fechas ausentes → not_determinable.
+
+   src/lib/costo-uso/__tests__/prepare-result.test.ts (nuevos):
+     · Días ausentes en UI y PPTX propagan misma ausencia; resto
+       de métricas idéntico.
+     · Selección histórica con 60 semanas sintéticas — el motor
+       usa anchor externo real del universo; filtered solo trae
+       las seleccionadas.
+     · Selección consecutiva 2 semanas → food_purchases suma
+       exacta.
+
+   NADA de esto se corrió en este bloque. La ejecución se reserva
+   al próximo turno pesado.
+
+5. BLOQUEOS REALES
+   Ninguno detectado en este bloque. Todas las ediciones se
+   completaron y el árbol quedó limpio tras el commit d3e6835.
+
+6. PENDIENTES PARA EL PRÓXIMO TURNO PESADO
+   - Ejecutar npx vitest run, npx tsc --noEmit y npx next build para
+     validar guards + prepare-result + engine con los nuevos tests.
+   - Generar PPTX en al menos cuatro escenarios (datos completos,
+     selección no consecutiva, teórico parcial, operating_days
+     ausente) y verificar cifras/mensajes/ausencia de desbordamientos
+     directamente en el archivo.
+   - Simular error de consulta indispensable en la capa de acceso a
+     datos (NO revocar permisos, NO alterar RLS ni Supabase — por
+     ejemplo interceptando el cliente de supabase en un test) y
+     confirmar que la diapositiva emite "No se pudo calcular".
+   - Interacciones reales de la UI (filtros, modal, toque, teclado)
+     que quedan del bloque 11.
+   - Corrección comercial de "solo descuentos operativos" pendiente
+     — sin cambios en este bloque.
+   - Política de consumo negativo (Math.max) sigue tal cual;
+     ninguna aprobación asumida.
+
+7. ESTADO FINAL
+   MODO LIGERO, SIN TURNO PESADO.
+   La sección "Costo de Uso" del PPTX sigue registrada como
+   NO VALIDADA: "Implementación preparada; pruebas y verificación
+   del archivo pendientes."
