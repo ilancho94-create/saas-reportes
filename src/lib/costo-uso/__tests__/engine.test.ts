@@ -437,10 +437,14 @@ describe('[CARACT] Caso 15 — theo_cost ausente', () => {
   })
   const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
   const d = engine.buildWeekData(w)
-  it('theo_cost=0 → mixPct=null (por `pct(0,x)=null`) → variacion=null', () => {
+  it('theo_cost ausente → mixPct=null; variacion = uso − 0 = uso', () => {
     expect(d.food_theo_cost).toBe(0)
-    expect(d.food_theo_pct).toBe(0)     // pero UI lo muestra "0.0%"
-    expect(d.food_variacion).toBeNull()
+    expect(d.food_theo_pct).toBe(0)     // UI lo muestra "0.0%"
+    // Post-corrección de variación: uso − theoCost sí se computa con catSales>0.
+    // uso = 1000 + 800 − 1100 = 700
+    expect(d.food_uso).toBe(700)
+    expect(d.food_variacion).toBe(700)
+    // Regla pendiente: ¿cómo distinguir en la UI theo=0 real vs ausente?
   })
 })
 
@@ -449,12 +453,21 @@ describe('[CARACT] Caso 15 — theo_cost ausente', () => {
 // ═════════════════════════════════════════════════════════════════════════
 
 // ─── (A) Agregación y consumos negativos ────────────────────────────────
-// El prompt pide tres cálculos independientes:
+// El prompt pide tres cálculos independientes SOBRE EL MISMO INTERVALO:
 //   (a) Σ uso_i  sin recortar
 //   (b) Σ max(uso_i, 0)   ← lo que hace aggregateSeries
-//   (c) uso directo entre inv_inicial y inv_final del rango completo
-describe('[EXACT] Afirmación A — telescopía con consumos negativos', () => {
-  // 3 semanas construidas para que W2 dé uso negativo.
+//   (c) uso directo entre inv_inicial y inv_final del rango
+//
+// El intervalo del cálculo directo (c) va de w1 → w3 (w1 aporta I0,
+// w3 aporta I_final). Para comparar con la serie por-período con el
+// mismo intervalo hay que sumar SOLO los períodos posteriores al anchor:
+// [w1→w2] y [w2→w3]. El "período sombrero" [∅→w1] queda fuera.
+//
+// Diferencias con el reporte anterior:
+//   – El fixture original comparaba 3 períodos (incluyendo el sombrero)
+//     contra un directo que abarca 2. Los intervalos NO eran iguales;
+//     el 200 vs 100 se explica por ese período extra, no por la fórmula.
+describe('[EXACT] Afirmación A — comparación con intervalos iguales', () => {
   const w1 = makeWeek({
     week: '2026-W01', reportId: 'r1',
     salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 100 },
@@ -464,58 +477,66 @@ describe('[EXACT] Afirmación A — telescopía con consumos negativos', () => {
     week: '2026-W02', reportId: 'r2',
     salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 100 },
     inventory: [{ account: 'Food Inventory', current_value: 1500, previous_value: 1000 }],
-    // uso "verdadero" = 1000 + 100 − 1500 = −400
   })
   const w3 = makeWeek({
     week: '2026-W03', reportId: 'r3',
     salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 200 },
     inventory: [{ account: 'Food Inventory', current_value: 1200, previous_value: 1500 }],
-    // uso "verdadero" = 1500 + 200 − 1200 = 500
   })
   const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w2, w3] })
 
-  it('los tres cálculos difieren cuando algún período intermedio es negativo', () => {
-    // (a) Σ uso_i sin recortar (calculado independientemente aquí):
-    //     w1: closing_inv_previous 1000 + 100 − 1000 = 100    (sin anchor)
-    //     w2: anchor(w1).inv_current 1000 + 100 − 1500 = −400
-    //     w3: anchor(w2).inv_current 1500 + 200 − 1200 = 500
-    //     Suma sin recortar = 200
-    const sumSinRecortar = 100 + (-400) + 500
-    expect(sumSinRecortar).toBe(200)
+  it('con MISMO INTERVALO [w1..w3]: Σ sin recortar = directo; Σ recortado difiere solo por el clampeo', () => {
+    // Series individuales dentro del intervalo (excluye el sombrero):
+    const p_w1_w2 = engine.buildPeriodData(w1, [], w2)      // uso bruto = −400 → clamp 0
+    const p_w2_w3 = engine.buildPeriodData(w2, [], w3)      // uso bruto = 500
 
-    // (b) Σ max(uso_i, 0) = lo que devuelve aggregateSeries
-    const series = engine.buildPeriodSeries([w1, w2, w3])
-    const agg = engine.aggregateSeries(series)
-    expect(agg.food_uso).toBe(100 + 0 + 500)     // 600
+    // Recuperamos el bruto SIN pasar por buildPeriodData (que ya clampea):
+    // Fórmula pura I0 + P − I1
+    const bruto_p1 = p_w1_w2.food_inv_previous + p_w1_w2.food_purchases - p_w1_w2.food_inv_current
+    const bruto_p2 = p_w2_w3.food_inv_previous + p_w2_w3.food_purchases - p_w2_w3.food_inv_current
+    expect(bruto_p1).toBe(-400)
+    expect(bruto_p2).toBe(500)
 
-    // (c) Cálculo directo entre inv inicial y final del rango:
-    //     inv_start = w1.inv_previous (800 sin anchor previo) — usamos 1000
-    //                 porque en este fixture w1.inv_previous = 1000 igualmente
-    //     Aplicamos buildPeriodData(anchor=w1, intermediates=[w2], closing=w3):
-    //     uso = 1000 + (100+200) − 1200 = 100
-    const directoRango = engine.buildPeriodData(w1, [w2], w3)
-    expect(directoRango.food_uso).toBe(100)
+    // (a) Σ sin recortar
+    const sumSinRecortar = bruto_p1 + bruto_p2
+    expect(sumSinRecortar).toBe(100)
 
-    // Conclusión:
-    // (a) 200 ≠ (b) 600 ≠ (c) 100.  La telescopía falla en dos direcciones:
-    //   • El clampeo de (b) SOBRESTIMA el consumo (agrega el negativo como 0).
-    //   • Aun sin clampeo (a) el modelo por-cierre difiere del rango-único (c)
-    //     porque cada cierre re-fija inv_start ignorando el arrastre real.
+    // (b) Σ recortado — lo que devuelve el motor por-período
+    const sumRecortado = p_w1_w2.food_uso + p_w2_w3.food_uso
+    expect(sumRecortado).toBe(500)
+
+    // (c) Directo del mismo intervalo [w1 → w3] con w2 como intermedio
+    const directo = engine.buildPeriodData(w1, [w2], w3)
+    expect(directo.food_uso).toBe(100)
+
+    // Conclusiones con intervalos iguales:
+    //   (a) = (c) = 100  → la telescopía SÍ se cumple sin clampeo.
+    //   (b) = 500 ≠ 100  → +400 de sobrestimación por Math.max(uso, 0).
+    expect(sumSinRecortar).toBe(directo.food_uso)
+    expect(sumRecortado).not.toBe(directo.food_uso)
+    expect(sumRecortado - directo.food_uso).toBe(400)   // exactamente el consumo negativo clampeado
   })
 
-  it('condición bajo la cual (b) == (c): ningún período intermedio negativo', () => {
-    // Removemos w2 (el que da negativo). Si solo hay w1 y w3, sin clampeos:
-    const engine2 = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w3] })
-    const series = engine2.buildPeriodSeries([w1, w3])
-    const agg = engine2.aggregateSeries(series)
-    const directo = engine2.buildPeriodData(w1, [], w3)
-    // Ambos: 1000 + 200 − 1200 = 0 en el rango; sumado por períodos: 100 + 0 = 100
-    // Aquí ya vemos que sin período negativo TAMPOCO se cumple exactamente,
-    // porque cada cierre se calcula contra su propio inv_previous.
-    // La equivalencia estricta requiere: sin períodos negativos Y sin discrepancias
-    // de arrastre entre anchor.inv_current y closing.inv_previous.
-    expect(agg.food_uso).not.toBe(directo.food_uso)
-    // Documentado como comportamiento; NO cambia la fórmula en este bloque.
+  it('la suma que reporté como 200 correspondía a 3 períodos, no a 2 (intervalos distintos)', () => {
+    // Documenta la corrección: buildPeriodSeries emite [∅→w1], [w1→w2], [w2→w3].
+    // El "período sombrero" [∅→w1] usa closing.inv_previous como I0 y no está
+    // cubierto por el directo [w1..w3].
+    const series = engine.buildPeriodSeries([w1, w2, w3])
+    expect(series).toHaveLength(3)
+    expect(series[0].anchorWeek).toBeNull()
+    expect(series[0].food_uso).toBe(100)   // el sombrero
+
+    // Con el sombrero incluido, el agregado (b*) da 100 + 0 + 500 = 600
+    const agg = engine.aggregateSeries(series)
+    expect(agg.food_uso).toBe(600)
+
+    // Y la suma sin recortar de los TRES períodos (que era mi "200") viene de:
+    const brutoTotal =
+      series[0].food_uso +                                              // 100 (no negativo)
+      (series[1].food_inv_previous + series[1].food_purchases - series[1].food_inv_current) +   // −400
+      (series[2].food_inv_previous + series[2].food_purchases - series[2].food_inv_current)     // 500
+    expect(brutoTotal).toBe(200)
+    // 200 (3 períodos sin recortar) − 100 (2 períodos sin recortar) = 100 = consumo del sombrero.
   })
 })
 
@@ -625,31 +646,141 @@ describe('[EXACT] Afirmación D — "+Desc. Op." sustituye net→gross (todos lo
   })
 })
 
-// ─── (E) Variación monetaria ────────────────────────────────────────────
-describe('[EXACT] Afirmación E — variacion_$ (desde %s redondeados) ≠ uso − theo_cost', () => {
-  const w = makeWeek({
-    week: '2026-W13', reportId: 'r13',
-    salesCats: [{ name: 'FOOD', net: 10000 }], cogs: { food: 100 },
-    inventory: [{ account: 'Food Inventory', current_value: 1950, previous_value: 1900 }],
-    theoCostByCat: { food: 1975 },
-  })
-  const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
-  const d = engine.buildWeekData(w)
-
-  it('reproduce la diferencia observada de pocos dólares', () => {
-    // uso = 1900 + 100 − 1950 = 50
+// ─── (E) Variación monetaria — POST-CORRECCIÓN ──────────────────────────
+// Nueva regla: variacion_$ = uso − costo_teorico (importes sin redondear).
+// Redondeo a 2 decimales solo para presentación monetaria.
+// Guardia catSales > 0 preservada: sin ventas → variacion = null.
+describe('[EXACT] Afirmación E — variacion_$ = uso − theo_cost (post-corrección)', () => {
+  it('ejemplo del prompt: uso=50, theo=1975, ventas=10000 → −1925 (no −1930)', () => {
+    const w = makeWeek({
+      week: '2026-W13', reportId: 'r13',
+      salesCats: [{ name: 'FOOD', net: 10000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 1950, previous_value: 1900 }],
+      theoCostByCat: { food: 1975 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
     expect(d.food_uso).toBe(50)
     expect(d.food_theo_cost).toBe(1975)
+    expect(d.food_variacion).toBe(-1925)
+  })
 
-    // Cálculo INDEPENDIENTE:
-    const directoUsoMenosTheo = d.food_uso - d.food_theo_cost   // −1925
-    // Fórmula app: (realPct% − mixPct%)/100 * catSales
-    //   realPct = round1(50 / 10000 * 100)   = 0.5
-    //   mixPct  = round1(1975 / 10000 * 100) = 19.8  (¡no 19.75!)
-    //   variacion_$ = (0.5 − 19.8) / 100 * 10000 = −1930
-    expect(d.food_variacion).toBe(-1930)
-    expect(directoUsoMenosTheo).toBe(-1925)
-    // Diferencia = $5 (rango observado 1–15 dólares en producción)
-    expect(Math.abs(d.food_variacion - directoUsoMenosTheo)).toBe(5)
+  it('caso positivo: uso > theo → variación positiva', () => {
+    const w = makeWeek({
+      week: '2026-W44', reportId: 'r44',
+      salesCats: [{ name: 'FOOD', net: 8000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 1200, previous_value: 1000 }],
+      theoCostByCat: { food: 600 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    // uso = 1000 + 500 − 1200 = 300 ; variacion = 300 − 600 = −300
+    // Reajusto para que sea POSITIVO: inv_current = 800 → uso = 700
+    const w2 = makeWeek({
+      week: '2026-W44b', reportId: 'r44b',
+      salesCats: [{ name: 'FOOD', net: 8000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 800, previous_value: 1000 }],
+      theoCostByCat: { food: 600 },
+    })
+    const engine2 = createCostoUsoEngine({ ...BASE_CTX, weeks: [w2] })
+    const d2 = engine2.buildWeekData(w2)
+    expect(d2.food_uso).toBe(700)
+    expect(d2.food_variacion).toBe(100)  // 700 − 600
+    void d
+  })
+
+  it('caso cero: uso == theo → variación 0 (no null)', () => {
+    const w = makeWeek({
+      week: '2026-W45', reportId: 'r45',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 200 },
+      inventory: [{ account: 'Food Inventory', current_value: 900, previous_value: 1000 }],
+      theoCostByCat: { food: 300 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    // uso = 1000 + 200 − 900 = 300 = theo → variacion = 0
+    expect(d.food_uso).toBe(300)
+    expect(d.food_variacion).toBe(0)
+    expect(d.food_variacion).not.toBeNull()
+  })
+
+  it('caso centavos: verifica redondeo a 2 decimales', () => {
+    const w = makeWeek({
+      week: '2026-W46', reportId: 'r46',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 12.345 },
+      inventory: [{ account: 'Food Inventory', current_value: 100.11, previous_value: 100.00 }],
+      theoCostByCat: { food: 8.678 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    // uso  = 100.00 + 12.345 − 100.11 = 12.235
+    // vari = 12.235 − 8.678 = 3.557 → toFixed(2) → 3.56
+    expect(d.food_variacion).toBe(3.56)
+  })
+
+  it('sin ventas (catSales=0) → variacion = null (guardia preservada)', () => {
+    const w = makeWeek({
+      week: '2026-W47', reportId: 'r47',
+      salesCats: [{ name: 'FOOD', net: 0 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 900, previous_value: 1000 }],
+      theoCostByCat: { food: 50 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.food_sales).toBe(0)
+    expect(d.food_variacion).toBeNull()
+  })
+
+  it('totales A&B suman variacion desde importes sin redondear (no desde %s)', () => {
+    // Dos categorías con distintos redondeos internos. Total debe coincidir
+    // con Σ(uso_i − theo_i) exacto, no con Σ((real%_i − mix%_i)/100 × sales_i).
+    const w = makeWeek({
+      week: '2026-W48', reportId: 'r48',
+      salesCats: [
+        { name: 'FOOD',   net: 10000 },
+        { name: 'LIQUOR', net: 3000 },
+      ],
+      cogs: { food: 100, liquor: 30 },
+      inventory: [
+        { account: 'Food Inventory',      current_value: 1950, previous_value: 1900 },
+        { account: 'Alcoholic Inventory', current_value: 400,  previous_value: 380 },
+      ],
+      theoCostByCat: { food: 1975, liquor: 45 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    // food:   uso=50,  var=50−1975 = −1925
+    // liquor: uso=10,  var=10−45   = −35
+    expect(d.food_variacion).toBe(-1925)
+    expect(d.liquor_variacion).toBe(-35)
+    expect(d.totalUsoCost).toBe(60)
+    expect(d.totalTheoCost).toBe(2020)
+    expect(d.totalVariacion).toBe(-1960)   // 60 − 2020, no derivado de %s
+  })
+
+  it('aggregateSeries totaliza variacion desde importes sin redondear', () => {
+    const w1 = makeWeek({
+      week: '2026-W49', reportId: 'r49',
+      salesCats: [{ name: 'FOOD', net: 10000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 1950, previous_value: 1900 }],
+      theoCostByCat: { food: 1975 },
+    })
+    const w2 = makeWeek({
+      week: '2026-W50', reportId: 'r50',
+      salesCats: [{ name: 'FOOD', net: 8000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 800, previous_value: 1950 }],
+      theoCostByCat: { food: 600 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w2] })
+    const series = engine.buildPeriodSeries([w1, w2])
+    const agg = engine.aggregateSeries(series)
+    // p1 (∅→w1): uso=50, theo=1975, var=−1925
+    // p2 (w1→w2): uso = 1950+500−800 = 1650, theo=600, var=1050
+    // agg.food_uso = 50 + 1650 = 1700
+    // agg.food_theo = 1975 + 600 = 2575
+    // agg.food_variacion = 1700 − 2575 = −875
+    expect(agg.food_uso).toBe(1700)
+    expect(agg.food_theo_cost).toBe(2575)
+    expect(agg.food_variacion).toBe(-875)
   })
 })

@@ -180,8 +180,13 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
+      // variacion_$ = uso − costo_teorico (importes sin redondear).
+      // Guardia catSales > 0 preserva el tratamiento actual de ausencia:
+      // sin ventas no interpretamos la variación (se mantiene null,
+      // no se convierte en cero).
+      const variacionDolares = catSales > 0
+        ? parseFloat((uso - theoCost).toFixed(2))
+        : null
       const diasInv = uso > 0
         ? parseFloat((((invCurrent + invPrevious) / 2) / uso * ctx.operatingDays).toFixed(1))
         : null
@@ -209,8 +214,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     result.totalABSales = totalABSales
     result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
     result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
+    result.totalVariacion = totalABSales > 0
+      ? parseFloat((totalUsoCost - totalTheoCost).toFixed(2))
+      : null
     result.hasAnyAdj = hasAdjustments(week)
     return result
   }
@@ -282,8 +288,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
 
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
+      const variacionDolares = catSales > 0
+        ? parseFloat((uso - theoCost).toFixed(2))
+        : null
 
       const totalOpDays = periodWeeks.length * ctx.operatingDays
       const diasInv = uso > 0
@@ -319,8 +326,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     result.totalABSales = totalABSales
     result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
     result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
+    result.totalVariacion = totalABSales > 0
+      ? parseFloat((totalUsoCost - totalTheoCost).toFixed(2))
+      : null
     result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
     return result
   }
@@ -374,8 +382,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       const purchases = series.reduce((s, p) => s + (p[cat.key + '_purchases'] || 0), 0)
       const realPct = sales > 0 ? pct(uso, sales) : null
       const mixPct = sales > 0 ? pct(theo, sales) : null
-      const variacion = realPct !== null && mixPct !== null && sales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * sales).toFixed(2)) : null
+      const variacion = sales > 0
+        ? parseFloat((uso - theo).toFixed(2))
+        : null
       const invPrev = series[0][cat.key + '_inv_previous']
       const invCurr = series[series.length - 1][cat.key + '_inv_current']
       const diasInv = uso > 0
@@ -406,8 +415,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     result.totalABSales = totalSales
     result.totalRealPct = totalSales > 0 ? pct(totalUso, totalSales) : null
     result.totalMixPct = totalSales > 0 ? pct(totalTheo, totalSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalSales).toFixed(2)) : null
+    result.totalVariacion = totalSales > 0
+      ? parseFloat((totalUso - totalTheo).toFixed(2))
+      : null
     return result
   }
 
