@@ -38,6 +38,7 @@ export default function CostoUsoPage() {
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [operatingDays, setOperatingDays] = useState(6)
+  const [fiscalYearStart, setFiscalYearStart] = useState<string | null>(null)
   const [costTargets, setCostTargets] = useState<Record<string, number>>({})
   const [userRole, setUserRole] = useState<string>('')
   const [userCustomPerms, setUserCustomPerms] = useState<any>(null)
@@ -82,6 +83,31 @@ export default function CostoUsoPage() {
     [skippedWeeks]
   )
 
+  // Rango solicitado por el usuario. Se calcula en el mismo memo que la
+  // vista `filtered` más abajo, pero lo necesitamos aquí para el engine.
+  // Estrategia: recomputamos el subset aquí (con las mismas reglas) y de
+  // ahí sacamos from/to para pasar al motor y a diagnoseRange.
+  const requestedRange = useMemo(() => {
+    if (weeks.length === 0) return null
+    let subset: any[] = []
+    if (shortcut === 'week' && selectedWeek) {
+      subset = weeks.filter(w => w.report.week === selectedWeek)
+    } else if (shortcut === 'last4') subset = weeks.slice(-4)
+    else if (shortcut === 'last8') subset = weeks.slice(-8)
+    else if (shortcut === 'month') {
+      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
+      subset = weeks.filter(w => { const d = new Date(w.report.week_start); return d.getFullYear() === y && d.getMonth() === m })
+    } else if (shortcut === 'custom' && customFrom && customTo) {
+      const from = customFrom <= customTo ? customFrom : customTo
+      const to = customFrom <= customTo ? customTo : customFrom
+      subset = weeks.filter(w => w.report.week >= from && w.report.week <= to)
+    } else {
+      subset = weeks.slice(-4)
+    }
+    if (subset.length === 0) return null
+    return { from: subset[0].report.week, to: subset[subset.length - 1].report.week }
+  }, [weeks, shortcut, selectedWeek, customFrom, customTo])
+
   // Engine único (misma implementación que usan las pruebas)
   const engine = useMemo(
     () => createCostoUsoEngine({
@@ -93,8 +119,10 @@ export default function CostoUsoPage() {
       includeOpDiscounts,
       operatingDays,
       costTargets,
+      requestedRange,
+      fiscalYearStart,
     }),
-    [weeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets],
+    [weeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets, requestedRange, fiscalYearStart],
   )
 
   const CATEGORIES = engine.CATEGORIES
@@ -123,7 +151,7 @@ export default function CostoUsoPage() {
     const [
       restRes, mapsRes, tgtsRes, discMapsRes, reportsRes, adjsRes, skippedRes, urRes,
     ] = await Promise.all([
-      supabase.from('restaurants').select('name, operating_days').eq('id', restaurantId).single(),
+      supabase.from('restaurants').select('name, operating_days, fiscal_year_start').eq('id', restaurantId).single(),
       supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
       supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
       supabase.from('discount_mappings').select('discount_name').eq('restaurant_id', restaurantId).eq('is_operational', true),
@@ -151,6 +179,7 @@ export default function CostoUsoPage() {
     // restaurant
     setRestaurantName(restRes.data?.name || '')
     setOperatingDays(restRes.data?.operating_days || 6)
+    setFiscalYearStart(restRes.data?.fiscal_year_start || null)
 
     // mappings
     setMappings(mapsRes.data || [])
@@ -497,6 +526,122 @@ export default function CostoUsoPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [periodSeries]
   )
+
+  // Diagnósticos a nivel rango (siempre — incluso con serie vacía).
+  const rangeDiagnostics = useMemo(
+    () => engine.diagnoseRange(filtered, periodSeries),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [engine, filtered, periodSeries]
+  )
+  // Panel desplegable de detalle de diagnósticos
+  const [showDiagPanel, setShowDiagPanel] = useState(false)
+
+  // Filtro por scope: items que aplican a una categoría específica y semana o
+  // rango del período mostrado. Usado por las señales inline en el detalle.
+  function diagItemsFor(scope: {
+    diags: any,
+    week?: string,
+    category?: string,
+  }): any[] {
+    if (!scope.diags) return []
+    return (scope.diags.items || []).filter((it: any) => {
+      if (scope.week && it.week && it.week !== scope.week) {
+        const [wa, wb] = it.weekRange || []
+        if (!(wa === scope.week || wb === scope.week)) return false
+      }
+      if (scope.category && it.category && it.category !== scope.category) return false
+      return true
+    })
+  }
+
+  const CATEGORY_LABELS: Record<string, string> = {
+    food: 'Food', na_beverage: 'NA Beverage', liquor: 'Liquor', beer: 'Beer', wine: 'Wine',
+  }
+  const DIAG_LABELS: Record<string, { title: string, hint: string }> = {
+    missing_week: {
+      title: 'Semana(s) faltante(s) entre reportes',
+      hint: 'Faltan reportes en el intervalo. El cálculo puede omitir compras y ventas de esas semanas.',
+    },
+    week_present_no_inventory: {
+      title: 'Semana sin conteo de inventario',
+      hint: 'Se cargó la semana pero no llegó el inventario. Sus compras y ventas se consolidarán con la próxima semana con inventario.',
+    },
+    source_missing: {
+      title: 'Fuente de datos ausente',
+      hint: 'Un archivo o sección no llegó para esta semana. Revisar carga en Upload.',
+    },
+    field_undetermined: {
+      title: 'Dato no comprobable',
+      hint: 'El archivo no permite distinguir "cero real" de "campo faltante".',
+    },
+    inventory_account_missing: {
+      title: 'Falta cuenta de inventario esperada',
+      hint: 'No se encontró ninguna cuenta R365 para esta categoría en el conteo semanal.',
+    },
+    unmapped_activity_category: {
+      title: 'Categoría con actividad pero sin mapping de ventas',
+      hint: 'Llegaron compras/inventario/teórico para una categoría, pero el mapping de ventas no existe. Sus ventas pueden no estar contabilizadas.',
+    },
+    inventory_carry_mismatch: {
+      title: 'Discrepancia entre inventarios',
+      hint: 'El inventario inicial de referencia (cierre anterior) no coincide con el inventario inicial declarado del siguiente reporte.',
+    },
+    theo_cost_source_missing: {
+      title: 'Product Mix ausente',
+      hint: 'No hay Product Mix cargado para esta semana. La variación por categoría no se puede calcular.',
+    },
+    theo_cost_partial: {
+      title: 'Costo teórico incompleto',
+      hint: 'El Product Mix no trae asignación teórica para esta categoría. La variación no es interpretable.',
+    },
+    unmatched_pmix_items: {
+      title: 'Items sin correspondencia en Product Mix',
+      hint: 'Hay items vendidos cuyo costo teórico no se pudo atribuir a una categoría.',
+    },
+    unclosed_tail: {
+      title: 'Semanas sin cierre al final del rango',
+      hint: 'Estas semanas se cargaron sin inventario y aún no hay una semana posterior que las consolide.',
+    },
+    negative_gross_consumption: {
+      title: 'Consumo antes de ajustarlo a cero',
+      hint: 'El cálculo (inventario inicial + compras − inventario final) dio negativo y se muestra como 0. Puede indicar problemas de conteo, factura tardía o transferencia entre unidades.',
+    },
+    duplicate_week: {
+      title: 'Semana con más de un reporte cargado',
+      hint: 'Se recibieron múltiples reportes para la misma semana. Puede afectar el cálculo del inventario de referencia.',
+    },
+    interval_extended: {
+      title: 'Intervalo analizado es mayor al solicitado',
+      hint: 'El cálculo requiere un inventario anterior fuera de las fechas seleccionadas. Se está usando como referencia.',
+    },
+  }
+  function formatDiagLine(it: any): string {
+    const label = DIAG_LABELS[it.type] || { title: it.type, hint: '' }
+    const parts: string[] = [label.title]
+    if (it.category) parts.push('· ' + (CATEGORY_LABELS[it.category] || it.category))
+    if (it.week) parts.push('· semana ' + it.week)
+    else if (it.weekRange) parts.push('· entre ' + it.weekRange[0] + ' y ' + it.weekRange[1])
+    return parts.join(' ')
+  }
+  function DiagBadge({ items, tone = 'warning' }: { items: any[]; tone?: 'warning' | 'info' | 'error' }) {
+    if (!items.length) return null
+    const cls = tone === 'error'
+      ? 'bg-red-950/80 border border-red-800 text-red-300'
+      : tone === 'warning'
+        ? 'bg-amber-950/80 border border-amber-800 text-amber-300'
+        : 'bg-sky-950/80 border border-sky-800 text-sky-300'
+    return (
+      <span
+        className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${cls}`}
+        role="status"
+        aria-label={items.map(formatDiagLine).join('; ')}
+        title={items.map(formatDiagLine).join('\n')}
+      >
+        <span aria-hidden="true">⚠</span>
+        {items.length}
+      </span>
+    )
+  }
   const hasInventory = useMemo(
     () => weeks.some(w => w.inventory?.by_account?.length > 0),
     [weeks]
@@ -1154,6 +1299,130 @@ export default function CostoUsoPage() {
               )
             })()}
 
+            {/* ── Resumen de calidad de datos del período ─────────────── */}
+            {(() => {
+              const rd = rangeDiagnostics
+              if (!rd) return null
+              const items = rd.items || []
+              const checks = rd.checks || {}
+              const intervalExtended = items.find((i: any) => i.type === 'interval_extended')
+              const unclosedTail = items.find((i: any) => i.type === 'unclosed_tail')
+              const notDeterminedCount = Object.values(checks).filter(v => v === 'not_determinable').length
+              const presentCount = items.length
+              const noIncidencesDetected = presentCount === 0 && notDeterminedCount === 0
+              // Etiquetas de rango
+              const requestedLbl = requestedRange ? requestedRange.from + ' → ' + requestedRange.to : null
+              const effectiveLbl = periodSeries.length > 0
+                ? (periodSeries[0].anchorWeek || periodSeries[0].fullWeek) + ' → ' + periodSeries[periodSeries.length - 1].fullWeek
+                : null
+              return (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 mb-4 text-sm">
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-gray-400 text-xs uppercase tracking-wider font-semibold mb-1">Resumen del período</p>
+                      {requestedLbl && effectiveLbl && requestedLbl !== effectiveLbl ? (
+                        <p className="text-gray-300">
+                          Solicitado: <span className="text-white">{requestedLbl}</span>
+                          <span className="text-gray-500 mx-2">·</span>
+                          Analizado: <span className="text-white">{effectiveLbl}</span>
+                        </p>
+                      ) : requestedLbl ? (
+                        <p className="text-gray-300">Rango: <span className="text-white">{requestedLbl}</span></p>
+                      ) : null}
+                      {intervalExtended && (
+                        <p className="text-amber-300 text-xs mt-1">
+                          El cálculo usa como referencia una semana anterior a las fechas seleccionadas.
+                        </p>
+                      )}
+                      {unclosedTail && (
+                        <p className="text-amber-300 text-xs mt-1">
+                          Semanas sin cierre pendientes: {((unclosedTail.evidence?.weeks as string[]) || []).join(', ') || '—'}. Sus datos se consolidarán en el próximo inventario.
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setShowDiagPanel(v => !v)}
+                      className={`shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                        presentCount > 0 || notDeterminedCount > 0
+                          ? 'bg-amber-950/60 border-amber-800 text-amber-200 hover:bg-amber-900/60'
+                          : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                      }`}
+                      aria-expanded={showDiagPanel}
+                      aria-controls="diag-panel"
+                    >
+                      {presentCount > 0
+                        ? `${presentCount} incidencia${presentCount !== 1 ? 's' : ''} · ${showDiagPanel ? 'Ocultar' : 'Ver'} detalle`
+                        : notDeterminedCount > 0
+                          ? `${notDeterminedCount} comprobación${notDeterminedCount !== 1 ? 'es' : ''} no determinable${notDeterminedCount !== 1 ? 's' : ''} · ${showDiagPanel ? 'Ocultar' : 'Ver'} detalle`
+                          : 'Sin incidencias detectadas'}
+                    </button>
+                  </div>
+                  {noIncidencesDetected && (
+                    <p className="text-gray-500 text-xs mt-2">
+                      Nota: “sin incidencias detectadas” no equivale a exactitud financiera validada. La cifra sigue dependiendo de los datos originales cargados.
+                    </p>
+                  )}
+                  {showDiagPanel && (
+                    <div id="diag-panel" className="mt-3 border-t border-gray-800 pt-3 space-y-2">
+                      {items.length === 0 && (
+                        <p className="text-gray-400 text-xs">Sin incidencias emitidas por el motor para este rango.</p>
+                      )}
+                      {items.map((it: any, idx: number) => {
+                        const meta = DIAG_LABELS[it.type] || { title: it.type, hint: '' }
+                        return (
+                          <div key={idx} className="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                            <p className="text-gray-100 text-sm font-medium">{meta.title}</p>
+                            <p className="text-gray-500 text-xs mt-0.5">
+                              {it.category ? (CATEGORY_LABELS[it.category] || it.category) : ''}
+                              {it.category && it.week ? ' · ' : ''}
+                              {it.week ? 'semana ' + it.week : ''}
+                              {!it.week && it.weekRange ? 'entre ' + it.weekRange[0] + ' y ' + it.weekRange[1] : ''}
+                            </p>
+                            {meta.hint && <p className="text-gray-400 text-xs mt-1">{meta.hint}</p>}
+                            {it.type === 'inventory_carry_mismatch' && it.evidence?.anchor && it.evidence?.closing && (
+                              <p className="text-gray-500 text-xs mt-1">
+                                Inventario final anterior: {fmt(it.evidence.anchor.adjustedValue)}
+                                {' · '}Inventario inicial siguiente: {fmt(it.evidence.closing.adjustedValue)}
+                                {' · '}Diferencia: {fmt(it.evidence.diff)}
+                              </p>
+                            )}
+                            {it.type === 'negative_gross_consumption' && (
+                              <p className="text-gray-500 text-xs mt-1">
+                                Consumo antes de ajustar a cero: {fmt(it.evidence?.bruto)}
+                              </p>
+                            )}
+                            {it.type === 'missing_week' && it.evidence?.previousWeekEnd && it.evidence?.nextWeekStart && (
+                              <p className="text-gray-500 text-xs mt-1">
+                                Entre {it.evidence.previousWeekEnd} y {it.evidence.nextWeekStart} ({it.evidence.estimatedMissingWeeks} semana{it.evidence.estimatedMissingWeeks !== 1 ? 's' : ''} sin reportar).
+                              </p>
+                            )}
+                            {it.type === 'unmatched_pmix_items' && (
+                              <p className="text-gray-500 text-xs mt-1">
+                                {it.evidence?.count} ítem(s) · teórico agregado: {fmt(it.evidence?.totalTheoCost)}
+                              </p>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* ── Rango sin cierre: estado útil cuando no hay período ── */}
+            {filtered.length > 0 && periodSeries.length === 0 && !isSelectedWeekSkipped().skipped && (
+              <div className="bg-amber-950/40 border border-amber-800 rounded-xl p-5 mb-4">
+                <p className="text-amber-200 text-sm font-semibold">Rango sin cierre de inventario</p>
+                <p className="text-amber-100/80 text-xs mt-1">
+                  Ninguna de las semanas seleccionadas ({filtered.map(w => w.report.week).join(', ')}) trajo conteo de inventario, y no hay un inventario anterior en el rango consultado que sirva como referencia.
+                </p>
+                <p className="text-amber-100/60 text-xs mt-2">
+                  Sus ventas y compras aparecen en las otras vistas pero no producen consumo consolidado. Al llegar el próximo inventario, se calculará el consumo del período completo.
+                </p>
+              </div>
+            )}
+
             {detailData && !isSelectedWeekSkipped().skipped && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
@@ -1191,12 +1460,20 @@ export default function CostoUsoPage() {
                     })}
                     disabled={detailData.totalVariacion === null}
                     className="bg-gray-900 border border-gray-800 hover:border-blue-700 hover:bg-gray-800 rounded-xl p-5 text-left transition disabled:cursor-default disabled:hover:bg-gray-900 disabled:hover:border-gray-800"
-                    title="Click para ver el desglose de la variación: waste, voids, comps, items sin receta y residuo">
+                    title={detailData.totalVariacion === null ? 'No calculable: falta información teórica en alguna categoría con ventas.' : 'Click para ver el desglose de la variación: waste, voids, comps, items sin receta y residuo'}>
                     <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'del período' : ''} <span className="text-blue-400 text-xs">🔍</span></p>
-                    <p className={`text-3xl font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
+                    <p className={`text-3xl font-bold ${detailData.totalVariacion === null ? 'text-gray-500' : detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                       {detailData.totalVariacion !== null ? (detailData.totalVariacion > 0 ? '+' : '') + fmt(detailData.totalVariacion) : '—'}
                     </p>
-                    <p className="text-gray-600 text-xs mt-1">{detailData.totalVariacion > 0 ? 'sobre lo teórico · click para analizar' : detailData.totalVariacion < 0 ? 'bajo lo teórico · click para analizar' : ''}</p>
+                    <p className="text-gray-600 text-xs mt-1">
+                      {detailData.totalVariacion === null
+                        ? 'No calculable: teórico incompleto'
+                        : detailData.totalVariacion > 0
+                          ? 'sobre lo teórico · click para analizar'
+                          : detailData.totalVariacion < 0
+                            ? 'bajo lo teórico · click para analizar'
+                            : ''}
+                    </p>
                   </button>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
@@ -1245,11 +1522,16 @@ export default function CostoUsoPage() {
                           <div className="text-right">
                             <p className={`text-sm font-bold ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</p>
                             <p className="text-gray-500 text-xs">{fmt(detailData[cat.key + '_uso'])} uso</p>
-                            {variacion !== null && (
-                              <p className={`text-xs font-medium ${variacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                            {variacion !== null ? (
+                              <p className={`text-xs font-medium ${variacion > 0 ? 'text-red-400' : variacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                                 {variacion > 0 ? '+' : ''}{fmt(variacion)}
                               </p>
+                            ) : (
+                              <p className="text-xs text-gray-500" title="No calculable: falta información teórica.">— no calc.</p>
                             )}
+                            <div className="mt-1">
+                              <DiagBadge items={diagItemsFor({ diags: rangeDiagnostics, category: cat.key })} />
+                            </div>
                           </div>
                         </div>
                       )
@@ -1259,10 +1541,12 @@ export default function CostoUsoPage() {
                       <div className="text-right">
                         <p className={`text-sm font-bold ${detailData.totalRealPct && detailData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(detailData.totalRealPct)}</p>
                         <p className="text-gray-400 text-xs">{fmt(detailData.totalUsoCost)} uso</p>
-                        {detailData.totalVariacion !== null && (
-                          <p className={`text-xs font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        {detailData.totalVariacion !== null ? (
+                          <p className={`text-xs font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                             {detailData.totalVariacion > 0 ? '+' : ''}{fmt(detailData.totalVariacion)}
                           </p>
+                        ) : (
+                          <p className="text-xs text-gray-500">— no calc.</p>
                         )}
                       </div>
                     </div>
@@ -1299,10 +1583,11 @@ export default function CostoUsoPage() {
                           return (
                             <tr key={cat.key} className="border-b border-gray-800 hover:bg-gray-800 transition">
                               <td className="py-3">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <div className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color }} />
                                   <span className="text-gray-300 text-sm">{cat.label}</span>
                                   {hasAdj && <span className="text-yellow-400 text-xs" title="Tiene ajuste manual aplicado">✏️</span>}
+                                  <DiagBadge items={diagItemsFor({ diags: rangeDiagnostics, category: cat.key })} />
                                 </div>
                               </td>
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_inv_previous'])}</td>
@@ -1328,7 +1613,9 @@ export default function CostoUsoPage() {
                                     title="Click para analizar esta variación">
                                     {variacion > 0 ? '+' : ''}{fmt(variacion)}
                                   </button>
-                                ) : variacion === null ? <span className="text-gray-600">—</span> : <span className="text-gray-400">$0</span>}
+                                ) : variacion === null ? (
+                                  <span className="text-gray-500" title="No calculable: falta información teórica en esta categoría o alguna semana del período.">— <span className="text-xs">no calc.</span></span>
+                                ) : <span className="text-gray-400">$0</span>}
                               </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>
                               {canEdit && shortcut === 'week' && (
