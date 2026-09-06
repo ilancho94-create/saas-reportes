@@ -46,9 +46,7 @@ describe('[EXACT] A — semanas ausentes y presentes sin conteo', () => {
     expect(missing[0].week).toBe('2026-W21')
   })
 
-  it('gap por fechas: W20 (04-27 al 05-03) → W22 (05-11 al 05-17), falta ~1 semana', () => {
-    // 14 días entre 05-03 y 05-11 → 13 días de gap → estimatedMissingWeeks = floor(12/7) = 1.
-    // (Nota: 05-11 − 05-03 = 8 días → 8 − 1 = 7 días exclusivos → falta 1 semana.)
+  it('gap por fechas: W20 (04-27 al 05-03) → W22 (05-11 al 05-17), falta 1 semana', () => {
     const w20 = makeWeek({
       week: '2026-W20', reportId: 'r20',
       weekStart: '2026-04-27', weekEnd: '2026-05-03',
@@ -70,14 +68,85 @@ describe('[EXACT] A — semanas ausentes y presentes sin conteo', () => {
     expect(missing[0].weekRange).toEqual(['2026-W20', '2026-W22'])
     expect(missing[0].evidence.previousWeekEnd).toBe('2026-05-03')
     expect(missing[0].evidence.nextWeekStart).toBe('2026-05-11')
+    expect(missing[0].evidence.uncoveredDays).toBe(7)
     expect(missing[0].evidence.estimatedMissingWeeks).toBe(1)
     expect(p.diagnostics.checks.calendarCoverage).toBe('present')
   })
 
-  it('cambio de año fiscal con W53: fechas consecutivas 2025-12-29 al 2026-01-04 → sin hueco', () => {
-    // Un restaurante con fiscal_year_start que produce 53 semanas: la app
-    // guarda etiquetas "2025-W53" y "2026-W01" seguidas. El detector NO
-    // reinventa etiquetas; solo mira que week_end + 1día === next.week_start.
+  it('gap de 3 días → coverage_gap_days (no una semana entera)', () => {
+    const wa = makeWeek({
+      week: '2026-W40',
+      weekStart: '2026-09-28', weekEnd: '2026-10-04',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const wb = makeWeek({
+      week: '2026-W41',
+      weekStart: '2026-10-08', weekEnd: '2026-10-14',  // 3 días sin cobertura
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [wa, wb] })
+    const p = engine.buildPeriodData(wa, [], wb)
+    expect((p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')).toHaveLength(0)
+    const gap = (p.diagnostics.items as any[]).find(i => i.type === 'coverage_gap_days')
+    expect(gap).toBeTruthy()
+    expect(gap.evidence.uncoveredDays).toBe(3)
+    expect(p.diagnostics.checks.calendarCoverage).toBe('present')
+  })
+
+  it('cruce de horario de verano EE.UU. (spring forward 2026-03-08) NO altera el conteo', () => {
+    // Fechas civiles: 2026-03-01 (dom) al 2026-03-07 (sáb) y 2026-03-15 al 2026-03-21.
+    // Entre 03-07 y 03-15 hay 8 días civiles → 7 días sin cobertura → 1 semana faltante.
+    // Con parse local podría producir 6.958 días por DST — con UTC es exactamente 8.
+    const wa = makeWeek({
+      week: '2026-W09',
+      weekStart: '2026-03-01', weekEnd: '2026-03-07',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const wb = makeWeek({
+      week: '2026-W11',
+      weekStart: '2026-03-15', weekEnd: '2026-03-21',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [wa, wb] })
+    const p = engine.buildPeriodData(wa, [], wb)
+    const missing = (p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')
+    expect(missing).toHaveLength(1)
+    expect(missing[0].evidence.uncoveredDays).toBe(7)
+    expect(missing[0].evidence.estimatedMissingWeeks).toBe(1)
+  })
+
+  it('cruce de horario de verano con gap parcial (8 días atravesando DST) es 1 semana + 1 día → missing_week', () => {
+    const wa = makeWeek({
+      week: '2026-W09',
+      weekStart: '2026-03-01', weekEnd: '2026-03-07',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const wb = makeWeek({
+      week: '2026-W11b',
+      weekStart: '2026-03-16', weekEnd: '2026-03-22',   // 8 días sin cobertura, cruza DST
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [wa, wb] })
+    const p = engine.buildPeriodData(wa, [], wb)
+    const missing = (p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')
+    expect(missing).toHaveLength(1)
+    expect(missing[0].evidence.uncoveredDays).toBe(8)
+    expect(missing[0].evidence.estimatedMissingWeeks).toBe(1)
+  })
+
+  it('cambio de año fiscal con W53 (semanas fiscales consecutivas) → sin hueco', () => {
     const w53 = makeWeek({
       week: '2025-W53',
       weekStart: '2025-12-22', weekEnd: '2025-12-28',
@@ -94,18 +163,49 @@ describe('[EXACT] A — semanas ausentes y presentes sin conteo', () => {
     })
     const engine = createCostoUsoEngine({
       ...BASE_CTX, weeks: [w53, w01],
-      fiscalYearStart: '2025-01-06',   // domingo — 53 semanas hasta 2026-01-04
+      fiscalYearStart: '2025-01-06',
     })
     const p = engine.buildPeriodData(w53, [], w01)
-    const missing = (p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')
-    expect(missing).toHaveLength(0)
+    expect((p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')).toHaveLength(0)
     expect(p.diagnostics.checks.calendarCoverage).toBe('ok')
+  })
+
+  it('cambio de año ISO REAL con W53: 2026-W52 (12-21..12-27), 2026-W53 (12-28..2027-01-03), 2027-W01 (01-04..01-10)', () => {
+    // 2026 tiene W53 ISO porque 2026-12-31 cae en jueves.
+    // Verifica que el detector, sin conocer el calendario ISO, respete
+    // simplemente la continuidad por fechas.
+    const w52 = makeWeek({
+      week: '2026-W52',
+      weekStart: '2026-12-21', weekEnd: '2026-12-27',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const w53 = makeWeek({
+      week: '2026-W53',
+      weekStart: '2026-12-28', weekEnd: '2027-01-03',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const w01 = makeWeek({
+      week: '2027-W01',
+      weekStart: '2027-01-04', weekEnd: '2027-01-10',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    // Fiscal_year_start ausente → fallback ISO en la ingesta (para etiqueta).
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w52, w53, w01] })
+    const p1 = engine.buildPeriodData(w52, [], w53)
+    const p2 = engine.buildPeriodData(w53, [], w01)
+    expect(p1.diagnostics.checks.calendarCoverage).toBe('ok')
+    expect(p2.diagnostics.checks.calendarCoverage).toBe('ok')
   })
 
   it('sin week_start/week_end → calendarCoverage = not_determinable', () => {
     const w1 = makeWeek({
       week: '2026-W10', reportId: 'r10',
-      // sin weekStart/weekEnd
       salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
       inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
       theoCostByCat: { food: 90 },
@@ -120,6 +220,80 @@ describe('[EXACT] A — semanas ausentes y presentes sin conteo', () => {
     const p = engine.buildPeriodData(w1, [], w2)
     expect((p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')).toHaveLength(0)
     expect(p.diagnostics.checks.calendarCoverage).toBe('not_determinable')
+  })
+
+  it('fechas invertidas (solapamiento) → inverted_dates', () => {
+    const wa = makeWeek({
+      week: '2026-W20',
+      weekStart: '2026-05-04', weekEnd: '2026-05-10',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const wb = makeWeek({
+      week: '2026-W20b',
+      weekStart: '2026-05-08', weekEnd: '2026-05-14',  // empieza ANTES de que termine wa
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [wa, wb] })
+    const p = engine.buildPeriodData(wa, [], wb)
+    const inv = (p.diagnostics.items as any[]).find(i => i.type === 'inverted_dates')
+    expect(inv).toBeTruthy()
+    expect(inv.evidence.civilDaysBetween).toBeLessThanOrEqual(0)
+    expect(p.diagnostics.checks.calendarCoverage).toBe('present')
+  })
+
+  it('fecha inválida en un reporte → not_determinable, sin emitir hallazgos inventados', () => {
+    const wa = makeWeek({
+      week: '2026-W20',
+      weekStart: '2026-05-04', weekEnd: '2026-05-10',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const wb = makeWeek({
+      week: '2026-W21',
+      weekStart: 'no-es-fecha' as any, weekEnd: '2026-05-17',
+      salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 90 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [wa, wb] })
+    const p = engine.buildPeriodData(wa, [], wb)
+    expect(p.diagnostics.checks.calendarCoverage).toBe('not_determinable')
+    expect((p.diagnostics.items as any[]).filter(i => i.type === 'missing_week')).toHaveLength(0)
+    expect((p.diagnostics.items as any[]).filter(i => i.type === 'coverage_gap_days')).toHaveLength(0)
+  })
+})
+
+describe('[EXACT] civilDaysBetween — helper', () => {
+  it('días consecutivos = 1', async () => {
+    const { civilDaysBetween } = await import('../diagnostics')
+    expect(civilDaysBetween('2026-05-03', '2026-05-04')).toBe(1)
+  })
+  it('mismo día = 0', async () => {
+    const { civilDaysBetween } = await import('../diagnostics')
+    expect(civilDaysBetween('2026-05-03', '2026-05-03')).toBe(0)
+  })
+  it('spring forward (2026-03-07 → 2026-03-08) = 1 (no 0.958)', async () => {
+    const { civilDaysBetween } = await import('../diagnostics')
+    expect(civilDaysBetween('2026-03-07', '2026-03-08')).toBe(1)
+  })
+  it('fall back (2026-11-01 → 2026-11-02) = 1 (no 1.042)', async () => {
+    const { civilDaysBetween } = await import('../diagnostics')
+    expect(civilDaysBetween('2026-11-01', '2026-11-02')).toBe(1)
+  })
+  it('cruce de año W53 ISO real: 2026-12-27 → 2027-01-04 = 8', async () => {
+    const { civilDaysBetween } = await import('../diagnostics')
+    expect(civilDaysBetween('2026-12-27', '2027-01-04')).toBe(8)
+  })
+  it('fecha inválida → null', async () => {
+    const { civilDaysBetween } = await import('../diagnostics')
+    expect(civilDaysBetween('2026-02-30', '2026-03-01')).toBe(null)
+    expect(civilDaysBetween('' as any, '2026-03-01')).toBe(null)
+    expect(civilDaysBetween('2026/05/03' as any, '2026-05-04')).toBe(null)
   })
 })
 

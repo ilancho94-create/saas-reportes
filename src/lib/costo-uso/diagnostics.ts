@@ -9,8 +9,10 @@
 // "prevalece" ante una discrepancia — se muestran ambos valores.
 
 export type DiagnosticType =
-  | 'missing_week'                  // A: hueco en la secuencia de semanas presentes
+  | 'missing_week'                  // A: gap de ≥1 semana completa entre reportes
+  | 'coverage_gap_days'             // A: gap < 7 días (días sin cobertura, no una semana entera)
   | 'week_present_no_inventory'     // A: la semana existe pero no trajo conteo
+  | 'inverted_dates'                // A: par de reportes con fechas fuera de orden
   | 'source_missing'                // B: fuente entera (sales/cogs/inventory/pmix) ausente
   | 'field_undetermined'            // B: no se puede decidir ausencia vs cero explícito
   | 'inventory_account_missing'     // C: mapping esperado no encontró cuentas
@@ -62,27 +64,49 @@ export interface Diagnostics {
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /**
- * Convierte una fecha YYYY-MM-DD a un timestamp sin corrimientos de zona.
- * Coherente con src/app/api/process/route.ts (getWeekStartFromFiscal /
- * getWeekEndFromStart), que también usa el sufijo 'T00:00:00'.
+ * Convierte YYYY-MM-DD a los componentes {y, m, d} validados, o null si
+ * el string no es una fecha civil válida.
+ *
+ * El motor NO interpreta la fecha en una zona horaria. La ingesta
+ * (src/app/api/process/route.ts) guarda estas fechas como cadenas
+ * calendario; aquí las tratamos también como cadenas calendario.
  */
-function parseDateOnly(iso: string): number | null {
-  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null
-  const t = new Date(iso + 'T00:00:00').getTime()
-  return Number.isFinite(t) ? t : null
+function parseCivilDate(iso: string): { y: number; m: number; d: number } | null {
+  if (!iso || typeof iso !== 'string') return null
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return null
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null
+  // Verificación de validez (rechaza 2026-02-30, 2026-04-31, etc.).
+  // Usamos UTC para evitar cualquier corrimiento por DST del proceso.
+  const t = Date.UTC(y, mo - 1, d)
+  const back = new Date(t)
+  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) return null
+  return { y, m: mo, d }
 }
 
 const ONE_DAY_MS = 86_400_000
 
 /**
- * Días transcurridos entre dos fechas YYYY-MM-DD (a > b ⇒ resultado positivo).
- * Retorna null si alguna es inválida.
+ * Días calendario entre dos fechas civiles YYYY-MM-DD.
+ *   civilDaysBetween('2026-05-03', '2026-05-11') === 8
+ *
+ * Ambas fechas se convierten a componentes y luego a timestamps UTC
+ * (Date.UTC). Como UTC no tiene DST, la diferencia en ms siempre es
+ * múltiplo exacto de 86_400_000 y el cociente es entero. La zona
+ * horaria del proceso no interviene.
+ *
+ * Retorna null si alguna fecha es inválida.
+ * Puede ser negativo si la segunda es anterior a la primera (útil para
+ * detectar intervalos invertidos aguas arriba).
  */
-function daysBetween(fromISO: string, toISO: string): number | null {
-  const a = parseDateOnly(fromISO)
-  const b = parseDateOnly(toISO)
-  if (a === null || b === null) return null
-  return Math.round((b - a) / ONE_DAY_MS)
+export function civilDaysBetween(fromISO: string, toISO: string): number | null {
+  const a = parseCivilDate(fromISO)
+  const b = parseCivilDate(toISO)
+  if (!a || !b) return null
+  const ta = Date.UTC(a.y, a.m - 1, a.d)
+  const tb = Date.UTC(b.y, b.m - 1, b.d)
+  return (tb - ta) / ONE_DAY_MS
 }
 
 /** Nombres de cuentas de inventario R365 esperadas para una categoría. */
@@ -301,15 +325,21 @@ export function diagnosePeriod(
 
   // A — huecos entre reportes usando FECHAS (week_start / week_end).
   //     La app persiste ambas fechas en reports por cada semana, calculadas
-  //     por la ingesta desde restaurants.fiscal_year_start si existe (calendario
-  //     fiscal) o desde ISO como fallback. Aquí NO reinventamos el calendario:
-  //     solo medimos el hueco entre `previousReport.week_end` y
-  //     `nextReport.week_start`. Si son consecutivos, la diferencia es de 1 día
-  //     (week_end es inclusivo, week_start del siguiente es al día siguiente).
-  //     Si la diferencia es mayor, hay al menos una semana faltante.
+  //     por la ingesta desde restaurants.fiscal_year_start si existe
+  //     (calendario fiscal) o desde ISO como fallback. Aquí NO reinventamos
+  //     el calendario: medimos días civiles entre previousReport.week_end
+  //     y nextReport.week_start usando UTC (Date.UTC) para eliminar
+  //     cualquier influencia de DST o zona horaria del proceso.
   //
-  //     Si alguna de las fechas no está disponible, no podemos concluir → no
-  //     emitimos missing_week y el check queda 'not_determinable' a nivel serie.
+  //     Si son consecutivos, civilDaysBetween = 1 (week_end es inclusivo,
+  //     next.week_start es el día siguiente). Si es mayor, hay días sin
+  //     cobertura. Distinguimos:
+  //       uncoveredDays < 7        → coverage_gap_days (no una semana entera)
+  //       uncoveredDays >= 7       → missing_week con estimatedMissingWeeks
+  //
+  //     Fechas ausentes → not_determinable (no inventamos gap).
+  //     Fechas invertidas o solapamientos → inverted_dates (evidencia,
+  //     sin proponer corrección).
   let anyGapUndetermined = false
   if (anchor && closing) {
     const chain = [anchor, ...periodWeeks]
@@ -318,29 +348,57 @@ export function diagnosePeriod(
       const next = chain[i]
       const prevEnd = prev.report?.week_end
       const nextStart = next.report?.week_start
-      const gapDays = daysBetween(prevEnd, nextStart)
+      const gapDays = civilDaysBetween(prevEnd, nextStart)
       if (gapDays === null) { anyGapUndetermined = true; continue }
-      // Consecutivos: prevEnd + 1día === nextStart → gapDays = 1.
-      if (gapDays <= 1) continue
-      // Hay hueco. Estimación conservadora del número de semanas faltantes
-      // asumiendo semanas de 7 días (que es como la app las guarda). No
-      // inferimos week labels ISO para respetar el calendario fiscal si
-      // el restaurante usa uno.
-      const estimatedMissing = Math.floor((gapDays - 1) / 7)
-      items.push({
-        type: 'missing_week',
-        weekRange: [prev.report.week, next.report.week],
-        evidence: {
-          previousWeekEnd: prevEnd,
-          nextWeekStart: nextStart,
-          gapDays: gapDays - 1,               // días entre fechas exclusivas
-          estimatedMissingWeeks: estimatedMissing,
-          fiscalCalendar: !!ctx.fiscalYearStart,
-          note: ctx.fiscalYearStart
-            ? 'Semanas medidas por fechas guardadas (fiscal_year_start ' + ctx.fiscalYearStart + ')'
-            : 'Semanas medidas por fechas guardadas (ISO — no hay fiscal_year_start configurado)',
-        },
-      })
+      // Fechas invertidas o solapamientos (next comienza antes o el mismo
+      // día que el fin del anterior).
+      if (gapDays <= 0) {
+        items.push({
+          type: 'inverted_dates',
+          weekRange: [prev.report.week, next.report.week],
+          evidence: {
+            previousWeekEnd: prevEnd,
+            nextWeekStart: nextStart,
+            civilDaysBetween: gapDays,
+            note: gapDays === 0
+              ? 'next.week_start coincide con previous.week_end (solapamiento de un día).'
+              : 'next.week_start es anterior a previous.week_end (fechas fuera de orden).',
+          },
+        })
+        continue
+      }
+      // Consecutivos.
+      if (gapDays === 1) continue
+      const uncoveredDays = gapDays - 1
+      if (uncoveredDays < 7) {
+        // Gap < 1 semana: días sin cobertura, no una semana entera.
+        items.push({
+          type: 'coverage_gap_days',
+          weekRange: [prev.report.week, next.report.week],
+          evidence: {
+            previousWeekEnd: prevEnd,
+            nextWeekStart: nextStart,
+            uncoveredDays,
+            note: 'Hay días sin reporte entre ambas semanas pero menos de una semana completa.',
+          },
+        })
+      } else {
+        const estimatedMissing = Math.floor(uncoveredDays / 7)
+        items.push({
+          type: 'missing_week',
+          weekRange: [prev.report.week, next.report.week],
+          evidence: {
+            previousWeekEnd: prevEnd,
+            nextWeekStart: nextStart,
+            uncoveredDays,
+            estimatedMissingWeeks: estimatedMissing,
+            fiscalCalendar: !!ctx.fiscalYearStart,
+            note: ctx.fiscalYearStart
+              ? 'Días civiles medidos por UTC (fiscal_year_start ' + ctx.fiscalYearStart + ').'
+              : 'Días civiles medidos por UTC (ISO — no hay fiscal_year_start configurado).',
+          },
+        })
+      }
     }
   }
 
@@ -432,7 +490,11 @@ export function diagnosePeriod(
     checks: {
       calendarCoverage:          !anchor ? 'not_checked'
                                 : anyGapUndetermined ? 'not_determinable'
-                                : merged.some(i => i.type === 'missing_week') ? 'present'
+                                : merged.some(i =>
+                                    i.type === 'missing_week' ||
+                                    i.type === 'coverage_gap_days' ||
+                                    i.type === 'inverted_dates'
+                                  ) ? 'present'
                                 : 'ok',
       salesPresence:             collapseCheck(perWeek, 'salesPresence'),
       purchasesPresence:         collapseCheck(perWeek, 'purchasesPresence'),
