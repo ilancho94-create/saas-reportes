@@ -1,0 +1,303 @@
+Bloque 6 — Diagnósticos temporales confiables + integración en Costo de Uso
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06
+
+1. OBJETIVO
+
+Hacer confiable el detector de semanas faltantes usando el calendario real
+de la aplicación (no un helper ISO paralelo) y mostrar los diagnósticos
+del motor en /dashboard/costo-uso, de modo que el usuario distinga cifras
+disponibles, incompletas o con anomalías. No cambiar fórmulas comerciales
+ni datos reales.
+
+2. COMMITS Y ESTADO FINAL
+
+Rama local: costo-uso-validation-2026-09-06 (sin push).
+
+Commits añadidos en este bloque:
+  282c660  fix(costo-uso): calendar-aware diagnostics + close data-quality gaps
+  21750c3  feat(costo-uso): surface engine diagnostics in the UI
+
+Historial completo del trabajo relacionado con Costo de Uso:
+  21750c3  feat: surface engine diagnostics in the UI                (bloque 6)
+  282c660  fix: calendar-aware diagnostics + close gaps              (bloque 6)
+  f8b9f70  feat: structured data-quality diagnostics on engine       (bloque 5)
+  10b53fc  fix: variacion_$ requires theoretical cost to be PRESENT  (bloque 5)
+  51c05af  fix: variacion_$ = uso − theo_cost (importes sin redondear)  (bloque 4)
+  29347f4  test: extract engine + Vitest suite for period consolidation (bloque 3)
+
+Sin cambios en base de datos, mappings, descuentos, política de consumo
+negativo, exportaciones ni fuentes de inventario. Sin push ni deploy.
+
+3. FUENTE REAL DEL CALENDARIO Y CÓMO SE USA
+
+Investigación (código, no memoria):
+- src/app/api/process/route.ts:363-373  getWeekStartFromFiscal
+  Si restaurants.fiscal_year_start está definido: la semana 1 empieza en
+  esa fecha, cada semana suma 7 días. Fechas parseadas con sufijo
+  'T00:00:00' para evitar corrimiento de zona horaria. Puede producir
+  W53 y no coincidir con la numeración ISO.
+- src/app/api/process/route.ts:382-390  getWeekStartISO (fallback)
+  Cuando no hay calendario fiscal configurado.
+- Cada reporte persistido lleva `week_start` y `week_end` en la tabla
+  reports; también viajan en el select embebido de la página
+  (src/app/dashboard/costo-uso/page.tsx:132).
+- src/app/dashboard/settings/page.tsx expone el campo
+  fiscal_year_start para que el propietario del restaurante lo configure.
+
+Decisión de diseño del detector:
+- No reinventamos el calendario. El detector nuevo mide la diferencia en
+  días entre `previousReport.week_end` y `nextReport.week_start`. Si son
+  consecutivos, la diferencia es 1 día (week_end es inclusivo). Si es
+  mayor, hay al menos una semana faltante entre reportes.
+- Las fechas se parsean con `new Date(iso + 'T00:00:00').getTime()`, la
+  misma convención que la ingesta, para no introducir desfases por
+  zona horaria.
+- El detector no infiere labels de semanas faltantes: emite un solo
+  diagnóstico missing_week con weekRange (previa y siguiente conocidas),
+  previousWeekEnd, nextWeekStart, gapDays y estimatedMissingWeeks.
+- Si alguna fecha falta, calendarCoverage = 'not_determinable' y no se
+  emiten hallazgos inventados.
+- ctx.fiscalYearStart se pasa al detector solo para etiquetar la
+  evidencia ("Semanas medidas por fechas guardadas (fiscal_year_start
+  YYYY-MM-DD)"), no para calcular nada.
+
+Pruebas del calendario (src/lib/costo-uso/__tests__/diagnostics.test.ts):
+- Gap por fechas: W20 (04-27 al 05-03) → W22 (05-11 al 05-17). Falta 1
+  semana (05-04 al 05-10). evidence.estimatedMissingWeeks = 1.
+- Cambio de año con W53: reports 2025-W53 (2025-12-22 al 2025-12-28) y
+  2026-W01 (2025-12-29 al 2026-01-04). Semanas fiscales consecutivas.
+  El detector NO emite missing_week; calendarCoverage = 'ok'.
+- Sin week_start/week_end: calendarCoverage = 'not_determinable'. No se
+  inventan gaps ni se declara cobertura completa.
+
+4. HUECOS CERRADOS EN DIAGNÓSTICOS (bloque 2 del plan)
+
+A. unmatched_pmix_items
+   La ausencia del campo raw_data.unmatched_items ahora se reporta como
+   sub-check unmatchedPmixItems = 'not_determinable' (no como cero).
+   Un array vacío se reporta como 'ok'. Un array con items produce un
+   único diagnóstico con count y totalTheoCost.
+
+B. Categorías con actividad pero sin mapping de ventas
+   Nuevo tipo unmapped_activity_category. Si una categoría interna
+   (food, liquor, etc.) aparece en cogs, inventory o productMix pero
+   no tiene mapping de ventas en el restaurante, se emite el hallazgo
+   con la lista de fuentes en que fue detectada. Permite atrapar
+   precisamente categorías sin mapear que hoy se ocultaban.
+
+C. Discrepancias de inventario (inventory_carry_mismatch)
+   La evidencia ahora expone por separado:
+     evidence.anchor = { week, source, rawValue, adjustment, adjustedValue }
+     evidence.closing = { week, source, rawValue, adjustment, adjustedValue }
+     evidence.diff (adjustedValue closing − anchor)
+     evidence.note (aclara que no se elige fuente)
+   Los ajustes manuales se muestran explícitamente. Nada se sobrescribe.
+   Tolerancia técnica: 0.005 (redondeo a centavos). No se aplica ninguna
+   tolerancia comercial arbitraria.
+
+D. Agregación de diagnósticos
+   collapseCheck respeta la jerarquía: si alguno de los períodos aporta
+   'not_determinable', el rango también queda 'not_determinable' — nunca
+   se colapsa silenciosamente a 'ok'. Los items se deduplican por
+   (type, week, category, weekRange).
+
+E. Falta de cierre en rangos vacíos
+   engine.diagnoseRange(weekList, series) reporta unclosed_tail incluso
+   cuando series.length === 0. Test explícito cubre ese caso.
+
+5. ESTADOS QUE APARECEN EN PANTALLA Y JUNTO A QUÉ CIFRAS
+
+A. Resumen del período (bloque superior, siempre visible)
+   - Etiqueta "Solicitado" vs "Analizado" cuando los rangos difieren
+     (por absorción del anchor externo o intermediates pre-filtro).
+   - Aviso explícito si hay unclosed_tail con la lista de semanas.
+   - Botón que muestra "N incidencias" / "N no determinables" / "Sin
+     incidencias detectadas".
+   - Cuando no hay incidencias detectadas, se muestra una nota:
+     "no equivale a exactitud financiera validada".
+
+B. Panel desplegable de detalle
+   - Cada hallazgo se lista con título en lenguaje humano
+     ("Semanas sin cierre pendientes", "Consumo antes de ajustarlo a
+     cero", "Inventario inicial de referencia", "Discrepancia entre
+     inventarios").
+   - Categoría afectada (Food / NA Beverage / Liquor / Beer / Wine),
+     semana o rango, hint corto y campos específicos según el tipo:
+       missing_week            → previousWeekEnd, nextWeekStart, semanas
+       inventory_carry_mismatch → ambos inventarios y diferencia
+       negative_gross_consumption → consumo antes del ajuste a cero
+       unmatched_pmix_items    → conteo y teórico agregado
+   - Sin identificadores de base, sin JSON crudo, sin nombres internos
+     del motor.
+
+C. Señales inline junto a resultados
+   - Componente DiagBadge: pastilla pequeña "⚠ N" con role="status" y
+     aria-label + title que resumen el o los hallazgos aplicables a
+     esa categoría.
+   - Se pinta en la celda "Categoría" de la tabla de detalle y en la
+     card de cada categoría en la vista móvil.
+   - El significado no depende solo del color: emoji ⚠ + número, con
+     texto accesible por teclado y screen readers.
+
+D. Ausencias y ceros
+   - Card "Variación $" del período: cuando totalVariacion es null,
+     muestra "—" con "No calculable: teórico incompleto" y el botón
+     queda deshabilitado.
+   - Filas por categoría: variacion === null renderiza "— no calc." con
+     tooltip que explica que falta información teórica.
+   - variacion === 0 explícito sigue mostrándose como "$0".
+   - Ningún fallback reconstruye la cifra desde uso − theo cuando el
+     engine indica null.
+   - Modal de análisis de variación (ya en bloque 4): cartel "Variación
+     no calculable para este scope" cuando el engine devuelve null,
+     residual también null. Sin cambios adicionales en este bloque.
+
+E. Rango sin cierre
+   - Cuando filtered tiene semanas pero periodSeries es vacía, se
+     renderiza una card ámbar dedicada:
+       Título: "Rango sin cierre de inventario"
+       Cuerpo: lista de semanas seleccionadas + explicación de que no
+       hay referencia de inventario anterior.
+       Nota final: sus datos aparecen en otras vistas y se consolidarán
+       en el próximo inventario.
+   - aggregateSeries devuelve null y se respeta (no se inventa fila).
+   - El resumen del período con diagnoseRange sigue rindiéndose encima
+     para exponer las incidencias que sí existen (por ejemplo,
+     unclosed_tail).
+
+6. UBICACIÓN DE CAPTURAS
+
+No hay capturas de pantalla nuevas guardadas en este bloque. Ver el
+apartado "Verificaciones ejecutadas y limitaciones" para el motivo.
+
+Cuando se completen las capturas manuales, la carpeta destino será:
+  docs/informes/bloque-06/capturas/
+con nombres de archivo por estado, por ejemplo:
+  01-periodo-completo-sin-incidencias.png
+  02-teorico-cero-explicito.png
+  03-teorico-ausente.png
+  04-inventario-parcial.png
+  05-semana-faltante.png
+  06-rango-sin-cierre.png
+  07-consumo-bruto-negativo.png
+  08-intervalo-efectivo-distinto.png
+  09-panel-detalle-desplegado.png
+  10-mobile-signals.png
+
+7. VERIFICACIONES EJECUTADAS Y LIMITACIONES
+
+Ejecutadas:
+  npm test           -> 71 passed, 1 skipped (PEND explícito)
+  npx tsc --noEmit   -> sin errores
+  npx next build     -> OK, /dashboard/costo-uso sigue como ○ (static)
+
+Tests nuevos añadidos en el bloque:
+  - Gap por fechas W20 → W22 con evidencia completa
+  - Calendario fiscal con W53 sin gap falso
+  - Sin week_start/week_end → not_determinable
+  - Discrepancia D con evidencia dividida en anchor / closing
+  - Discrepancia D con ajustes manuales en ambos lados
+  - unmapped_activity_category con seenIn multi-fuente
+  - unmatched_pmix_items: sub-check con 3 estados (ok, present, not_det.)
+  - Agregación conserva unicidad de missing_week
+  - Rango sin cierre: unclosed_tail sobrevive con serie vacía
+
+Limitaciones (documentadas honestamente):
+  L1. Verificación visual en navegador NO ejecutada en este bloque.
+      Motivo del bloqueo:
+        - Playwright no está instalado en el proyecto y no fue
+          autorizado añadirlo como dependencia en este bloque.
+        - La app requiere sesión Supabase autenticada; no hay
+          credenciales de prueba en el entorno del asistente.
+        - El propio prompt prohíbe crear rutas públicas de diagnóstico
+          o rutas que omitan autenticación en producción para tener
+          verificación visual local.
+      Alternativa aplicable: el propietario abre la sesión en un
+      restaurante con datos ya cargados en Supabase y comprueba los
+      estados listados en la sección 5 con los filtros indicados.
+      Alternativa técnica futura: mecanismo de "sandbox" gateado por
+      NODE_ENV=development con fixtures locales; queda pendiente.
+
+  L2. Navegación por teclado y contraste: implementados según las
+      pautas del código (role="status", aria-label, tooltip con
+      resumen de hallazgos, meaning no depende solo del color).
+      Pendiente verificación con lector de pantalla real por parte
+      del propietario.
+
+  L3. Móvil: las señales inline se agregaron a la vista móvil, pero
+      no se validaron en un dispositivo real. La estructura del JSX
+      usa la variante md:hidden ya existente en la página.
+
+  L4. Cambio de filtros: los diagnósticos se recomputan en el mismo
+      useMemo del engine (dependencias: filtered, periodSeries,
+      requestedRange). Un cambio de filtro reemplaza la advertencia
+      previa; no queda "colgada".
+
+8. FÓRMULAS Y DATOS: CONFIRMACIÓN DE NO CAMBIOS
+
+En este bloque NO se modificaron:
+  - Fórmula de consumo (Math.max sigue activo)
+  - Fórmula de variación (uso − theo_cost, ya introducida en bloque 4)
+  - Reglas de descuentos operativos
+  - Consolidación de períodos
+  - Mappings de categorías o de descuentos
+  - Fuentes de inventario ni criterio de arrastre
+  - Ninguna tabla o dato real en Supabase
+
+El único cambio en engine.ts fue exponer fiscalYearStart y adjuntar los
+diagnósticos (que son puramente informativos) a los resultados
+existentes. La aritmética permanece exactamente igual que en el bloque 5.
+
+9. PPTX (registro obligatorio de pendiente)
+
+La sección "Costo de Uso" del PPTX en
+src/lib/export/generate-pptx.ts:486-511 SIGUE utilizando una fórmula
+paralela (totalRealPct − totalMixPct)/100 × totalSales y reparte
+catSales = net_sales / CATS.length entre las cinco categorías por partes
+iguales. NO consume el engine. Este bloque no la tocó y no debe
+considerarse validada por llamarla "no comparable". Queda como
+NO VALIDADO hasta que se decida su plan (migrar al engine o marcar
+explícitamente el PPTX como reporte reducido).
+
+10. PENDIENTES PRIORITARIOS
+
+  P1. Verificación visual en navegador con datos reales del propietario,
+      usando la lista de escenarios de la sección 5.
+
+  P2. Migrar la sección Costo de Uso del PPTX al engine, o marcarla en
+      la propia diapositiva como reporte reducido no comparable con la
+      UI. Requiere decisión de producto.
+
+  P3. Decidir política de consumo negativo (Math.max sigue activo).
+      Sigue como pregunta pendiente para el propietario.
+
+  P4. Ajustes manuales de theo_cost no crean presencia (theo_present).
+      Pendiente decisión: ¿un ajuste con nota debería declarar fuente?
+
+  P5. Diseñar un modo "sandbox" local con fixtures deterministas para
+      poder ejecutar capturas Playwright en CI sin exponer datos reales
+      ni rutas de bypass en producción.
+
+11. PREFERENCIA PERMANENTE DE ENTREGA DE INFORMES
+
+Registrada como memoria persistente:
+  ruta: /Users/ilan/.claude/projects/-Users-ilan/memory/feedback_report_delivery.md
+  índice: /Users/ilan/.claude/projects/-Users-ilan/memory/MEMORY.md
+  nombre: feedback-report-delivery
+
+Resumen de la regla:
+  Los informes finales van dentro de un único bloque de código con
+  formato text (para el botón de copiar), sin subdividir ni anidar
+  otros bloques, y se guardan también como archivo .txt con nombre
+  descriptivo por bloque dentro de la carpeta docs/informes/ del
+  proyecto. Fuera del bloque solo puede aparecer el enlace al archivo.
+  No aplica a actualizaciones intermedias.
+
+12. SIGUIENTE PASO SUGERIDO
+
+Verificación manual en /dashboard/costo-uso con el usuario, cubriendo
+los diez escenarios listados en la sección 6, y captura de pantallas.
+Después: decidir el plan del PPTX (P2) y la política de consumo
+negativo (P3). Estos son los dos bloques que quedan bloqueados por
+decisiones de producto.
