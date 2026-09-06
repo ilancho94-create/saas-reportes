@@ -346,18 +346,22 @@ export default function CostoUsoPage() {
     const rawWeeks: any[] = period?.periodWeeksRaw || []
     const catKey = category // null = total A&B
 
-    // Uso y teórico del scope solicitado
-    let uso: number, theo: number, sales: number, variance: number
+    // Uso y teórico del scope solicitado.
+    // La variación proviene EXCLUSIVAMENTE del engine. Si el engine devuelve
+    // null (falta información teórica o ventas <= 0), NO reconstruimos la
+    // cifra con uso − theo (eso convertiría un "no calculable" en un número
+    // aparentemente válido). Los consumidores deben tolerar null.
+    let uso: number, theo: number, sales: number, variance: number | null
     if (catKey) {
       uso = period[catKey + '_uso'] || 0
       theo = period[catKey + '_theo_cost'] || 0
       sales = period[catKey + '_sales'] || 0
-      variance = period[catKey + '_variacion'] ?? (uso - theo)
+      variance = period[catKey + '_variacion'] ?? null
     } else {
       uso = period.totalUsoCost || 0
       theo = period.totalTheoCost || 0
       sales = period.totalABSales || 0
-      variance = period.totalVariacion ?? (uso - theo)
+      variance = period.totalVariacion ?? null
     }
 
     // ── Waste registrado en R365 ─────────────────────────────────────────
@@ -454,7 +458,8 @@ export default function CostoUsoPage() {
     // Si toggle OFF, sí entran (inflan variance via menor sales efectivas).
     const totalExplained = wasteAttributed + voidsTotal + compsTotal + unmatchedTheoCost
       + (!includeOpDiscounts ? opDiscTotal : 0)
-    const residual = variance - totalExplained
+    // Si la variación no es calculable, el residuo tampoco lo es.
+    const residual = variance === null ? null : variance - totalExplained
 
     return {
       scope: catKey ? CATEGORIES.find(c => c.key === catKey)?.label || catKey : 'Total A&B',
@@ -616,7 +621,14 @@ export default function CostoUsoPage() {
         {varPanel && (() => {
           const b = buildVarianceBreakdown(varPanel.category, varPanel.period)
           const fmtSigned = (n: number) => (n > 0 ? '+' : n < 0 ? '' : '') + fmt(n)
-          const explainedPctOfVar = b.variance !== 0 ? Math.min(100, Math.abs(b.totalExplained / b.variance * 100)) : 0
+          // Cuando la variación no es calculable (ej. falta costo teórico en
+          // alguna semana con ventas), NO reconstruimos la cifra. El modal
+          // muestra un cartel explicando por qué y no entra en el desglose
+          // de causas (que depende de la variación).
+          const varIsNull = b.variance === null
+          const explainedPctOfVar = (!varIsNull && b.variance !== 0)
+            ? Math.min(100, Math.abs(b.totalExplained / (b.variance as number) * 100))
+            : 0
           return (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setVarPanel(null)}>
               <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -642,16 +654,23 @@ export default function CostoUsoPage() {
                     <p className="text-xl font-bold text-white">{fmt(b.theo)}</p>
                     <p className="text-gray-600 text-xs">costo según recetas</p>
                   </div>
-                  <div className={`rounded-xl p-4 ${b.variance > 0 ? 'bg-red-950 border border-red-900' : b.variance < 0 ? 'bg-green-950 border border-green-900' : 'bg-gray-800'}`}>
+                  <div className={`rounded-xl p-4 ${varIsNull ? 'bg-gray-800 border border-gray-700' : (b.variance as number) > 0 ? 'bg-red-950 border border-red-900' : (b.variance as number) < 0 ? 'bg-green-950 border border-green-900' : 'bg-gray-800'}`}>
                     <p className="text-gray-400 text-xs mb-1">Variación</p>
-                    <p className={`text-xl font-bold ${b.variance > 0 ? 'text-red-400' : b.variance < 0 ? 'text-green-400' : 'text-gray-300'}`}>
-                      {fmtSigned(b.variance)}
+                    <p className={`text-xl font-bold ${varIsNull ? 'text-gray-500' : (b.variance as number) > 0 ? 'text-red-400' : (b.variance as number) < 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                      {varIsNull ? '—' : fmtSigned(b.variance as number)}
                     </p>
-                    <p className="text-gray-500 text-xs">{b.variance > 0 ? 'usaste más que las recetas' : b.variance < 0 ? 'usaste menos que las recetas' : 'cuadra perfecto'}</p>
+                    <p className="text-gray-500 text-xs">{varIsNull ? 'no calculable' : (b.variance as number) > 0 ? 'usaste más que las recetas' : (b.variance as number) < 0 ? 'usaste menos que las recetas' : 'cuadra perfecto'}</p>
                   </div>
                 </div>
 
-                {b.variance === 0 ? (
+                {varIsNull ? (
+                  <div className="bg-gray-800 rounded-xl p-4 text-center border border-gray-700">
+                    <p className="text-gray-300 text-sm mb-1">Variación no calculable para este scope.</p>
+                    <p className="text-gray-500 text-xs">
+                      Falta información de costo teórico (Product Mix) en al menos una semana o categoría del período. No mostramos una cifra derivada de asumir cero.
+                    </p>
+                  </div>
+                ) : b.variance === 0 ? (
                   <div className="bg-gray-800 rounded-xl p-4 text-center">
                     <p className="text-gray-300 text-sm">No hay variación que analizar para este scope.</p>
                   </div>
@@ -819,21 +838,21 @@ export default function CostoUsoPage() {
                           {explainedPctOfVar.toFixed(0)}% de la varianza explicado por datos del sistema
                         </p>
                       </div>
-                      <div className={`rounded-xl p-4 ${Math.abs(b.residual) > Math.abs(b.variance) * 0.3 ? 'bg-orange-950 border border-orange-900' : 'bg-gray-800'}`}>
+                      <div className={`rounded-xl p-4 ${b.residual !== null && Math.abs(b.residual) > Math.abs((b.variance as number)) * 0.3 ? 'bg-orange-950 border border-orange-900' : 'bg-gray-800'}`}>
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-white text-sm font-semibold">Residuo no explicado</p>
-                          <p className={`text-xl font-bold ${b.residual > 0 ? 'text-red-400' : b.residual < 0 ? 'text-green-400' : 'text-gray-300'}`}>
-                            {fmtSigned(b.residual)}
+                          <p className={`text-xl font-bold ${(b.residual ?? 0) > 0 ? 'text-red-400' : (b.residual ?? 0) < 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                            {b.residual === null ? '—' : fmtSigned(b.residual)}
                           </p>
                         </div>
                         <p className="text-gray-400 text-xs leading-relaxed">
-                          {b.residual > 0
+                          {(b.residual ?? 0) > 0
                             ? 'Inventario consumido que no se puede atribuir a una causa registrada. Posibles fuentes:'
-                            : b.residual < 0
+                            : (b.residual ?? 0) < 0
                               ? 'Las causas registradas suman MÁS que la varianza observada. Posibles fuentes:'
                               : 'Las causas registradas cuadran con la varianza.'}
                         </p>
-                        {b.residual !== 0 && (
+                        {b.residual !== null && b.residual !== 0 && (
                           <ul className="text-gray-500 text-xs mt-2 space-y-0.5 list-disc list-inside">
                             {b.residual > 0 && (
                               <>

@@ -428,23 +428,115 @@ describe('[PEND] Caso 14 — ventas negativas (devoluciones)', () => {
 // ═════════════════════════════════════════════════════════════════════════
 // CASO 15 — [CARACT] Costo teórico sin categoría matcheada
 // ═════════════════════════════════════════════════════════════════════════
-describe('[CARACT] Caso 15 — theo_cost ausente', () => {
-  const w = makeWeek({
-    week: '2026-W41', reportId: 'r41',
-    salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 800 },
-    inventory: [{ account: 'Food Inventory', current_value: 1100, previous_value: 1000 }],
-    theoCostByCat: {},   // sin theo para food
+describe('[EXACT] Caso 15 — presencia de costo teórico', () => {
+  it('productMix ausente (null) → food_theo_present=false, variacion=null', () => {
+    const w = makeWeek({
+      week: '2026-W41', reportId: 'r41',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 800 },
+      inventory: [{ account: 'Food Inventory', current_value: 1100, previous_value: 1000 }],
+      // sin theoCostByCat → makeWeek NO crea productMix
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.hasProductMix).toBe(false)
+    expect(d.food_theo_present).toBe(false)
+    expect(d.food_variacion).toBeNull()
   })
-  const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
-  const d = engine.buildWeekData(w)
-  it('theo_cost ausente → mixPct=null; variacion = uso − 0 = uso', () => {
+
+  it('productMix presente pero categoría sin asignación → theo_present=false, variacion=null', () => {
+    const w = makeWeek({
+      week: '2026-W42', reportId: 'r42',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 800 },
+      inventory: [{ account: 'Food Inventory', current_value: 1100, previous_value: 1000 }],
+      theoCostByCat: { liquor: 200 },   // productMix existe pero food no está
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.hasProductMix).toBe(true)
+    expect(d.food_theo_present).toBe(false)
+    expect(d.food_variacion).toBeNull()
+  })
+
+  it('teórico explícitamente cero → theo_present=true, variacion = uso − 0 = uso', () => {
+    const w = makeWeek({
+      week: '2026-W43', reportId: 'r43',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 800 },
+      inventory: [{ account: 'Food Inventory', current_value: 1100, previous_value: 1000 }],
+      theoCostByCat: { food: 0 },   // clave presente con cero explícito
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.food_theo_present).toBe(true)
     expect(d.food_theo_cost).toBe(0)
-    expect(d.food_theo_pct).toBe(0)     // UI lo muestra "0.0%"
-    // Post-corrección de variación: uso − theoCost sí se computa con catSales>0.
     // uso = 1000 + 800 − 1100 = 700
     expect(d.food_uso).toBe(700)
     expect(d.food_variacion).toBe(700)
-    // Regla pendiente: ¿cómo distinguir en la UI theo=0 real vs ausente?
+  })
+
+  it('total A&B: si UNA categoría con ventas>0 no tiene teórico → totalVariacion=null', () => {
+    const w = makeWeek({
+      week: '2026-W44', reportId: 'r44',
+      salesCats: [
+        { name: 'FOOD',   net: 8000 },
+        { name: 'LIQUOR', net: 3000 },
+      ],
+      cogs: { food: 500, liquor: 100 },
+      inventory: [
+        { account: 'Food Inventory',      current_value: 1100, previous_value: 1000 },
+        { account: 'Alcoholic Inventory', current_value: 210,  previous_value: 200 },
+      ],
+      theoCostByCat: { food: 400 },   // liquor tiene ventas pero sin teórico
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] })
+    const d = engine.buildWeekData(w)
+    expect(d.food_theo_present).toBe(true)
+    expect(d.liquor_theo_present).toBe(false)
+    expect(d.food_variacion).not.toBeNull()          // food sí calcula
+    expect(d.liquor_variacion).toBeNull()             // liquor no
+    expect(d.totalVariacion).toBeNull()               // total no puede completarse
+    expect(d.totalTheoComplete).toBe(false)
+  })
+
+  it('ajuste manual de theo_cost NO crea presencia', () => {
+    const w = makeWeek({
+      week: '2026-W45', reportId: 'r45',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 1100, previous_value: 1000 }],
+      // sin productMix
+    })
+    const engine = createCostoUsoEngine({
+      ...BASE_CTX, weeks: [w],
+      adjustments: [{ week: '2026-W45', category: 'food', field: 'theo_cost', adjustment_value: 300 }],
+    })
+    const d = engine.buildWeekData(w)
+    expect(d.food_theo_cost).toBe(300)    // el ajuste sí se refleja
+    expect(d.food_theo_present).toBe(false)  // pero no crea presencia de fuente
+    expect(d.food_variacion).toBeNull()
+    // Regla pendiente para el propietario: ¿ajustes deben poder "declarar" presencia?
+  })
+
+  it('período consolidado: si CUALQUIER semana del período no tiene teórico → theo_present=false del período', () => {
+    const w1 = makeWeek({
+      week: '2026-W46', reportId: 'r46a',
+      salesCats: [{ name: 'FOOD', net: 5000 }], cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 1000, previous_value: 900 }],
+      theoCostByCat: { food: 400 },
+    })
+    const w2 = makeWeek({
+      week: '2026-W47', reportId: 'r46b',
+      salesCats: [{ name: 'FOOD', net: 4000 }], cogs: { food: 400 },
+      inventory: null,  // sin inventario Y sin productMix
+    })
+    const w3 = makeWeek({
+      week: '2026-W48', reportId: 'r46c',
+      salesCats: [{ name: 'FOOD', net: 4500 }], cogs: { food: 350 },
+      inventory: [{ account: 'Food Inventory', current_value: 1100, previous_value: 1000 }],
+      theoCostByCat: { food: 380 },
+    })
+    const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w2, w3] })
+    const p = engine.buildPeriodData(w1, [w2], w3)
+    expect(p.food_theo_present).toBe(false)  // w2 no aportó teórico
+    expect(p.food_variacion).toBeNull()
   })
 })
 

@@ -177,14 +177,27 @@ export function createCostoUsoEngine(ctx: EngineContext) {
         ? catSalesGross + adjSales
         : catSalesBase
 
+      // Presencia de costo teórico — decidido DESDE LA ENTRADA, no del importe.
+      // Un theoCostByCat[cat.key] === 0 significa "cero explícito" solo si la
+      // clave estaba presente en el objeto; si la clave falta, es ausencia.
+      // Si productMix es null, no hay fuente para esta semana.
+      // Un ajuste manual de theo_cost no crea presencia por sí solo — la
+      // fuente sigue siendo ausente.
+      const hasProductMixForWeek = !!w.productMix
+      const theoKeyPresent = hasProductMixForWeek
+        && Object.prototype.hasOwnProperty.call(theoCostByCat, cat.key)
+      const theoPresent = theoKeyPresent
       const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
       // variacion_$ = uso − costo_teorico (importes sin redondear).
-      // Guardia catSales > 0 preserva el tratamiento actual de ausencia:
-      // sin ventas no interpretamos la variación (se mantiene null,
-      // no se convierte en cero).
-      const variacionDolares = catSales > 0
+      // Requisitos DE PRESENCIA (no de valor):
+      //   • catSales > 0             (mismo guard que antes)
+      //   • theoPresent === true     (la categoría trae información teórica
+      //                              en la entrada; cero explícito califica,
+      //                              ausencia no)
+      // Si no hay teórico determinable → null. No convertir null en cero.
+      const variacionDolares = catSales > 0 && theoPresent
         ? parseFloat((uso - theoCost).toFixed(2))
         : null
       const diasInv = uso > 0
@@ -203,20 +216,28 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       result[cat.key + '_sales'] = catSales
       result[cat.key + '_has_adj'] = hasAdj
       result[cat.key + '_theo_cost'] = theoCost
+      result[cat.key + '_theo_present'] = theoPresent
 
       if (uso > 0) totalUsoCost += uso
       if (theoCost > 0) totalTheoCost += theoCost
       if (catSales > 0) totalABSales += catSales
     })
 
+    // Total A&B: la variación total es solo válida si ninguna categoría con
+    // ventas > 0 carece de teórico. Si alguna carece, el total omitiría
+    // información necesaria de una categoría incluida → null.
+    const anyIncludedCatMissingTheo = CATEGORIES.some(
+      c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present']
+    )
     result.totalUsoCost = totalUsoCost
     result.totalTheoCost = totalTheoCost
     result.totalABSales = totalABSales
     result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
     result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = totalABSales > 0
+    result.totalVariacion = totalABSales > 0 && !anyIncludedCatMissingTheo
       ? parseFloat((totalUsoCost - totalTheoCost).toFixed(2))
       : null
+    result.totalTheoComplete = !anyIncludedCatMissingTheo
     result.hasAnyAdj = hasAdjustments(week)
     return result
   }
@@ -286,9 +307,19 @@ export function createCostoUsoEngine(ctx: EngineContext) {
         return sum + (theoByCat[cat.key] || 0) + adj
       }, 0)
 
+      // Presencia teórica del período: TODAS las semanas del período deben
+      // aportar información teórica de la categoría (productMix presente Y
+      // la clave existe en theo_cost_by_category). Si alguna semana no la
+      // trae, el período no tiene teórico determinable para esa categoría.
+      const theoPresent = periodWeeks.every(w => {
+        if (!w.productMix) return false
+        const theoByCat = w.productMix.theo_cost_by_category || {}
+        return Object.prototype.hasOwnProperty.call(theoByCat, cat.key)
+      })
+
       const realPct = catSales > 0 ? pct(uso, catSales) : null
       const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = catSales > 0
+      const variacionDolares = catSales > 0 && theoPresent
         ? parseFloat((uso - theoCost).toFixed(2))
         : null
 
@@ -315,20 +346,25 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       result[cat.key + '_sales'] = catSales
       result[cat.key + '_has_adj'] = hasAdj
       result[cat.key + '_theo_cost'] = theoCost
+      result[cat.key + '_theo_present'] = theoPresent
 
       if (uso > 0) totalUsoCost += uso
       if (theoCost > 0) totalTheoCost += theoCost
       if (catSales > 0) totalABSales += catSales
     })
 
+    const anyIncludedCatMissingTheo = CATEGORIES.some(
+      c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present']
+    )
     result.totalUsoCost = totalUsoCost
     result.totalTheoCost = totalTheoCost
     result.totalABSales = totalABSales
     result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
     result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = totalABSales > 0
+    result.totalVariacion = totalABSales > 0 && !anyIncludedCatMissingTheo
       ? parseFloat((totalUsoCost - totalTheoCost).toFixed(2))
       : null
+    result.totalTheoComplete = !anyIncludedCatMissingTheo
     result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
     return result
   }
@@ -380,9 +416,12 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       const theo = series.reduce((s, p) => s + (p[cat.key + '_theo_cost'] || 0), 0)
       const sales = series.reduce((s, p) => s + (p[cat.key + '_sales'] || 0), 0)
       const purchases = series.reduce((s, p) => s + (p[cat.key + '_purchases'] || 0), 0)
+      // Presencia agregada: TODOS los períodos deben tener theo_present=true.
+      // Un solo período sin teórico → la categoría del rango es indeterminable.
+      const theoPresent = series.every(p => p[cat.key + '_theo_present'] === true)
       const realPct = sales > 0 ? pct(uso, sales) : null
       const mixPct = sales > 0 ? pct(theo, sales) : null
-      const variacion = sales > 0
+      const variacion = sales > 0 && theoPresent
         ? parseFloat((uso - theo).toFixed(2))
         : null
       const invPrev = series[0][cat.key + '_inv_previous']
@@ -401,6 +440,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       result[cat.key + '_sales'] = sales
       result[cat.key + '_has_adj'] = series.some(p => p[cat.key + '_has_adj'])
       result[cat.key + '_theo_cost'] = theo
+      result[cat.key + '_theo_present'] = theoPresent
       result[cat.key + '_dias_inv'] = diasInv
     })
 
@@ -410,14 +450,18 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       totalTheo += result[cat.key + '_theo_cost'] || 0
       totalSales += result[cat.key + '_sales'] || 0
     })
+    const anyIncludedCatMissingTheo = CATEGORIES.some(
+      c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present']
+    )
     result.totalUsoCost = totalUso
     result.totalTheoCost = totalTheo
     result.totalABSales = totalSales
     result.totalRealPct = totalSales > 0 ? pct(totalUso, totalSales) : null
     result.totalMixPct = totalSales > 0 ? pct(totalTheo, totalSales) : null
-    result.totalVariacion = totalSales > 0
+    result.totalVariacion = totalSales > 0 && !anyIncludedCatMissingTheo
       ? parseFloat((totalUso - totalTheo).toFixed(2))
       : null
+    result.totalTheoComplete = !anyIncludedCatMissingTheo
     return result
   }
 
