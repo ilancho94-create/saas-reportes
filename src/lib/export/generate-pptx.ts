@@ -478,6 +478,19 @@ async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: strin
 
   const ctx = data.costoUsoContext
 
+  // ── (1a) Contexto temporal insuficiente — no publicamos totales.
+  if (ctx.contextStatus === 'insufficient') {
+    pageHdr(slide, 'COSTO DE USO', restName, TEAL)
+    slide.addText('Contexto insuficiente para calcular Costo de Uso.', {
+      x: 0.3, y: 3.0, w: 12.73, h: 0.5, fontSize: 16, color: AMBER, bold: true, align: 'center', fontFace: 'Arial',
+    })
+    slide.addText('No pudimos localizar el inventario inicial de referencia dentro del límite de búsqueda. Selecciona un rango con un inventario anterior más cercano o carga uno adicional antes de la selección. Las demás secciones del documento no se ven afectadas.', {
+      x: 0.3, y: 3.55, w: 12.73, h: 0.6, fontSize: 10, color: LGRAY, align: 'center', fontFace: 'Arial',
+    })
+    if (note) slide.addText('📝 ' + note, { x: 0.3, y: 6.95, w: 12.73, h: 0.3, fontSize: 8, color: AMBER, italic: true, fontFace: 'Arial' })
+    return
+  }
+
   // ── (1) Fuentes indispensables — si alguna falló, no publicamos cifras.
   if (hasCriticalLoadError(ctx.loadErrors)) {
     pageHdr(slide, 'COSTO DE USO', restName, TEAL)
@@ -658,12 +671,11 @@ async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: strin
   if (continuity === 'not_determinable') {
     warnings.push('No pudimos verificar continuidad de las semanas seleccionadas por fechas: revisa los reportes cargados.')
   }
-  // Si la ventana previa configurada se agotó, el anchor real podría
-  // no estar dentro del contexto cargado — se avisa sin recortar
-  // silenciosamente ni ampliar el límite por cuenta propia.
-  if (ctx.anchorLookbackExhausted) {
-    warnings.push('Se cargaron hasta ' + ctx.anchorLookbackWeeks +
-      ' semanas anteriores al período seleccionado para reconstruir el inventario inicial de referencia. Si el conteo relevante es aún más antiguo, esta cifra puede quedar incompleta.')
+  // contextStatus 'insufficient' ya bloquea toda la sección más
+  // arriba; 'no_prior' se documenta aquí para no confundirlo con
+  // "hay anchor pero fuera del rango".
+  if (ctx.contextStatus === 'no_prior') {
+    warnings.push('El historial del restaurante empieza en o después del período seleccionado; no hay inventario anterior de referencia.')
   }
   // Errores de carga NO indispensables (ya que los indispensables
   // bloquearon la sección más arriba). Aviso sin exponer detalles

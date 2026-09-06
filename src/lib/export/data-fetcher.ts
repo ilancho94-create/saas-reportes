@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { loadCostoUsoContext, type ContextStatus } from './costo-uso-context-loader'
 
 export type CostoUsoSalesBase =
   /** Ventas netas: mismo comportamiento que la UI con toggle "+Desc. Op." OFF. */
@@ -121,6 +122,20 @@ export interface ExportData {
     anchorLookbackExhausted: boolean
     /** Semanas usadas como ventana previa (para trazabilidad). */
     anchorLookbackWeeks: number
+    /**
+     * Estado explícito de la recuperación del contexto temporal:
+     *   'complete'    → se encontró el anchor real dentro del límite.
+     *   'no_prior'    → el historial del restaurante termina antes
+     *                   de la selección; no hay anchor por diseño.
+     *   'insufficient'→ se alcanzó el límite absoluto sin encontrar
+     *                   anchor; el consumidor NO debe publicar totales.
+     *   'error'       → falló al menos una página de la búsqueda.
+     */
+    contextStatus: ContextStatus
+    /** Razón compacta (interna) del estado — no se muestra al usuario. */
+    contextStatusReason: string
+    /** Número de páginas de lookback consultadas. */
+    contextPagesUsed: number
   }
 }
 
@@ -248,32 +263,11 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
   if (discMapsRes.error)   loadErrors.push('discount_mappings: ' + (discMapsRes.error.message || 'error'))
   if (tgtsRes.error)       loadErrors.push('cost_targets: ' + (tgtsRes.error.message || 'error'))
 
-  // Contexto temporal ACOTADO a la selección + una ventana previa
-  // suficiente para encontrar el inventario inicial de referencia y
-  // las semanas intermedias del período efectivo.
-  //
-  // No descargamos "las últimas 52 semanas del restaurante" porque
-  // eso rompe con selecciones históricas (>52 semanas atrás desde hoy):
-  // el anchor quedaría fuera del universo cargado y el motor no podría
-  // reconstruirlo.
-  //
-  // Estrategia:
-  //   1. Cargar el embed de los reports SELECCIONADOS (in weekIds).
-  //   2. Cargar hasta ANCHOR_LOOKBACK_WEEKS reports anteriores al
-  //      week más antiguo seleccionado (order by week desc, limit N).
-  //      Esta ventana ES limitada; si el motor requiere una semana
-  //      todavía más antigua, el PPTX lo indica como "no calculable"
-  //      en lugar de silenciar el recorte.
-  //   3. Unimos ambos conjuntos (dedup por report.id).
-  //
-  // Los reports NO SELECCIONADOS del lookback aportan únicamente
-  // inventario/mappings/etc.; sus compras y ventas no entran al
-  // cálculo porque el motor las excluye del cierre.
-  const ANCHOR_LOOKBACK_WEEKS = 6
+  // Contexto temporal: recuperación paginada iterativa hasta encontrar
+  // el anchor real (semana anterior con inventario) O agotar un límite
+  // absoluto configurable. Ver src/lib/export/costo-uso-context-loader.ts.
   const sortedSelected = [...weekIds].sort()
   const minSelected = sortedSelected[0]
-  let ctxWeeks: EngineWeekShape[] = []
-  let lookbackExhausted = false
 
   const EMBED_SELECT = `
       id, week, week_start, week_end, restaurant_id,
@@ -286,58 +280,33 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
       voids_data(total, items)
     `
 
-  const [selEmbedRes, prevEmbedRes] = await Promise.all([
-    supabase.from('reports').select(EMBED_SELECT)
-      .eq('restaurant_id', restaurantId).in('week', weekIds).order('week', { ascending: true }),
-    supabase.from('reports').select(EMBED_SELECT)
-      .eq('restaurant_id', restaurantId).lt('week', minSelected)
-      .order('week', { ascending: false }).limit(ANCHOR_LOOKBACK_WEEKS),
-  ])
-  if (selEmbedRes.error) {
-    loadErrors.push('reports_selection_embed: ' + (selEmbedRes.error.message || 'error'))
-  }
-  if (prevEmbedRes.error) {
-    loadErrors.push('reports_anchor_lookback: ' + (prevEmbedRes.error.message || 'error'))
-  }
-
-  const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
-  const toEngineWeek = (r: any): EngineWeekShape => {
-    const { sales_data, cogs_data, inventory_data, product_mix_data,
-      discounts_data, waste_data, voids_data, ...report } = r
-    return {
-      report: {
-        id: report.id,
-        week: report.week,
-        week_start: report.week_start,
-        week_end: report.week_end,
-        restaurant_id: report.restaurant_id,
-      },
-      sales: pickOne(sales_data),
-      cogs: pickOne(cogs_data),
-      inventory: pickOne(inventory_data),
-      productMix: pickOne(product_mix_data),
-      discounts: pickOne(discounts_data),
-      waste: pickOne(waste_data),
-      voids: pickOne(voids_data),
+  const ctxResult = await loadCostoUsoContext({
+    fetchSelectionEmbed: async () => {
+      const r = await supabase.from('reports').select(EMBED_SELECT)
+        .eq('restaurant_id', restaurantId)
+        .in('week', weekIds)
+        .order('week', { ascending: true })
+      return { data: (r.data as any[] | null) ?? null, error: r.error ?? null }
+    },
+    fetchLookbackPage: async (offset: number, limit: number) => {
+      const r = await supabase.from('reports').select(EMBED_SELECT)
+        .eq('restaurant_id', restaurantId)
+        .lt('week', minSelected)
+        .order('week', { ascending: false })
+        .range(offset, offset + limit - 1)
+      return { data: (r.data as any[] | null) ?? null, error: r.error ?? null }
+    },
+  })
+  const ctxWeeks = ctxResult.weeks
+  if (ctxResult.status === 'error') {
+    // 'reports_selection_embed' / 'reports_anchor_lookback' — nombres
+    // reconocidos por hasCriticalLoadError.
+    if (ctxResult.reason === 'selection_embed_error') {
+      loadErrors.push('reports_selection_embed: page failed')
+    } else {
+      loadErrors.push('reports_anchor_lookback: ' + ctxResult.reason)
     }
   }
-
-  const seen = new Set<string>()
-  const push = (rows: any[] | null | undefined) => {
-    for (const r of (rows || [])) {
-      if (seen.has(r.id)) continue
-      seen.add(r.id)
-      ctxWeeks.push(toEngineWeek(r))
-    }
-  }
-  push(prevEmbedRes.data as any[] | null)
-  push(selEmbedRes.data as any[] | null)
-  ctxWeeks.sort((a, b) => a.report.week < b.report.week ? -1 : a.report.week > b.report.week ? 1 : 0)
-
-  // Señala si la ventana previa se agotó (llegamos al límite
-  // configurado). El PPTX decide si el motor pudo reconstruir el
-  // anchor real o no. No se aumenta el límite silenciosamente.
-  lookbackExhausted = (prevEmbedRes.data?.length || 0) >= ANCHOR_LOOKBACK_WEEKS
 
   return {
     restaurant: restRes.data,
@@ -361,8 +330,11 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
       requestedWeeks: [...weekIds],
       loadErrors,
       engineWeeks: ctxWeeks,
-      anchorLookbackExhausted: lookbackExhausted,
-      anchorLookbackWeeks: ANCHOR_LOOKBACK_WEEKS,
+      anchorLookbackExhausted: ctxResult.status === 'insufficient',
+      anchorLookbackWeeks: ctxResult.pagesUsed,
+      contextStatus: ctxResult.status,
+      contextStatusReason: ctxResult.reason,
+      contextPagesUsed: ctxResult.pagesUsed,
     },
   }
 }

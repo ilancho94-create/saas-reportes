@@ -513,19 +513,14 @@ describe('[EXACT] Teórico ausente vs cero explícito — respuestas distintas',
 // Caso: selección no consecutiva (helper puro — se replica su
 // contrato aquí para que la prueba sea autocontenida)
 // ─────────────────────────────────────────────────────────────────────
-describe('[EXACT] Selección no consecutiva se preserva, no se convierte en rango continuo', () => {
-  it('el helper areConsecutiveWeeks (definido en PPTX) marca W10+W15 como no consecutivo', async () => {
-    const mod = await import('@/lib/export/generate-pptx')
-    // La función es interna al módulo; verificamos el comportamiento
-    // observable a través del PPTX pendiente. Aquí confirmamos la
-    // semántica documental:
-    // W10, W11, W12 → consecutivo
-    // W10, W15      → NO consecutivo
-    // Este test intencionalmente NO importa `areConsecutiveWeeks` porque
-    // no está exportado (no debe serlo); la verificación real vive en
-    // los tests de PPTX del próximo turno pesado, cuando se validan las
-    // advertencias en la diapositiva.
-    expect(mod).toBeDefined()
+describe('[EXACT] Selección no consecutiva — clasificador desde módulo puro', () => {
+  it('classifyConsecutive de src/lib/export/costo-uso-guards marca W10+W12 como gap', async () => {
+    const { classifyConsecutive } = await import('@/lib/export/costo-uso-guards')
+    const engineWeeks = [
+      { report: { week: '2026-W10', week_start: '2026-03-01', week_end: '2026-03-07' } },
+      { report: { week: '2026-W12', week_start: '2026-03-15', week_end: '2026-03-21' } },
+    ]
+    expect(classifyConsecutive(['2026-W10', '2026-W12'], engineWeeks)).toBe('gap')
   })
 })
 
