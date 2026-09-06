@@ -65,7 +65,10 @@ function week(
 
 export function getScenario(name: string): ScenarioInput | null {
   switch (name) {
-    // 1. Período completo, sin incidencias.
+    // 1. Período completo, sin incidencias. Sólo mapea las categorías
+    //    que el fixture aporta (food + liquor), como haría un restaurante
+    //    que efectivamente vende esas categorías. No fuerza mappings de
+    //    beer / wine / na_beverage cuando el restaurante no las tiene.
     case 'complete': {
       return {
         weeks: [
@@ -90,7 +93,10 @@ export function getScenario(name: string): ScenarioInput | null {
             productMixRaw: { unmatched_items: [] },
           }),
         ],
-        mappings: MAPPINGS_FULL,
+        mappings: [
+          { source_category: 'FOOD',   mapped_to: 'food' },
+          { source_category: 'LIQUOR', mapped_to: 'liquor' },
+        ],
         adjustments: [],
         skippedWeeks: [],
         opDiscountMappings: [],

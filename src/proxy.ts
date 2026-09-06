@@ -11,6 +11,17 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 
 export async function proxy(request: NextRequest) {
+  // Bloqueo estricto de la ruta de sandbox visual en producción.
+  // Su server component también llama notFound(), pero Next 16 App Router
+  // en algunos casos devuelve HTTP 200 renderizando la not-found; para
+  // que el status HTTP sea inequívocamente 404, respondemos aquí.
+  if (
+    process.env.NODE_ENV === 'production' &&
+    request.nextUrl.pathname.startsWith('/dashboard/costo-uso/sandbox/')
+  ) {
+    return new NextResponse('Not Found', { status: 404 })
+  }
+
   let response = NextResponse.next({ request })
 
   const supabase = createServerClient(

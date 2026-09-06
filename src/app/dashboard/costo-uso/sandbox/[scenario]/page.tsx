@@ -16,6 +16,9 @@ export default async function SandboxScenarioPage({
   params: Promise<{ scenario: string }>
 }) {
   // Gate estricto: fuera de development, no existe.
+  // El bloqueo autoritativo con HTTP 404 lo aplica src/proxy.ts en
+  // production; aquí, cualquier request que llegue en producción también
+  // dispara notFound() como cinturón adicional.
   if (process.env.NODE_ENV !== 'development') notFound()
 
   const { scenario } = await params

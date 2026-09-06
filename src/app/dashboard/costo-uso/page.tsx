@@ -22,6 +22,9 @@ import {
   VARIANCE_REASON_LONG,
   formatDiagLine,
 } from '@/lib/costo-uso/ui-helpers'
+import { DiagBadge } from './_components/DiagBadge'
+import { RangeSummary } from './_components/RangeSummary'
+import { UnclosedRangeCard } from './_components/UnclosedRangeCard'
 
 const ADJUSTMENT_FIELDS = [
   { key: 'inv_previous', label: 'Inv. Anterior' },
@@ -571,25 +574,7 @@ export default function CostoUsoPage() {
     })
   }
 
-  function DiagBadge({ items, tone = 'warning' }: { items: any[]; tone?: 'warning' | 'info' | 'error' }) {
-    if (!items.length) return null
-    const cls = tone === 'error'
-      ? 'bg-red-950/80 border border-red-800 text-red-300'
-      : tone === 'warning'
-        ? 'bg-amber-950/80 border border-amber-800 text-amber-300'
-        : 'bg-sky-950/80 border border-sky-800 text-sky-300'
-    return (
-      <span
-        className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${cls}`}
-        role="status"
-        aria-label={items.map(formatDiagLine).join('; ')}
-        title={items.map(formatDiagLine).join('\n')}
-      >
-        <span aria-hidden="true">⚠</span>
-        {items.length}
-      </span>
-    )
-  }
+  // DiagBadge extraído a _components/DiagBadge.tsx (compartido con sandbox).
   const hasInventory = useMemo(
     () => weeks.some(w => w.inventory?.by_account?.length > 0),
     [weeks]
@@ -1255,124 +1240,24 @@ export default function CostoUsoPage() {
             })()}
 
             {/* ── Resumen de calidad de datos del período ─────────────── */}
-            {(() => {
-              const rd = rangeDiagnostics
-              if (!rd) return null
-              const items = rd.items || []
-              const checks = rd.checks || {}
-              const intervalExtended = items.find((i: any) => i.type === 'interval_extended')
-              const unclosedTail = items.find((i: any) => i.type === 'unclosed_tail')
-              const notDeterminedCount = Object.values(checks).filter(v => v === 'not_determinable').length
-              const presentCount = items.length
-              const noIncidencesDetected = presentCount === 0 && notDeterminedCount === 0
-              // Etiquetas de rango.
-              // "Analizado" = fechas de las compras y ventas incluidas
-              // (activityFirstLabel..activityLastLabel), NO la semana anchor.
-              // El anchor solo aporta el inventario inicial de referencia.
-              const requestedLbl = requestedRange ? requestedRange.from + ' → ' + requestedRange.to : null
+            {rangeDiagnostics && (() => {
               const first = periodSeries[0]
               const last  = periodSeries[periodSeries.length - 1]
+              const requestedLbl = requestedRange ? requestedRange.from + ' → ' + requestedRange.to : null
               const effectiveLbl = first
                 ? (first.activityFirstLabel || first.fullWeek) + ' → ' + (last.activityLastLabel || last.fullWeek)
                 : null
-              const usesExternalAnchor = first?.anchorWeek && requestedRange && first.anchorWeek < requestedRange.from
+              const externalAnchor = first?.anchorWeek && requestedRange && first.anchorWeek < requestedRange.from
+                ? first.anchorWeek
+                : null
               return (
-                <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 mb-4 text-sm">
-                  <div className="flex items-start justify-between gap-3 flex-wrap">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-gray-400 text-xs uppercase tracking-wider font-semibold mb-1">Resumen del período</p>
-                      {requestedLbl && effectiveLbl && requestedLbl !== effectiveLbl ? (
-                        <p className="text-gray-300">
-                          Solicitado: <span className="text-white">{requestedLbl}</span>
-                          <span className="text-gray-500 mx-2">·</span>
-                          Analizado: <span className="text-white">{effectiveLbl}</span>
-                        </p>
-                      ) : requestedLbl ? (
-                        <p className="text-gray-300">Rango: <span className="text-white">{requestedLbl}</span></p>
-                      ) : null}
-                      {usesExternalAnchor && (
-                        <p className="text-amber-300 text-xs mt-1">
-                          Inventario inicial de referencia: cierre de la semana {first.anchorWeek} (fuera del rango seleccionado). Sus compras y ventas <strong>no</strong> se incluyen en el consumo.
-                        </p>
-                      )}
-                      {intervalExtended && !usesExternalAnchor && (
-                        <p className="text-amber-300 text-xs mt-1">
-                          El cálculo requiere referencia fuera de las fechas seleccionadas.
-                        </p>
-                      )}
-                      {unclosedTail && (
-                        <p className="text-amber-300 text-xs mt-1">
-                          Semanas sin cierre pendientes: {((unclosedTail.evidence?.weeks as string[]) || []).join(', ') || '—'}. Sus datos se consolidarán en el próximo inventario.
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => setShowDiagPanel(v => !v)}
-                      className={`shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium transition ${
-                        presentCount > 0 || notDeterminedCount > 0
-                          ? 'bg-amber-950/60 border-amber-800 text-amber-200 hover:bg-amber-900/60'
-                          : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
-                      }`}
-                      aria-expanded={showDiagPanel}
-                      aria-controls="diag-panel"
-                    >
-                      {presentCount > 0
-                        ? `${presentCount} incidencia${presentCount !== 1 ? 's' : ''} · ${showDiagPanel ? 'Ocultar' : 'Ver'} detalle`
-                        : notDeterminedCount > 0
-                          ? `${notDeterminedCount} comprobación${notDeterminedCount !== 1 ? 'es' : ''} no determinable${notDeterminedCount !== 1 ? 's' : ''} · ${showDiagPanel ? 'Ocultar' : 'Ver'} detalle`
-                          : 'Sin incidencias detectadas'}
-                    </button>
-                  </div>
-                  {noIncidencesDetected && (
-                    <p className="text-gray-500 text-xs mt-2">
-                      Nota: “sin incidencias detectadas” no equivale a exactitud financiera validada. La cifra sigue dependiendo de los datos originales cargados.
-                    </p>
-                  )}
-                  {showDiagPanel && (
-                    <div id="diag-panel" className="mt-3 border-t border-gray-800 pt-3 space-y-2">
-                      {items.length === 0 && (
-                        <p className="text-gray-400 text-xs">Sin incidencias emitidas por el motor para este rango.</p>
-                      )}
-                      {items.map((it: any, idx: number) => {
-                        const meta = DIAG_LABELS[it.type] || { title: it.type, hint: '' }
-                        return (
-                          <div key={idx} className="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
-                            <p className="text-gray-100 text-sm font-medium">{meta.title}</p>
-                            <p className="text-gray-500 text-xs mt-0.5">
-                              {it.category ? (CATEGORY_LABELS[it.category] || it.category) : ''}
-                              {it.category && it.week ? ' · ' : ''}
-                              {it.week ? 'semana ' + it.week : ''}
-                              {!it.week && it.weekRange ? 'entre ' + it.weekRange[0] + ' y ' + it.weekRange[1] : ''}
-                            </p>
-                            {meta.hint && <p className="text-gray-400 text-xs mt-1">{meta.hint}</p>}
-                            {it.type === 'inventory_carry_mismatch' && it.evidence?.anchor && it.evidence?.closing && (
-                              <p className="text-gray-500 text-xs mt-1">
-                                Inventario final anterior: {fmt(it.evidence.anchor.adjustedValue)}
-                                {' · '}Inventario inicial siguiente: {fmt(it.evidence.closing.adjustedValue)}
-                                {' · '}Diferencia: {fmt(it.evidence.diff)}
-                              </p>
-                            )}
-                            {it.type === 'negative_gross_consumption' && (
-                              <p className="text-gray-500 text-xs mt-1">
-                                Consumo antes de ajustar a cero: {fmt(it.evidence?.bruto)}
-                              </p>
-                            )}
-                            {it.type === 'missing_week' && it.evidence?.previousWeekEnd && it.evidence?.nextWeekStart && (
-                              <p className="text-gray-500 text-xs mt-1">
-                                Entre {it.evidence.previousWeekEnd} y {it.evidence.nextWeekStart} ({it.evidence.estimatedMissingWeeks} semana{it.evidence.estimatedMissingWeeks !== 1 ? 's' : ''} sin reportar).
-                              </p>
-                            )}
-                            {it.type === 'unmatched_pmix_items' && (
-                              <p className="text-gray-500 text-xs mt-1">
-                                {it.evidence?.count} ítem(s) · teórico agregado: {fmt(it.evidence?.totalTheoCost)}
-                              </p>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
+                <RangeSummary
+                  rangeDiagnostics={rangeDiagnostics}
+                  requestedLabel={requestedLbl}
+                  effectiveLabel={effectiveLbl}
+                  externalAnchorWeek={externalAnchor}
+                  defaultOpen={showDiagPanel}
+                />
               )
             })()}
 
@@ -1380,27 +1265,11 @@ export default function CostoUsoPage() {
             {filtered.length > 0 && periodSeries.length === 0 && !isSelectedWeekSkipped().skipped && (() => {
               const anchor = filtered[0] ? engine.findAnchorBefore(filtered[0]) : null
               return (
-                <div className="bg-amber-950/40 border border-amber-800 rounded-xl p-5 mb-4">
-                  <p className="text-amber-200 text-sm font-semibold">Rango sin cierre de inventario</p>
-                  {anchor ? (
-                    <>
-                      <p className="text-amber-100/80 text-xs mt-1">
-                        Ninguna de las semanas seleccionadas ({filtered.map(w => w.report.week).join(', ')}) trajo conteo de inventario, así que <strong>falta un conteo final para cerrar el período</strong>.
-                      </p>
-                      <p className="text-amber-100/70 text-xs mt-2">
-                        Referencia inicial disponible: cierre de la semana {anchor.report.week}
-                        {anchor.report.week_end ? ' (' + anchor.report.week_end + ')' : ''}. Se aplicará al próximo conteo que se cargue.
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-amber-100/80 text-xs mt-1">
-                      Ninguna de las semanas seleccionadas ({filtered.map(w => w.report.week).join(', ')}) trajo conteo de inventario, y tampoco hay un conteo anterior fuera del rango que sirva como referencia inicial.
-                    </p>
-                  )}
-                  <p className="text-amber-100/60 text-xs mt-2">
-                    Las ventas y compras aparecen en las otras vistas pero no producen consumo consolidado hasta que se cargue el próximo inventario.
-                  </p>
-                </div>
+                <UnclosedRangeCard
+                  selectedWeeks={filtered.map((w: any) => w.report.week)}
+                  anchorReferenceWeek={anchor?.report?.week || null}
+                  anchorReferenceWeekEnd={anchor?.report?.week_end || null}
+                />
               )
             })()}
 
