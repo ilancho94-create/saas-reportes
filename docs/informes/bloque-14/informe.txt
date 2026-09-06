@@ -1,0 +1,247 @@
+Bloque 14 — Loader iterativo + PPTX verificado + tap accesible en DiagBadge
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · TURNO PESADO ejecutado y liberado al final del bloque
+
+1. COMMIT Y ESTADO FINAL
+
+  Rama: costo-uso-validation-2026-09-06 (local, sin push)
+  HEAD previo del bloque: 0181922
+  Commit añadido:
+    0b3a49a  feat(costo-uso,pptx): iterative context loader,
+             tap-friendly DiagBadge, verified PPTX samples
+  git status -s tras el commit: limpio (solo faltará este informe
+  como archivo docs; se agrega en el commit inmediato posterior).
+
+  Verificaciones finales ejecutadas (secuencialmente, con servidor
+  y navegador CERRADOS antes de correr build/tests):
+    npx vitest run   → 130 passed · 9 skipped
+                       (7 samples PPTX bajo GEN_PPTX + 2 [PEND]
+                        explícitos anteriores)
+    npx tsc --noEmit → sin errores
+    npx next build   → OK
+
+2. DEFECTOS ENCONTRADOS Y CORREGIDOS
+
+  D1  Tap en DiagBadge no mostraba la explicación al usuario táctil.
+      Solo tenía aria-label y title (hover-only en escritorio).
+      → DiagBadge se convirtió en botón con popover: click / tap /
+        Enter / Space abren; Escape y click fuera cierran; el foco
+        vuelve al botón al cerrar. aria-haspopup="dialog" +
+        aria-expanded reflejan el estado. Verificado con Playwright
+        en 390×844: el popover se renderiza con las dos líneas de
+        hallazgo del escenario theo-missing.
+
+  D2  El "límite de 6 semanas" del bloque anterior no garantizaba
+      encontrar el anchor real para selecciones históricas.
+      → Nuevo loadCostoUsoContext (iterativo, paginado, con estado
+        explícito). Ver punto 3.
+
+3. RECUPERACIÓN DE CONTEXTO: complete, insufficient, no_prior, error
+
+  Nuevo módulo src/lib/export/costo-uso-context-loader.ts:
+    loadCostoUsoContext(provider, {maxLookbackReports=156, pageSize=12})
+
+  provider: ContextQueryProvider inyectable
+    fetchSelectionEmbed()          — trae reports IN weekIds.
+    fetchLookbackPage(offset, lim) — trae reports LT minSelected,
+                                     order desc, .range(offset, +lim-1).
+  El provider real (data-fetcher.ts) usa Supabase; los tests lo
+  mockean sin tocar Supabase, sin revocar permisos, sin alterar RLS.
+
+  Distinciones explícitas en el retorno:
+    status         reason                              consumidor
+    complete       anchor encontrado                    publica cifras
+    no_prior       historial termina antes de la
+                   selección (reachedHistoryEnd=true)   publica cifras
+                                                        + advertencia
+                                                        "no hay
+                                                        inventario
+                                                        anterior de
+                                                        referencia"
+    insufficient   se alcanzó MAX_LOOKBACK_REPORTS
+                   sin encontrar anchor                 NO publica cifras
+    error          al menos una página falló            NO publica cifras
+
+  Constantes públicas:
+    MAX_LOOKBACK_REPORTS = 156   (~3 años en semanas)
+    LOOKBACK_PAGE_SIZE   = 12
+
+  UI y PPTX ahora reciben contexto EQUIVALENTE para su modo:
+    UI (page.tsx): mantiene el fetch propio del dashboard (52 asc)
+      — comportamiento sin cambios en este bloque. Los filtros de
+      la UI se aplican sobre ese universo; el mismo prepareCostoUsoResult
+      procesa el resultado.
+    PPTX (fetcher): usa el loader iterativo → recibe la selección
+      exacta + suficiente contexto previo para el anchor. Para
+      selecciones históricas el PPTX ya no depende de "las últimas
+      52 desde hoy".
+
+4. PRUEBAS EJECUTADAS Y RESULTADOS
+
+  Nuevos archivos:
+    src/lib/export/__tests__/costo-uso-context-loader.test.ts    (9 casos)
+    src/lib/export/__tests__/generate-pptx.samples.test.ts       (7 samples, describe.skip por default)
+
+  Resultados relevantes (extractos):
+    · anchor 1ª página                    → complete, pagesUsed=1
+    · anchor 3ª página, page=12           → complete, pagesUsed=3
+    · anchor a los 70 en historial >100   → complete, pagesUsed=6
+    · sin inventario, historial termina   → no_prior, reachedHistoryEnd=true
+    · 200 sin inv + max=60                → insufficient, pagesUsed=5
+    · error en página intermedia          → error, reason contains lookback_page_error_N
+    · error en selectionEmbed             → error, pagesUsed=0, weeks=[]
+    · selección length=1 sin anchor       → no_prior (no se da por válida por longitud)
+
+  Suite completa: 130 pasadas + 9 skipped. Tipos limpios. Build OK.
+
+5. TABLA DE ESCENARIOS PPTX
+
+  Archivos:
+    docs/informes/bloque-14/pptx/1-complete-net.pptx
+    docs/informes/bloque-14/pptx/2-complete-gross.pptx
+    docs/informes/bloque-14/pptx/3-partial-theo.pptx
+    docs/informes/bloque-14/pptx/4-no-op-days.pptx
+    docs/informes/bloque-14/pptx/5-non-consecutive.pptx
+    docs/informes/bloque-14/pptx/6-critical-error.pptx
+    docs/informes/bloque-14/pptx/7-context-insufficient.pptx
+
+  Contrastados por extracción textual del XML (ppt/slides/slide3.xml):
+
+    #  Escenario           Esperado                                    Obtenido                                    Verif. textual  Verif. visual
+    1  complete (net)      uso $2,020; teo $1,870; var +$150;          idem                                        OK              PEND
+                           %real 9.8%; %pmix 9.0%; ventas $20,700
+                           Food 9.7%/9.1%; Liquor 10.0%/8.8%
+    2  complete (gross)    ventas $8,500; uso $600; var +$120;         idem                                        OK              PEND
+                           %real 7.1%; %pmix 5.6%
+                           nota "Base de ventas: Ventas brutas ...
+                           corresponde al toggle '+Desc. Op.' ON"
+    3  partial-theo        totalVariacion "—" con motivo
+                           "no calculable · falta teórico en al
+                           menos una categoría con ventas"
+                           Food 8.8%/8.5%; Liquor 13.3%/—
+                           Nota "Costo teórico ausente o
+                           incompleto ..."                              idem                                        OK              PEND
+    4  no-op-days          cifras principales OK; nota
+                           "Faltan días de operación: 'días de
+                           inventario' queda como no calculable
+                           en esta exportación."                       idem                                        OK              PEND
+    5  non-consecutive     SIN totales; cartel "Selecciona
+                           semanas consecutivas para este
+                           análisis." + listado 2026-W10, 2026-W12    idem                                        OK              PEND
+    6  critical-error      SIN cifras; cartel "No se pudo
+                           calcular: falló la carga de información
+                           necesaria."                                 idem                                        OK              PEND
+    7  context-insufficient SIN totales; cartel "Contexto
+                           insuficiente para calcular Costo de Uso." idem                                        OK              PEND
+
+  Verificación visual final (imagen renderizada) NO ejecutada:
+  no hay LibreOffice / soffice / unoconv en la máquina y no es
+  parte del alcance instalar herramientas nuevas. Los archivos se
+  pueden abrir manualmente en Keynote / PowerPoint / Google Slides
+  para inspección de layout, superposiciones y cortes reales.
+
+6. INTERACCIONES REALES DE UI COMPROBADAS
+
+  Escenario ejecutado en /dashboard/costo-uso/sandbox/theo-missing
+  (viewport 390×844, Playwright):
+
+    · Tap en DiagBadge → popover con testid "diag-badge-popover" y
+      dos items "Fuente de datos ausente · semana 2026-W21" y
+      "Product Mix ausente · semana 2026-W21". aria-expanded pasa
+      de false a true.
+    · Escape → popover cierra; document.activeElement queda en el
+      botón del badge (foco devuelto).
+    · Enter → reabre el popover.
+    · Sin desbordamiento horizontal en móvil.
+
+  Interacciones que SIGUEN pendientes por depender de la ruta
+  productiva /dashboard/costo-uso (requiere sesión Supabase real
+  del propietario):
+    · Filtros week / last4 / last8 / month / custom con
+      sustitución en vivo de advertencias.
+    · Modal real "Análisis de variación" con caso calculable y no
+      calculable.
+    · Verificación con lector de pantalla real (VoiceOver /
+      TalkBack).
+  El sandbox NO monta esos componentes y arrancar la ruta
+  productiva requiere autenticación real que este agente no debe
+  suplantar.
+
+7. ARCHIVOS Y CAPTURAS EXISTENTES
+
+  docs/informes/bloque-14/pptx/           7 archivos .pptx (sección
+                                          Costo de Uso verificada por
+                                          extracción textual)
+  docs/informes/bloque-14/capturas/       01-badge-popover-mobile.png
+                                          (tap → popover visible)
+
+8. LIMITACIONES PENDIENTES (NO APROBADAS)
+
+  L1  Rendering visual de los 7 .pptx (layout, superposiciones,
+      cortes de texto, colores por color engine): sin
+      LibreOffice/soffice/unoconv disponibles. El próximo turno
+      pesado puede correr `soffice --headless --convert-to pdf`
+      (o abrir en Keynote y exportar) para revisión visual.
+  L2  Filtros reales de /dashboard/costo-uso con datos cargados
+      y modal de Análisis de variación con caso null: requieren
+      sesión real del propietario en Supabase.
+  L3  Verificación con lector de pantalla real.
+  L4  Corrección comercial "solo descuentos operativos" — sigue
+      pendiente por decisión de negocio, sin cambios en este bloque.
+  L5  Política de consumo negativo (Math.max activo): sigue
+      pendiente por decisión de negocio. NO se declara aprobada.
+
+9. ESPECIALISTAS UTILIZADOS
+
+  Ninguno en este bloque. La verificación se hizo directamente
+  con vitest + Playwright + inspección XML. No se abrieron
+  subagentes ni delegaciones.
+
+10. MEDICIONES DE RECURSOS Y LÍMITES
+
+  Muestras puntuales (sin muestreo continuo):
+    Inicio del bloque:
+      Pages free ≈ 64k · inactive ≈ 574k · compressor ≈ 306k
+      Swap total = 0 en ese instante
+      Load 2.90 / 3.06 / 3.01 (uptime 1h58)
+    Tras Playwright y antes del build:
+      Pages free ≈ 126k · inactive ≈ 556k · compressor ≈ 347k
+      Load 3.54 / 3.25 / 3.06
+  Presupuesto 4 GB del conjunto de procesos: no medido de forma
+  agregada (no hay sonda continua ligera). No se detectó EAGAIN
+  ni fallo de spawn durante el bloque. El presupuesto se conserva
+  como referencia conservadora, no como límite garantizado.
+
+11. CIERRE DE PROCESOS PROPIOS
+
+  Comandos ejecutados:
+    kill $(cat /tmp/next-dev.pid) ; sleep 2 ; kill -9 si sigue vivo
+    rm /tmp/next-dev.pid /tmp/next-dev.log
+  Verificación tras el cierre:
+    ps -eo pid,command | grep -E 'next dev|next-server|ms-playwright'
+    → sin coincidencias.
+  Playwright cerrado con browser_close antes de matar el server.
+  No se cerró ningún proceso ajeno; se dejó intacto el next dev
+  de Maktub que aparecía en la inspección inicial.
+
+12. UN SIGUIENTE PASO RECOMENDADO
+
+  Verificar visualmente los siete .pptx generados en
+  docs/informes/bloque-14/pptx/ con Keynote o PowerPoint (o
+  instalar LibreOffice y renderizarlos a PDF con
+  `soffice --headless --convert-to pdf`), revisar layout,
+  superposiciones y cortes reales; anotar defectos concretos si
+  aparecen. Este es un paso ligero — abrir cada archivo y mirar
+  las diapositivas — que no requiere turno pesado adicional.
+
+13. LIBERACIÓN DEL TURNO
+    Turno pesado terminado. Regreso a
+      MODO LIGERO, SIN TURNO PESADO.
+    No se dejaron procesos activos. No se iniciarán tareas pesadas
+    hasta el próximo turno explícito.
+
+    La sección Costo de Uso del PPTX queda validada para los siete
+    escenarios sintéticos por su contenido textual. La verificación
+    del renderizado visual (layout final) queda como limitación
+    identificada; NO se declara validada toda la plataforma ni sus
+    datos productivos.
