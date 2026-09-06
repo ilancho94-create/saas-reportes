@@ -530,6 +530,118 @@ describe('[EXACT] Selección no consecutiva se preserva, no se convierte en rang
 })
 
 // ─────────────────────────────────────────────────────────────────────
+// Caso: días ausentes en UI y PPTX producen la misma ausencia.
+// El helper prepareCostoUsoResult es el único que UI y PPTX consumen,
+// así que la ausencia se propaga igual para ambos.
+// ─────────────────────────────────────────────────────────────────────
+describe('[EXACT] Días ausentes: misma respuesta en UI y PPTX', () => {
+  it('operatingDays=null propaga dias_inv=null tanto vía weekList (UI) como vía requestedRange (PPTX)', () => {
+    const w = makeWeek({
+      week: '2026-W30', weekStart: '2026-07-20', weekEnd: '2026-07-26',
+      salesCats: [{ name: 'FOOD', net: 5000 }],
+      cogs: { food: 500 },
+      inventory: [{ account: 'Food Inventory', current_value: 800, previous_value: 900 }],
+      theoCostByCat: { food: 480 },
+    })
+    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const uiPrep = prepareCostoUsoResult({
+      ...BASE, mappings, weeks: [w], operatingDays: null,
+      weekList: [w],
+    })
+    const pptxPrep = prepareCostoUsoResult({
+      ...BASE, mappings, weeks: [w], operatingDays: null,
+      requestedRange: { from: '2026-W30', to: '2026-W30' },
+    })
+    // Ausencia idéntica en ambos flujos:
+    expect(uiPrep.detailData.food_dias_inv).toBeNull()
+    expect(pptxPrep.detailData.food_dias_inv).toBeNull()
+    // Y el resto de métricas no se altera:
+    expect(uiPrep.detailData.food_uso).toBe(pptxPrep.detailData.food_uso)
+    expect(uiPrep.detailData.food_variacion).toBe(pptxPrep.detailData.food_variacion)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────
+// Caso: selección histórica con más de 52 semanas disponibles.
+// El helper NO impone un límite temporal — recibe el universo que el
+// consumidor le provea. La responsabilidad de aportar el anchor
+// externo real es del fetcher (que ahora carga selección + ventana
+// previa acotada). Aquí probamos que el helper reconstruye el período
+// correctamente cuando el consumidor sí le provee el anchor histórico
+// necesario, aun con >52 semanas totales.
+// ─────────────────────────────────────────────────────────────────────
+describe('[EXACT] Selección histórica con >52 semanas en el universo', () => {
+  it('con anchor histórico presente en weeks, el motor lo usa para el período efectivo', () => {
+    // Universo de 60 semanas sintéticas (numeradas 2025-W01..2026-W08).
+    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const weeks: any[] = []
+    // Genera semanas ficticias. week_start = 2025-01-06 + i*7 días
+    // (etiquetas simples; no verificamos calendario ISO aquí).
+    for (let i = 0; i < 60; i++) {
+      const y = 2025 + Math.floor((i + 0) / 52)
+      const wnum = ((i) % 52) + 1
+      const week = `${y}-W${String(wnum).padStart(2, '0')}`
+      const startEpoch = Date.UTC(2025, 0, 6) + i * 7 * 86_400_000
+      const endEpoch   = startEpoch + 6 * 86_400_000
+      const iso = (t: number) => new Date(t).toISOString().slice(0, 10)
+      weeks.push(makeWeek({
+        week,
+        weekStart: iso(startEpoch),
+        weekEnd:   iso(endEpoch),
+        salesCats: [{ name: 'FOOD', net: 1000 + i }],
+        cogs: { food: 100 + i },
+        inventory: [{ account: 'Food Inventory', current_value: 500 + i, previous_value: 500 + i - 1 }],
+        theoCostByCat: { food: 90 + i },
+      }))
+    }
+    // Selección histórica: semanas 2025-W10 y 2025-W11 (índices 9 y 10).
+    const historic = [weeks[9], weeks[10]]
+    const prep = prepareCostoUsoResult({
+      ...BASE, mappings, weeks,
+      requestedRange: { from: weeks[9].report.week, to: weeks[10].report.week },
+    })
+    // El anchor externo es weeks[8]; el motor lo debe absorber.
+    expect(prep.periodSeries.length).toBeGreaterThan(0)
+    // Comprobación de contexto: al menos el primer período debe
+    // apoyarse en un anchor histórico (weeks[8]).
+    expect(prep.periodSeries[0].anchorWeek).toBe(weeks[8].report.week)
+    // filtered debe contener solo las semanas del rango solicitado.
+    expect(prep.filtered.map((w: any) => w.report.week)).toEqual(historic.map((w: any) => w.report.week))
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────
+// Caso: selección consecutiva vs no consecutiva — comportamiento del
+// motor (el bloqueo por gap vive en el PPTX; el motor solo procesa
+// el weekList que le llega).
+// ─────────────────────────────────────────────────────────────────────
+describe('[EXACT] Selección consecutiva produce valores esperados', () => {
+  it('food_purchases = suma de compras de las semanas seleccionadas', () => {
+    const w10 = makeWeek({
+      week: '2026-W10', weekStart: '2026-03-01', weekEnd: '2026-03-07',
+      salesCats: [{ name: 'FOOD', net: 4000 }], cogs: { food: 300 },
+      inventory: [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }],
+      theoCostByCat: { food: 280 },
+    })
+    const w11 = makeWeek({
+      week: '2026-W11', weekStart: '2026-03-08', weekEnd: '2026-03-14',
+      salesCats: [{ name: 'FOOD', net: 4200 }], cogs: { food: 320 },
+      inventory: [{ account: 'Food Inventory', current_value: 510, previous_value: 500 }],
+      theoCostByCat: { food: 290 },
+    })
+    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const prep = prepareCostoUsoResult({
+      ...BASE, mappings, weeks: [w10, w11],
+      requestedRange: { from: '2026-W10', to: '2026-W11' },
+    })
+    // Período consolidado 2 semanas: purchases = 300 + 320 = 620
+    expect(prep.detailData.food_purchases).toBe(620)
+    // No se inventan totales.
+    expect(prep.detailData).not.toBeNull()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────
 // Caso PPTX: la sección Costo de Uso debe recibir el mismo detailData
 // (verificación de contrato — no se genera archivo aquí).
 // ─────────────────────────────────────────────────────────────────────

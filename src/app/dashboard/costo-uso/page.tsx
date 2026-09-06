@@ -48,7 +48,10 @@ export default function CostoUsoPage() {
   const [selectedWeek, setSelectedWeek] = useState('')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
-  const [operatingDays, setOperatingDays] = useState(6)
+  // operating_days del restaurante — sin fallback silencioso.
+  // null cuando la configuración no está presente: "días de inventario"
+  // queda como no calculable; el resto de métricas no cambia.
+  const [operatingDays, setOperatingDays] = useState<number | null>(null)
   const [fiscalYearStart, setFiscalYearStart] = useState<string | null>(null)
   const [costTargets, setCostTargets] = useState<Record<string, number>>({})
   const [userRole, setUserRole] = useState<string>('')
@@ -189,7 +192,14 @@ export default function CostoUsoPage() {
 
     // restaurant
     setRestaurantName(restRes.data?.name || '')
-    setOperatingDays(restRes.data?.operating_days || 6)
+    // Sin fallback silencioso: si el registro no trae operating_days
+    // (o llega inválido), queda en null. Los consumidores muestran
+    // "Faltan días de operación" donde corresponde.
+    {
+      const raw = restRes.data?.operating_days
+      const parsed = typeof raw === 'number' && raw > 0 ? raw : null
+      setOperatingDays(parsed)
+    }
     setFiscalYearStart(restRes.data?.fiscal_year_start || null)
 
     // mappings
@@ -537,7 +547,7 @@ export default function CostoUsoPage() {
       skippedWeekSet,
       opDiscountMappings,
       includeOpDiscounts,
-      operatingDays,               // number | null; la UI lo hidrata a 6 por defecto en loadData (comportamiento previo preservado)
+      operatingDays,               // number | null — sin fallback silencioso
       costTargets,
       fiscalYearStart,
       weekList: filtered,
@@ -602,7 +612,16 @@ export default function CostoUsoPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-white font-bold text-lg">📦 Costo de Uso</h1>
             <span className="bg-blue-900 text-blue-400 text-xs px-2 py-0.5 rounded-full font-medium">Inventario Real</span>
-            <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">{operatingDays} días/semana</span>
+            {operatingDays !== null ? (
+              <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">{operatingDays} días/semana</span>
+            ) : (
+              <span
+                className="bg-amber-950 text-amber-300 text-xs px-2 py-0.5 rounded-full"
+                title="Configura los días de operación del restaurante para poder calcular los días de inventario."
+              >
+                Faltan días de operación
+              </span>
+            )}
             {adjustments.length > 0 && (
               <button onClick={() => setShowAdjLog(!showAdjLog)}
                 className="bg-yellow-900 text-yellow-400 text-xs px-2 py-0.5 rounded-full font-medium hover:bg-yellow-800 transition">
@@ -1188,7 +1207,7 @@ export default function CostoUsoPage() {
               <strong>% Real</strong> = (Inv. Anterior + Compras − Inv. Actual) / Ventas{includeOpDiscounts ? ' (+Desc. Op.)' : ''} ·
               <strong> % P.Mix</strong> = Costo teórico según lo vendido ·
               <strong> Variación $</strong> = (% Real − % P.Mix) × Ventas ·
-              <strong> Días Inv</strong> = ((Inv. Final + Inv. Inicial) / 2) / Uso × {operatingDays} días
+              <strong> Días Inv</strong> = ((Inv. Final + Inv. Inicial) / 2) / Uso × {operatingDays !== null ? operatingDays + ' días' : '<días de operación no configurados>'}
             </p>
           </div>
         </div>

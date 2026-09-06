@@ -10,6 +10,36 @@ export type CostoUsoSalesBase =
    */
   | 'gross'
 
+/**
+ * Shape que consume el engine de Costo de Uso.
+ * Interfaz mínima con solo los campos realmente leídos por el motor;
+ * evita difundir `any` por el flujo. Cada campo es opcional/null
+ * porque en la práctica algunas semanas no traen todos los datasets.
+ */
+export interface EngineWeekShape {
+  report: {
+    id: string
+    week: string
+    week_start: string
+    week_end: string
+    restaurant_id: string
+  }
+  sales: { net_sales?: number | null; categories?: Array<{ name: string; net: number; gross?: number }> | null } | null
+  cogs: { by_category?: Record<string, number> | null } | null
+  inventory: {
+    by_account?: Array<{ account: string; current_value: number; previous_value: number }> | null
+    grand_total_current?: number | null
+    grand_total_previous?: number | null
+  } | null
+  productMix: {
+    theo_cost_by_category?: Record<string, number> | null
+    raw_data?: { unmatched_items?: Array<{ theo_cost?: number }> | null } | null
+  } | null
+  discounts: { total?: number | null; items?: Array<{ name: string; amount: number }> | null } | null
+  waste: { total_cost?: number | null; items?: any[] | null } | null
+  voids: { total?: number | null; items?: any[] | null } | null
+}
+
 export interface ExportConfig {
   restaurantIds: string[]
   weeks: string[]          // e.g. ['2026-W09', '2026-W10']
@@ -77,23 +107,20 @@ export interface ExportData {
      */
     loadErrors: string[]
     /**
-     * Semanas del restaurante ya normalizadas al shape que consume el
-     * engine (hasta 52). Contiene TODAS las semanas del restaurante
-     * — el motor las usa como universo para encontrar anchor externo e
-     * intermedias. Las ventas y compras de las semanas fuera del
-     * período efectivo NO se incluyen en el cálculo (el propio motor
-     * las excluye del cierre).
+     * Semanas ya normalizadas al shape del engine: las seleccionadas
+     * MÁS una ventana previa acotada (para encontrar anchor externo
+     * e intermedias). No representa el historial completo.
      */
-    engineWeeks: Array<{
-      report: { id: string; week: string; week_start: string; week_end: string; restaurant_id: string }
-      sales: any | null
-      cogs: any | null
-      inventory: any | null
-      productMix: any | null
-      discounts: any | null
-      waste: any | null
-      voids: any | null
-    }>
+    engineWeeks: EngineWeekShape[]
+    /**
+     * true si la carga de semanas previas al mínimo seleccionado
+     * agotó la ventana configurada. Útil para decidir si el motor
+     * pudo reconstruir el anchor real o si podría estar apoyándose
+     * en un borde artificial de la ventana.
+     */
+    anchorLookbackExhausted: boolean
+    /** Semanas usadas como ventana previa (para trazabilidad). */
+    anchorLookbackWeeks: number
   }
 }
 
@@ -143,7 +170,6 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
   const [
     restRes,
     reportsRes,      // subset del rango solicitado (para KPIs por semana del resto de secciones)
-    reportsCtxRes,   // contexto temporal para el motor de Costo de Uso
     mapsRes,
     adjsRes,
     skippedRes,
@@ -152,7 +178,6 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
   ] = await Promise.all([
     supabase.from('restaurants').select('*, organizations(name)').eq('id', restaurantId).single(),
     supabase.from('reports').select('*').eq('restaurant_id', restaurantId).in('week', weekIds).order('week'),
-    supabase.from('reports').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52),
     supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
     supabase.from('costo_uso_adjustments').select('*').eq('restaurant_id', restaurantId),
     supabase.from('skipped_inventory_weeks').select('*').eq('restaurant_id', restaurantId),
@@ -217,25 +242,40 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
   // consulta NO se debe interpretar como "no hay mappings"; el PPTX
   // decide si mostrar aviso o bloquear la sección.
   const loadErrors: string[] = []
-  if (reportsCtxRes.error) loadErrors.push('reports_context: ' + (reportsCtxRes.error.message || 'error'))
   if (mapsRes.error)       loadErrors.push('category_mappings: ' + (mapsRes.error.message || 'error'))
   if (adjsRes.error)       loadErrors.push('costo_uso_adjustments: ' + (adjsRes.error.message || 'error'))
   if (skippedRes.error)    loadErrors.push('skipped_inventory_weeks: ' + (skippedRes.error.message || 'error'))
   if (discMapsRes.error)   loadErrors.push('discount_mappings: ' + (discMapsRes.error.message || 'error'))
   if (tgtsRes.error)       loadErrors.push('cost_targets: ' + (tgtsRes.error.message || 'error'))
 
-  // Contexto temporal: semanas del restaurante (hasta 52) — solo para
-  // que el motor pueda encontrar el anchor externo y las semanas
-  // intermedias del período efectivo. Cargamos las mismas piezas por
-  // semana que la UI consume; si alguna sale con error, se registra
-  // en loadErrors pero no se completa con placeholders.
+  // Contexto temporal ACOTADO a la selección + una ventana previa
+  // suficiente para encontrar el inventario inicial de referencia y
+  // las semanas intermedias del período efectivo.
   //
-  // NOTA: para no multiplicar queries (52 × 8), traemos todo con
-  // relaciones embebidas usando la misma técnica del select embed
-  // que ya usa /dashboard/costo-uso/page.tsx.
-  let ctxWeeks: any[] = []
-  if (reportsCtxRes.data?.length) {
-    const embedRes = await supabase.from('reports').select(`
+  // No descargamos "las últimas 52 semanas del restaurante" porque
+  // eso rompe con selecciones históricas (>52 semanas atrás desde hoy):
+  // el anchor quedaría fuera del universo cargado y el motor no podría
+  // reconstruirlo.
+  //
+  // Estrategia:
+  //   1. Cargar el embed de los reports SELECCIONADOS (in weekIds).
+  //   2. Cargar hasta ANCHOR_LOOKBACK_WEEKS reports anteriores al
+  //      week más antiguo seleccionado (order by week desc, limit N).
+  //      Esta ventana ES limitada; si el motor requiere una semana
+  //      todavía más antigua, el PPTX lo indica como "no calculable"
+  //      en lugar de silenciar el recorte.
+  //   3. Unimos ambos conjuntos (dedup por report.id).
+  //
+  // Los reports NO SELECCIONADOS del lookback aportan únicamente
+  // inventario/mappings/etc.; sus compras y ventas no entran al
+  // cálculo porque el motor las excluye del cierre.
+  const ANCHOR_LOOKBACK_WEEKS = 6
+  const sortedSelected = [...weekIds].sort()
+  const minSelected = sortedSelected[0]
+  let ctxWeeks: EngineWeekShape[] = []
+  let lookbackExhausted = false
+
+  const EMBED_SELECT = `
       id, week, week_start, week_end, restaurant_id,
       sales_data(net_sales, categories),
       cogs_data(by_category),
@@ -244,26 +284,60 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
       discounts_data(total, items),
       waste_data(total_cost, items),
       voids_data(total, items)
-    `).eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52)
-    if (embedRes.error) {
-      loadErrors.push('reports_context_embed: ' + (embedRes.error.message || 'error'))
-    } else {
-      const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
-      ctxWeeks = (embedRes.data as any[]).map(r => {
-        const { sales_data, cogs_data, inventory_data, product_mix_data, discounts_data, waste_data, voids_data, ...report } = r
-        return {
-          report,
-          sales: pickOne(sales_data),
-          cogs: pickOne(cogs_data),
-          inventory: pickOne(inventory_data),
-          productMix: pickOne(product_mix_data),
-          discounts: pickOne(discounts_data),
-          waste: pickOne(waste_data),
-          voids: pickOne(voids_data),
-        }
-      })
+    `
+
+  const [selEmbedRes, prevEmbedRes] = await Promise.all([
+    supabase.from('reports').select(EMBED_SELECT)
+      .eq('restaurant_id', restaurantId).in('week', weekIds).order('week', { ascending: true }),
+    supabase.from('reports').select(EMBED_SELECT)
+      .eq('restaurant_id', restaurantId).lt('week', minSelected)
+      .order('week', { ascending: false }).limit(ANCHOR_LOOKBACK_WEEKS),
+  ])
+  if (selEmbedRes.error) {
+    loadErrors.push('reports_selection_embed: ' + (selEmbedRes.error.message || 'error'))
+  }
+  if (prevEmbedRes.error) {
+    loadErrors.push('reports_anchor_lookback: ' + (prevEmbedRes.error.message || 'error'))
+  }
+
+  const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+  const toEngineWeek = (r: any): EngineWeekShape => {
+    const { sales_data, cogs_data, inventory_data, product_mix_data,
+      discounts_data, waste_data, voids_data, ...report } = r
+    return {
+      report: {
+        id: report.id,
+        week: report.week,
+        week_start: report.week_start,
+        week_end: report.week_end,
+        restaurant_id: report.restaurant_id,
+      },
+      sales: pickOne(sales_data),
+      cogs: pickOne(cogs_data),
+      inventory: pickOne(inventory_data),
+      productMix: pickOne(product_mix_data),
+      discounts: pickOne(discounts_data),
+      waste: pickOne(waste_data),
+      voids: pickOne(voids_data),
     }
   }
+
+  const seen = new Set<string>()
+  const push = (rows: any[] | null | undefined) => {
+    for (const r of (rows || [])) {
+      if (seen.has(r.id)) continue
+      seen.add(r.id)
+      ctxWeeks.push(toEngineWeek(r))
+    }
+  }
+  push(prevEmbedRes.data as any[] | null)
+  push(selEmbedRes.data as any[] | null)
+  ctxWeeks.sort((a, b) => a.report.week < b.report.week ? -1 : a.report.week > b.report.week ? 1 : 0)
+
+  // Señala si la ventana previa se agotó (llegamos al límite
+  // configurado). El PPTX decide si el motor pudo reconstruir el
+  // anchor real o no. No se aumenta el límite silenciosamente.
+  lookbackExhausted = (prevEmbedRes.data?.length || 0) >= ANCHOR_LOOKBACK_WEEKS
 
   return {
     restaurant: restRes.data,
@@ -287,6 +361,8 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
       requestedWeeks: [...weekIds],
       loadErrors,
       engineWeeks: ctxWeeks,
+      anchorLookbackExhausted: lookbackExhausted,
+      anchorLookbackWeeks: ANCHOR_LOOKBACK_WEEKS,
     },
   }
 }

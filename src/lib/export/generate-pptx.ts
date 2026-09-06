@@ -7,6 +7,7 @@ import { fmt$, fmtPct, safeN } from './data-fetcher'
 import { prepareCostoUsoResult } from '@/lib/costo-uso/prepare-result'
 import { CATEGORY_LABELS, VARIANCE_REASON_LABEL } from '@/lib/costo-uso/ui-helpers'
 import { CATEGORIES_BASE } from '@/lib/costo-uso/engine'
+import { hasCriticalLoadError, classifyConsecutive } from './costo-uso-guards'
 
 // ── Colores ───────────────────────────────────────────────────────────────────
 const BG    = '0F1117'
@@ -461,30 +462,7 @@ async function addFoodCost(pptx: any, logoUrl: string|undefined, restName: strin
 // ══════════════════════════════════════════════════════════════════════════════
 // COSTO DE USO
 // ══════════════════════════════════════════════════════════════════════════════
-/**
- * Detecta si un conjunto de semanas en formato YYYY-Wnn es consecutivo.
- * Considera solo la numeración explícita — no salta años.
- */
-function areConsecutiveWeeks(weeks: string[]): boolean {
-  if (weeks.length <= 1) return true
-  const parsed = weeks.map(w => {
-    const m = w.match(/^(\d{4})-W(\d{1,2})$/)
-    return m ? [Number(m[1]), Number(m[2])] as const : null
-  })
-  if (parsed.some(p => p === null)) return true   // no podemos afirmar
-  const sorted = (parsed as ReadonlyArray<readonly [number, number]>)
-    .slice().sort((a, b) => a[0] === b[0] ? a[1] - b[1] : a[0] - b[0])
-  for (let i = 1; i < sorted.length; i++) {
-    const [py, pw] = sorted[i - 1]
-    const [cy, cw] = sorted[i]
-    if (cy === py && cw === pw + 1) continue
-    // cambio de año: aceptamos secuencia si la anterior es W52/W53
-    // y la siguiente es W01 (no revalidamos si ISO tenía W53).
-    if (cy === py + 1 && cw === 1 && pw >= 52) continue
-    return false
-  }
-  return true
-}
+// classifyConsecutive vive ahora en ./costo-uso-guards.ts (testable).
 
 // Colores por defecto de las categorías canónicas — mismo mapa visual que la UI.
 const PPTX_CAT_COLORS: Record<string, string> = {
@@ -500,20 +478,44 @@ async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: strin
 
   const ctx = data.costoUsoContext
 
+  // ── (1) Fuentes indispensables — si alguna falló, no publicamos cifras.
+  if (hasCriticalLoadError(ctx.loadErrors)) {
+    pageHdr(slide, 'COSTO DE USO', restName, TEAL)
+    slide.addText('No se pudo calcular: falló la carga de información necesaria.', {
+      x: 0.3, y: 3.0, w: 12.73, h: 0.5, fontSize: 16, color: AMBER, bold: true, align: 'center', fontFace: 'Arial',
+    })
+    slide.addText('Intenta la exportación de nuevo o revisa la conexión. Las demás secciones del documento no se ven afectadas.', {
+      x: 0.3, y: 3.55, w: 12.73, h: 0.4, fontSize: 10, color: LGRAY, align: 'center', fontFace: 'Arial',
+    })
+    if (note) slide.addText('📝 ' + note, { x: 0.3, y: 6.95, w: 12.73, h: 0.3, fontSize: 8, color: AMBER, italic: true, fontFace: 'Arial' })
+    return
+  }
+
+  // ── (4) Selección no consecutiva — no publicamos totales.
+  //     Se decide con las fechas reales (week_start/week_end) de los
+  //     reportes recuperados, no con la numeración YYYY-Wnn.
+  const requestedWeeksSorted = [...(ctx.requestedWeeks || [])].sort()
+  const continuity = classifyConsecutive(requestedWeeksSorted, ctx.engineWeeks || [])
+  if (continuity === 'gap') {
+    pageHdr(slide, 'COSTO DE USO', restName, TEAL)
+    slide.addText('Selecciona semanas consecutivas para este análisis.', {
+      x: 0.3, y: 3.0, w: 12.73, h: 0.5, fontSize: 16, color: AMBER, bold: true, align: 'center', fontFace: 'Arial',
+    })
+    slide.addText('La sección Costo de Uso necesita un período continuo para reconstruir el consumo. Las demás secciones no se ven afectadas.\nSemanas seleccionadas: ' + requestedWeeksSorted.join(', '), {
+      x: 0.3, y: 3.55, w: 12.73, h: 0.6, fontSize: 10, color: LGRAY, align: 'center', fontFace: 'Arial',
+    })
+    if (note) slide.addText('📝 ' + note, { x: 0.3, y: 6.95, w: 12.73, h: 0.3, fontSize: 8, color: AMBER, italic: true, fontFace: 'Arial' })
+    return
+  }
+
   // Base de ventas: viene del Export Center vía config.costoUsoSalesBase.
   // 'gross' equivale al toggle "+Desc. Op." ON de la UI (incluye la
   // diferencia completa net→gross, NO aísla descuentos operativos).
   const includeOpDiscounts = salesBase === 'gross'
 
-  // operatingDays: si el restaurante no lo definió, se pasa null al
-  // motor. Los "días de inventario" quedan null y se anota en la nota;
-  // el resto de métricas se calcula igual.
+  // ── (2) operating_days: sin fallback silencioso. Si es null, el
+  // motor devuelve dias_inv=null; el resto de métricas calcula igual.
   const operatingDays: number | null = ctx.operatingDays
-
-  // Selección no consecutiva: no la reducimos a un rango continuo.
-  // Se anota advertencia clara y se usa el rango efectivo del engine.
-  const requestedWeeksSorted = [...(ctx.requestedWeeks || [])].sort()
-  const consecutive = areConsecutiveWeeks(requestedWeeksSorted)
 
   const prep = prepareCostoUsoResult({
     weeks: ctx.engineWeeks || [],
@@ -643,24 +645,31 @@ async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: strin
     warnings.push('Alguna categoría con inventario/compras/teórico no tiene mapping de ventas.')
   }
   if (operatingDays === null) {
-    warnings.push('operating_days no definido en restaurants: "días de inventario" queda como no calculable en esta exportación.')
+    warnings.push('Faltan días de operación: "días de inventario" queda como no calculable en esta exportación.')
   }
   // Etiqueta de base de ventas — siempre presente para trazabilidad
   // con la UI (toggle "+Desc. Op.").
   warnings.push('Base de ventas: ' + (salesBase === 'gross'
     ? 'Ventas brutas (net + diferencia completa net→gross; NO aísla descuentos operativos). Corresponde al toggle "+Desc. Op." ON de la UI.'
     : 'Ventas netas. Corresponde al toggle "+Desc. Op." OFF de la UI.'))
-  // Semanas no consecutivas: se documenta pero no se convierte en rango
-  // continuo silenciosamente.
-  if (!consecutive) {
-    warnings.push('Semanas seleccionadas no consecutivas (' + requestedWeeksSorted.join(', ') +
-      '). El PPTX muestra el período efectivo derivado del motor; las semanas fuera de ese período no aportan compras ni ventas al cálculo.')
+  // La continuidad ya se bloqueó arriba en modo 'gap'. Si quedó
+  // 'not_determinable' (fechas ausentes), lo documentamos aquí sin
+  // pretender totales dudosos.
+  if (continuity === 'not_determinable') {
+    warnings.push('No pudimos verificar continuidad de las semanas seleccionadas por fechas: revisa los reportes cargados.')
   }
-  // Errores de carga del contexto: si falló alguna consulta, no se
-  // pueden interpretar las colecciones como vacías. Se avisa.
-  if (ctx.loadErrors && ctx.loadErrors.length > 0) {
-    warnings.push('Error de carga del contexto de Costo de Uso: ' + ctx.loadErrors.join('; ') +
-      '. Las cifras pueden estar incompletas.')
+  // Si la ventana previa configurada se agotó, el anchor real podría
+  // no estar dentro del contexto cargado — se avisa sin recortar
+  // silenciosamente ni ampliar el límite por cuenta propia.
+  if (ctx.anchorLookbackExhausted) {
+    warnings.push('Se cargaron hasta ' + ctx.anchorLookbackWeeks +
+      ' semanas anteriores al período seleccionado para reconstruir el inventario inicial de referencia. Si el conteo relevante es aún más antiguo, esta cifra puede quedar incompleta.')
+  }
+  // Errores de carga NO indispensables (ya que los indispensables
+  // bloquearon la sección más arriba). Aviso sin exponer detalles
+  // técnicos.
+  if ((ctx.loadErrors || []).length > 0) {
+    warnings.push('Algunas fuentes complementarias del contexto no se pudieron cargar: cost_targets, descuentos operativos o semanas saltadas. Las cifras principales se conservan; ciertos matices interpretativos pueden faltar.')
   }
 
   if (warnings.length > 0) {
