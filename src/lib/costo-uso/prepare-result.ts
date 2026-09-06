@@ -32,14 +32,37 @@ export interface PrepareCostoUsoInput {
   skippedWeekSet: Set<string>
   /** discount_mappings.discount_name con is_operational = true. */
   opDiscountMappings: string[]
-  /** Toggle "+Desc. Op." — debe reflejar la selección del consumidor. */
+  /**
+   * "Ventas brutas" del engine — cuando es true, catSales cambia de
+   * `net` a `gross` (net + descuentos completos). En el Export Center
+   * corresponde a "Base de ventas: Ventas brutas"; en la UI al toggle
+   * "+Desc. Op." (mismo comportamiento).
+   */
   includeOpDiscounts: boolean
-  /** restaurants.operating_days (6 por defecto en la ingesta). */
-  operatingDays: number
+  /**
+   * restaurants.operating_days.
+   * Debe ser null cuando el registro del restaurante no lo trae:
+   * "días de inventario" no se calculará, el resto de métricas sí.
+   * No pasar un valor de compromiso silencioso.
+   */
+  operatingDays: number | null
   /** cost_targets por categoría (override de defaultMeta). */
   costTargets: Record<string, number>
-  /** Rango solicitado — obligatorio para exportación (from/to en YYYY-Wnn). */
-  requestedRange: { from: string; to: string }
+  /**
+   * Modo de selección del alcance. Exactamente uno de:
+   *   { requestedRange: {from, to} }  — el helper filtra weeks por
+   *                                    ese rango cronológico.
+   *   { weekList: any[] }             — el consumidor pasa la lista
+   *                                    ya filtrada (útil cuando la UI
+   *                                    aplica filtros no expresables
+   *                                    como {from,to}, p.ej. "last4"
+   *                                    o "mes actual" o "una única
+   *                                    semana seleccionada").
+   * En ambos casos, buildPeriodSeries podrá absorber el anchor
+   * externo desde `weeks` cuando exista.
+   */
+  requestedRange?: { from: string; to: string } | null
+  weekList?: any[]
   /** restaurants.fiscal_year_start (null si el restaurante no lo definió). */
   fiscalYearStart: string | null
 }
@@ -68,6 +91,13 @@ export interface PreparedCostoUsoResult {
  * explícitos aportados por el consumidor).
  */
 export function prepareCostoUsoResult(input: PrepareCostoUsoInput): PreparedCostoUsoResult {
+  if (!input.requestedRange && !input.weekList) {
+    throw new Error('prepareCostoUsoResult: se debe pasar requestedRange o weekList')
+  }
+  if (input.requestedRange && input.weekList) {
+    throw new Error('prepareCostoUsoResult: no se puede pasar requestedRange y weekList a la vez')
+  }
+
   const engine = createCostoUsoEngine({
     weeks: input.weeks,
     mappings: input.mappings,
@@ -77,12 +107,14 @@ export function prepareCostoUsoResult(input: PrepareCostoUsoInput): PreparedCost
     includeOpDiscounts: input.includeOpDiscounts,
     operatingDays: input.operatingDays,
     costTargets: input.costTargets,
-    requestedRange: input.requestedRange,
+    requestedRange: input.requestedRange ?? null,
     fiscalYearStart: input.fiscalYearStart,
   })
 
-  const { from, to } = input.requestedRange
-  const filtered = input.weeks.filter(w => w.report.week >= from && w.report.week <= to)
+  const filtered = input.weekList
+    ? input.weekList
+    : input.weeks.filter(w =>
+        w.report.week >= input.requestedRange!.from && w.report.week <= input.requestedRange!.to)
   const periodSeries = engine.buildPeriodSeries(filtered)
   const detailData = engine.aggregateSeries(periodSeries)
   const rangeDiagnostics = engine.diagnoseRange(filtered, periodSeries)
@@ -92,9 +124,18 @@ export function prepareCostoUsoResult(input: PrepareCostoUsoInput): PreparedCost
   const effectiveRange = first
     ? (first.activityFirstLabel || first.fullWeek) + ' → ' + (last.activityLastLabel || last.fullWeek)
     : null
-  const externalAnchorWeek = first?.anchorWeek && first.anchorWeek < from
+
+  // externalAnchorWeek requiere un rango solicitado explícito; con
+  // weekList, la comparación no es cronológica pura.
+  const externalAnchorWeek = input.requestedRange && first?.anchorWeek && first.anchorWeek < input.requestedRange.from
     ? first.anchorWeek
     : null
+
+  const requestedLabel = input.requestedRange
+    ? input.requestedRange.from + ' → ' + input.requestedRange.to
+    : (filtered.length > 0
+        ? filtered[0].report.week + ' → ' + filtered[filtered.length - 1].report.week
+        : '—')
 
   return {
     filtered,
@@ -102,7 +143,7 @@ export function prepareCostoUsoResult(input: PrepareCostoUsoInput): PreparedCost
     detailData,
     rangeDiagnostics,
     labels: {
-      requestedRange: from + ' → ' + to,
+      requestedRange: requestedLabel,
       effectiveRange,
       externalAnchorWeek,
     },

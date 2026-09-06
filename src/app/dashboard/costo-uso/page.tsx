@@ -25,6 +25,7 @@ import {
 import { DiagBadge } from './_components/DiagBadge'
 import { RangeSummary } from './_components/RangeSummary'
 import { UnclosedRangeCard } from './_components/UnclosedRangeCard'
+import { prepareCostoUsoResult } from '@/lib/costo-uso/prepare-result'
 
 const ADJUSTMENT_FIELDS = [
   { key: 'inv_previous', label: 'Inv. Anterior' },
@@ -371,8 +372,9 @@ export default function CostoUsoPage() {
   const findAnchorBefore = engine.findAnchorBefore
   const getWeeksBetween = engine.getWeeksBetween
   const buildPeriodData = engine.buildPeriodData
-  const buildPeriodSeries = engine.buildPeriodSeries
-  const aggregateSeries = engine.aggregateSeries
+  // buildPeriodSeries/aggregateSeries se acceden ahora exclusivamente
+  // vía prepareCostoUsoResult (compartido con el PPTX); no se re-exponen
+  // como aliases locales para evitar caminos alternativos.
 
   // ──────────────────────────────────────────────────────────────────────
   // ANÁLISIS DE VARIANZA
@@ -522,14 +524,31 @@ export default function CostoUsoPage() {
     }
   }
 
-  // ── Computed values usados por la UI ───────────────────────────────────
-  // Cálculo pesado: memoizar para evitar re-correr en cada keystroke.
-  // Deps incluyen todo lo que buildPeriodSeries cierra sobre.
-  const periodSeries = useMemo(
-    () => buildPeriodSeries(filtered),
+  // ── Preparación compartida con el PPTX ────────────────────────────────
+  // Usa prepareCostoUsoResult en modo weekList porque los filtros de la
+  // UI (semana única / last4 / last8 / month / custom) no siempre son
+  // expresables como {from,to} en YYYY-Wnn. El helper es el mismo que
+  // usa el exportador — si la aritmética coincide aquí, coincide ahí.
+  const prep = useMemo(
+    () => prepareCostoUsoResult({
+      weeks,
+      mappings,
+      adjustments,
+      skippedWeekSet,
+      opDiscountMappings,
+      includeOpDiscounts,
+      operatingDays,               // number | null; la UI lo hidrata a 6 por defecto en loadData (comportamiento previo preservado)
+      costTargets,
+      fiscalYearStart,
+      weekList: filtered,
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [filtered, weeks, skippedWeeks, adjustments, mappings, opDiscountMappings, includeOpDiscounts, costTargets, operatingDays]
+    [weeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets, fiscalYearStart, filtered]
   )
+  const periodSeries = prep.periodSeries
+  const detailData = prep.detailData
+  const rangeDiagnostics = prep.rangeDiagnostics
+
   const consolidatedSkippedWeeks = useMemo(
     () => periodSeries.flatMap((p: any) => p.spannedSkippedWeeks || []),
     [periodSeries]
@@ -541,18 +560,6 @@ export default function CostoUsoPage() {
   const detailWeek = periodSeries.length > 0
     ? periodSeries[periodSeries.length - 1].closingRaw
     : (filtered[filtered.length - 1] || filtered[0] || null)
-  const detailData = useMemo(
-    () => aggregateSeries(periodSeries),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [periodSeries]
-  )
-
-  // Diagnósticos a nivel rango (siempre — incluso con serie vacía).
-  const rangeDiagnostics = useMemo(
-    () => engine.diagnoseRange(filtered, periodSeries),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [engine, filtered, periodSeries]
-  )
   // Panel desplegable de detalle de diagnósticos
   const [showDiagPanel, setShowDiagPanel] = useState(false)
 

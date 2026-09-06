@@ -1,5 +1,15 @@
 import { supabase } from '@/lib/supabase'
 
+export type CostoUsoSalesBase =
+  /** Ventas netas: mismo comportamiento que la UI con toggle "+Desc. Op." OFF. */
+  | 'net'
+  /**
+   * Ventas brutas: net + descuentos completos. NO aísla descuentos
+   * operativos (esa corrección comercial está pendiente); es el mismo
+   * comportamiento que el toggle "+Desc. Op." de la UI en ON.
+   */
+  | 'gross'
+
 export interface ExportConfig {
   restaurantIds: string[]
   weeks: string[]          // e.g. ['2026-W09', '2026-W10']
@@ -8,6 +18,12 @@ export interface ExportConfig {
   template: ExportTemplate
   format: 'pptx' | 'xlsx' | 'pdf'
   language: 'es' | 'en'
+  /**
+   * Base de ventas para la sección Costo de Uso del PPTX.
+   * Default 'net' (mantiene comportamiento actual y coincide con el
+   * toggle "+Desc. Op." OFF de la UI).
+   */
+  costoUsoSalesBase?: CostoUsoSalesBase
 }
 
 export interface ExportTemplate {
@@ -46,6 +62,38 @@ export interface ExportData {
     operatingDays: number | null
     /** restaurants.fiscal_year_start (fecha ISO o null). */
     fiscalYearStart: string | null
+    /**
+     * Semanas explícitamente solicitadas por el usuario (config.weeks).
+     * Se guarda tal cual — sin convertirla en rango continuo. Sirve
+     * para detectar selecciones no consecutivas.
+     */
+    requestedWeeks: string[]
+    /**
+     * Errores encontrados al cargar el contexto de Costo de Uso. Si
+     * cualquiera de las consultas de mappings/adjustments/skipped/
+     * discounts/costTargets falla, aquí se registra. El consumidor
+     * puede decidir bloquear o mostrar aviso, pero NO se debe
+     * silenciar como "colección vacía".
+     */
+    loadErrors: string[]
+    /**
+     * Semanas del restaurante ya normalizadas al shape que consume el
+     * engine (hasta 52). Contiene TODAS las semanas del restaurante
+     * — el motor las usa como universo para encontrar anchor externo e
+     * intermedias. Las ventas y compras de las semanas fuera del
+     * período efectivo NO se incluyen en el cálculo (el propio motor
+     * las excluye del cierre).
+     */
+    engineWeeks: Array<{
+      report: { id: string; week: string; week_start: string; week_end: string; restaurant_id: string }
+      sales: any | null
+      cogs: any | null
+      inventory: any | null
+      productMix: any | null
+      discounts: any | null
+      waste: any | null
+      voids: any | null
+    }>
   }
 }
 
@@ -63,6 +111,8 @@ export interface WeekData {
   employee: any
   kitchen: any
   receiving: any
+  discounts: any | null
+  voids: any | null
 }
 
 export interface SummaryData {
@@ -80,12 +130,29 @@ export interface SummaryData {
 }
 
 export async function fetchExportData(restaurantId: string, weekIds: string[]): Promise<ExportData | null> {
-  // Traemos también el contexto que Costo de Uso necesita
-  // (mismos inputs que /dashboard/costo-uso). RLS garantiza aislamiento
-  // por restaurante: cada select se filtra por restaurant_id.
-  const [restRes, reportsRes, mapsRes, adjsRes, skippedRes, discMapsRes, tgtsRes] = await Promise.all([
+  // Contexto de Costo de Uso — mismos inputs que /dashboard/costo-uso.
+  // RLS garantiza aislamiento por restaurante: cada select se filtra
+  // por restaurant_id.
+  //
+  // reportsCtxRes: trae hasta 52 semanas del restaurante (mismo criterio
+  // que la página productiva). Necesario para que el motor pueda
+  // absorber el anchor externo y las semanas intermedias que están
+  // fuera del rango explícitamente solicitado. Sus compras/ventas NO
+  // se incluirán en el período efectivo — solo dan el punto de
+  // referencia.
+  const [
+    restRes,
+    reportsRes,      // subset del rango solicitado (para KPIs por semana del resto de secciones)
+    reportsCtxRes,   // contexto temporal para el motor de Costo de Uso
+    mapsRes,
+    adjsRes,
+    skippedRes,
+    discMapsRes,
+    tgtsRes,
+  ] = await Promise.all([
     supabase.from('restaurants').select('*, organizations(name)').eq('id', restaurantId).single(),
     supabase.from('reports').select('*').eq('restaurant_id', restaurantId).in('week', weekIds).order('week'),
+    supabase.from('reports').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52),
     supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
     supabase.from('costo_uso_adjustments').select('*').eq('restaurant_id', restaurantId),
     supabase.from('skipped_inventory_weeks').select('*').eq('restaurant_id', restaurantId),
@@ -93,7 +160,8 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
     supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
   ])
 
-  if (!restRes.data || !reportsRes.data?.length) return null
+  if (restRes.error || !restRes.data) return null
+  if (reportsRes.error || !reportsRes.data?.length) return null
 
   const weeksData: WeekData[] = await Promise.all(
     reportsRes.data.map(async (r: any) => {
@@ -145,6 +213,58 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
     tgtsRes.data.forEach((t: any) => { costTargets[t.category] = Number(t.target_pct) })
   }
 
+  // Distinguir error de carga vs respuesta vacía válida. Un error de
+  // consulta NO se debe interpretar como "no hay mappings"; el PPTX
+  // decide si mostrar aviso o bloquear la sección.
+  const loadErrors: string[] = []
+  if (reportsCtxRes.error) loadErrors.push('reports_context: ' + (reportsCtxRes.error.message || 'error'))
+  if (mapsRes.error)       loadErrors.push('category_mappings: ' + (mapsRes.error.message || 'error'))
+  if (adjsRes.error)       loadErrors.push('costo_uso_adjustments: ' + (adjsRes.error.message || 'error'))
+  if (skippedRes.error)    loadErrors.push('skipped_inventory_weeks: ' + (skippedRes.error.message || 'error'))
+  if (discMapsRes.error)   loadErrors.push('discount_mappings: ' + (discMapsRes.error.message || 'error'))
+  if (tgtsRes.error)       loadErrors.push('cost_targets: ' + (tgtsRes.error.message || 'error'))
+
+  // Contexto temporal: semanas del restaurante (hasta 52) — solo para
+  // que el motor pueda encontrar el anchor externo y las semanas
+  // intermedias del período efectivo. Cargamos las mismas piezas por
+  // semana que la UI consume; si alguna sale con error, se registra
+  // en loadErrors pero no se completa con placeholders.
+  //
+  // NOTA: para no multiplicar queries (52 × 8), traemos todo con
+  // relaciones embebidas usando la misma técnica del select embed
+  // que ya usa /dashboard/costo-uso/page.tsx.
+  let ctxWeeks: any[] = []
+  if (reportsCtxRes.data?.length) {
+    const embedRes = await supabase.from('reports').select(`
+      id, week, week_start, week_end, restaurant_id,
+      sales_data(net_sales, categories),
+      cogs_data(by_category),
+      inventory_data(by_account, grand_total_current, grand_total_previous),
+      product_mix_data(theo_cost_by_category, raw_data),
+      discounts_data(total, items),
+      waste_data(total_cost, items),
+      voids_data(total, items)
+    `).eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52)
+    if (embedRes.error) {
+      loadErrors.push('reports_context_embed: ' + (embedRes.error.message || 'error'))
+    } else {
+      const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
+      ctxWeeks = (embedRes.data as any[]).map(r => {
+        const { sales_data, cogs_data, inventory_data, product_mix_data, discounts_data, waste_data, voids_data, ...report } = r
+        return {
+          report,
+          sales: pickOne(sales_data),
+          cogs: pickOne(cogs_data),
+          inventory: pickOne(inventory_data),
+          productMix: pickOne(product_mix_data),
+          discounts: pickOne(discounts_data),
+          waste: pickOne(waste_data),
+          voids: pickOne(voids_data),
+        }
+      })
+    }
+  }
+
   return {
     restaurant: restRes.data,
     weeks: weeksData,
@@ -164,6 +284,9 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
       costTargets,
       operatingDays: restRes.data?.operating_days ?? null,
       fiscalYearStart: restRes.data?.fiscal_year_start ?? null,
+      requestedWeeks: [...weekIds],
+      loadErrors,
+      engineWeeks: ctxWeeks,
     },
   }
 }

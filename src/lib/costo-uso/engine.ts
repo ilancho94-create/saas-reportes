@@ -74,8 +74,14 @@ export interface EngineContext {
   opDiscountMappings: string[]
   /** Toggle "+Desc. Op." del header. */
   includeOpDiscounts: boolean
-  /** Días operativos por semana del restaurante (por defecto 6). */
-  operatingDays: number
+  /**
+   * Días operativos por semana del restaurante.
+   * Cuando es null, "días de inventario" no es calculable y se
+   * devuelve null en cada categoría; el resto de métricas no se
+   * ven afectadas. El consumidor NO debe pasar un fallback si el
+   * dato real está ausente.
+   */
+  operatingDays: number | null
   /** costTargets por categoría (override de defaultMeta). */
   costTargets: Record<string, number>
   /**
@@ -250,7 +256,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       const variacionDolares = catSales > 0 && theoPresent
         ? parseFloat((uso - theoCost).toFixed(2))
         : null
-      const diasInv = uso > 0
+      const diasInv = uso > 0 && ctx.operatingDays !== null
         ? parseFloat((((invCurrent + invPrevious) / 2) / uso * ctx.operatingDays).toFixed(1))
         : null
       const hasAdj = adjInvPrev !== 0 || adjPurchases !== 0 || adjInvCurr !== 0 || adjTheo !== 0
@@ -392,8 +398,8 @@ export function createCostoUsoEngine(ctx: EngineContext) {
         ? parseFloat((uso - theoCost).toFixed(2))
         : null
 
-      const totalOpDays = periodWeeks.length * ctx.operatingDays
-      const diasInv = uso > 0
+      const totalOpDays = ctx.operatingDays !== null ? periodWeeks.length * ctx.operatingDays : null
+      const diasInv = uso > 0 && totalOpDays !== null
         ? parseFloat((((invCurrent + invPrevious) / 2) / uso * totalOpDays).toFixed(1))
         : null
 
@@ -503,7 +509,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       opDiscTotal: series.reduce((s, p) => s + (p.opDiscTotal || 0), 0),
       periodWeeksRaw: series.flatMap(s => s.periodWeeksRaw || []),
     }
-    const totalOpDays = series.reduce((s, p) => s + (p.periodWeekCount || 1) * ctx.operatingDays, 0)
+    const totalOpDays = ctx.operatingDays !== null
+      ? series.reduce((s, p) => s + (p.periodWeekCount || 1) * (ctx.operatingDays as number), 0)
+      : null
 
     CATEGORIES.forEach(cat => {
       const uso = series.reduce((s, p) => s + (p[cat.key + '_uso'] || 0), 0)
@@ -519,7 +527,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
         : null
       const invPrev = series[0][cat.key + '_inv_previous']
       const invCurr = series[series.length - 1][cat.key + '_inv_current']
-      const diasInv = uso > 0
+      const diasInv = uso > 0 && totalOpDays !== null
         ? parseFloat((((invCurr + invPrev) / 2) / uso * totalOpDays).toFixed(1))
         : null
       // Razón del null: si hay ventas <= 0, esa gana; si no, decide teórico.

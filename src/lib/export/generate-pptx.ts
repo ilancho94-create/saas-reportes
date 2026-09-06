@@ -462,27 +462,28 @@ async function addFoodCost(pptx: any, logoUrl: string|undefined, restName: strin
 // COSTO DE USO
 // ══════════════════════════════════════════════════════════════════════════════
 /**
- * Adapta las semanas del ExportData al shape que el engine consume
- * (`{ report, sales, cogs, inventory, productMix, discounts, waste, voids }`),
- * usando exactamente los mismos campos que la carga de datos de la UI.
- * NO recalcula nada — solo reetiqueta campos existentes.
+ * Detecta si un conjunto de semanas en formato YYYY-Wnn es consecutivo.
+ * Considera solo la numeración explícita — no salta años.
  */
-function toEngineWeeks(exportWeeks: WeekData[]) {
-  return exportWeeks.map(w => ({
-    report: {
-      id: (w as any).id || 'r-' + w.week,
-      week: w.week,
-      week_start: w.weekStart,
-      week_end: w.weekEnd,
-    },
-    sales: w.sales,
-    cogs: w.cogs,
-    inventory: w.inventory,
-    productMix: w.productMix,
-    discounts: (w as any).discounts ?? null,
-    waste: w.waste,
-    voids: (w as any).voids ?? null,
-  }))
+function areConsecutiveWeeks(weeks: string[]): boolean {
+  if (weeks.length <= 1) return true
+  const parsed = weeks.map(w => {
+    const m = w.match(/^(\d{4})-W(\d{1,2})$/)
+    return m ? [Number(m[1]), Number(m[2])] as const : null
+  })
+  if (parsed.some(p => p === null)) return true   // no podemos afirmar
+  const sorted = (parsed as ReadonlyArray<readonly [number, number]>)
+    .slice().sort((a, b) => a[0] === b[0] ? a[1] - b[1] : a[0] - b[0])
+  for (let i = 1; i < sorted.length; i++) {
+    const [py, pw] = sorted[i - 1]
+    const [cy, cw] = sorted[i]
+    if (cy === py && cw === pw + 1) continue
+    // cambio de año: aceptamos secuencia si la anterior es W52/W53
+    // y la siguiente es W01 (no revalidamos si ISO tenía W53).
+    if (cy === py + 1 && cw === 1 && pw >= 52) continue
+    return false
+  }
+  return true
 }
 
 // Colores por defecto de las categorías canónicas — mismo mapa visual que la UI.
@@ -494,27 +495,34 @@ const PPTX_CAT_COLORS: Record<string, string> = {
   wine: PINK,
 }
 
-async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: string, cur: WeekData, prev: WeekData|null, data: ExportData, note: string, requestedRange: { from: string; to: string }) {
+async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: string, cur: WeekData, prev: WeekData|null, data: ExportData, note: string, requestedRange: { from: string; to: string }, salesBase: 'net' | 'gross') {
   const slide = base(pptx, logoUrl)
 
   const ctx = data.costoUsoContext
-  // Datos que no se pueden reemplazar con defaults silenciosos:
-  //   - operatingDays: si el restaurante no lo definió, no calcula "días
-  //     de inventario" fiablemente. Se declara pendiente en la nota.
-  //   - opDiscountMappings + includeOpDiscounts: el toggle "+Desc. Op."
-  //     no existe en el Export Center — se documenta que el PPTX SIEMPRE
-  //     usa net sales (includeOpDiscounts=false). Cuando el usuario
-  //     quiera exportar con descuentos operativos, se agregará al UI.
-  const includeOpDiscounts = false
-  const operatingDaysAvailable = typeof ctx.operatingDays === 'number' && ctx.operatingDays > 0
+
+  // Base de ventas: viene del Export Center vía config.costoUsoSalesBase.
+  // 'gross' equivale al toggle "+Desc. Op." ON de la UI (incluye la
+  // diferencia completa net→gross, NO aísla descuentos operativos).
+  const includeOpDiscounts = salesBase === 'gross'
+
+  // operatingDays: si el restaurante no lo definió, se pasa null al
+  // motor. Los "días de inventario" quedan null y se anota en la nota;
+  // el resto de métricas se calcula igual.
+  const operatingDays: number | null = ctx.operatingDays
+
+  // Selección no consecutiva: no la reducimos a un rango continuo.
+  // Se anota advertencia clara y se usa el rango efectivo del engine.
+  const requestedWeeksSorted = [...(ctx.requestedWeeks || [])].sort()
+  const consecutive = areConsecutiveWeeks(requestedWeeksSorted)
+
   const prep = prepareCostoUsoResult({
-    weeks: toEngineWeeks(data.weeks),
+    weeks: ctx.engineWeeks || [],
     mappings: ctx.mappings,
     adjustments: ctx.adjustments,
     skippedWeekSet: new Set<string>(ctx.skippedWeeks.map((s: any) => s.week)),
     opDiscountMappings: ctx.opDiscountMappings,
     includeOpDiscounts,
-    operatingDays: operatingDaysAvailable ? (ctx.operatingDays as number) : 6,   // solo afecta días_inv; declarado abajo
+    operatingDays,
     costTargets: ctx.costTargets,
     requestedRange,
     fiscalYearStart: ctx.fiscalYearStart,
@@ -634,11 +642,25 @@ async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: strin
   if (diagItems.some(d => d.type === 'unmapped_activity_category')) {
     warnings.push('Alguna categoría con inventario/compras/teórico no tiene mapping de ventas.')
   }
-  if (!operatingDaysAvailable) {
-    warnings.push('operating_days no definido en restaurants; los días de inventario no son fiables.')
+  if (operatingDays === null) {
+    warnings.push('operating_days no definido en restaurants: "días de inventario" queda como no calculable en esta exportación.')
   }
-  if (includeOpDiscounts === false && ctx.opDiscountMappings.length > 0) {
-    warnings.push('Este PPTX no aplica el toggle "+Desc. Op."; usa ventas netas.')
+  // Etiqueta de base de ventas — siempre presente para trazabilidad
+  // con la UI (toggle "+Desc. Op.").
+  warnings.push('Base de ventas: ' + (salesBase === 'gross'
+    ? 'Ventas brutas (net + diferencia completa net→gross; NO aísla descuentos operativos). Corresponde al toggle "+Desc. Op." ON de la UI.'
+    : 'Ventas netas. Corresponde al toggle "+Desc. Op." OFF de la UI.'))
+  // Semanas no consecutivas: se documenta pero no se convierte en rango
+  // continuo silenciosamente.
+  if (!consecutive) {
+    warnings.push('Semanas seleccionadas no consecutivas (' + requestedWeeksSorted.join(', ') +
+      '). El PPTX muestra el período efectivo derivado del motor; las semanas fuera de ese período no aportan compras ni ventas al cálculo.')
+  }
+  // Errores de carga del contexto: si falló alguna consulta, no se
+  // pueden interpretar las colecciones como vacías. Se avisa.
+  if (ctx.loadErrors && ctx.loadErrors.length > 0) {
+    warnings.push('Error de carga del contexto de Costo de Uso: ' + ctx.loadErrors.join('; ') +
+      '. Las cifras pueden estar incompletas.')
   }
 
   if (warnings.length > 0) {
@@ -885,7 +907,7 @@ export async function generatePPTX(config: ExportConfig, dataByRestaurant: Expor
           await addLabor(pptx, logoUrl, restName, current, previous, data, note); break
         case 'food_cost':
           await addFoodCost(pptx, logoUrl, restName, current, previous, data, note)
-          await addCostoUso(pptx, logoUrl, restName, current, previous, data, note, requestedRange); break
+          await addCostoUso(pptx, logoUrl, restName, current, previous, data, note, requestedRange, config.costoUsoSalesBase || 'net'); break
         case 'waste':
           await addWaste(pptx, logoUrl, restName, current, previous, data, note); break
         case 'avt':
