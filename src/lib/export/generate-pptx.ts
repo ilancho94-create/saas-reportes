@@ -4,6 +4,9 @@
 
 import type { ExportConfig, ExportData, WeekData } from './data-fetcher'
 import { fmt$, fmtPct, safeN } from './data-fetcher'
+import { prepareCostoUsoResult } from '@/lib/costo-uso/prepare-result'
+import { CATEGORY_LABELS, VARIANCE_REASON_LABEL } from '@/lib/costo-uso/ui-helpers'
+import { CATEGORIES_BASE } from '@/lib/costo-uso/engine'
 
 // ── Colores ───────────────────────────────────────────────────────────────────
 const BG    = '0F1117'
@@ -458,110 +461,193 @@ async function addFoodCost(pptx: any, logoUrl: string|undefined, restName: strin
 // ══════════════════════════════════════════════════════════════════════════════
 // COSTO DE USO
 // ══════════════════════════════════════════════════════════════════════════════
-async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: string, cur: WeekData, prev: WeekData|null, data: ExportData, note: string) {
+/**
+ * Adapta las semanas del ExportData al shape que el engine consume
+ * (`{ report, sales, cogs, inventory, productMix, discounts, waste, voids }`),
+ * usando exactamente los mismos campos que la carga de datos de la UI.
+ * NO recalcula nada — solo reetiqueta campos existentes.
+ */
+function toEngineWeeks(exportWeeks: WeekData[]) {
+  return exportWeeks.map(w => ({
+    report: {
+      id: (w as any).id || 'r-' + w.week,
+      week: w.week,
+      week_start: w.weekStart,
+      week_end: w.weekEnd,
+    },
+    sales: w.sales,
+    cogs: w.cogs,
+    inventory: w.inventory,
+    productMix: w.productMix,
+    discounts: (w as any).discounts ?? null,
+    waste: w.waste,
+    voids: (w as any).voids ?? null,
+  }))
+}
+
+// Colores por defecto de las categorías canónicas — mismo mapa visual que la UI.
+const PPTX_CAT_COLORS: Record<string, string> = {
+  food: ORANGE,
+  na_beverage: CYAN,
+  liquor: PURPLE,
+  beer: GOLD,
+  wine: PINK,
+}
+
+async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: string, cur: WeekData, prev: WeekData|null, data: ExportData, note: string, requestedRange: { from: string; to: string }) {
   const slide = base(pptx, logoUrl)
 
-  // Calcular datos de costo de uso
-  const ACCOUNT_MAP: Record<string,string>={'Food Inventory':'food','Food bar Inventory':'liquor','Beer':'beer','Alcoholic Inventory':'liquor','Beverage Inventory':'na_beverage','Wine Inventory':'wine'}
-  const CATS=[
-    {key:'food',label:'Food',color:ORANGE},
-    {key:'na_beverage',label:'NA Bev',color:CYAN},
-    {key:'liquor',label:'Liquor',color:PURPLE},
-    {key:'beer',label:'Beer',color:GOLD},
-    {key:'wine',label:'Wine',color:PINK},
-  ]
+  const ctx = data.costoUsoContext
+  // Datos que no se pueden reemplazar con defaults silenciosos:
+  //   - operatingDays: si el restaurante no lo definió, no calcula "días
+  //     de inventario" fiablemente. Se declara pendiente en la nota.
+  //   - opDiscountMappings + includeOpDiscounts: el toggle "+Desc. Op."
+  //     no existe en el Export Center — se documenta que el PPTX SIEMPRE
+  //     usa net sales (includeOpDiscounts=false). Cuando el usuario
+  //     quiera exportar con descuentos operativos, se agregará al UI.
+  const includeOpDiscounts = false
+  const operatingDaysAvailable = typeof ctx.operatingDays === 'number' && ctx.operatingDays > 0
+  const prep = prepareCostoUsoResult({
+    weeks: toEngineWeeks(data.weeks),
+    mappings: ctx.mappings,
+    adjustments: ctx.adjustments,
+    skippedWeekSet: new Set<string>(ctx.skippedWeeks.map((s: any) => s.week)),
+    opDiscountMappings: ctx.opDiscountMappings,
+    includeOpDiscounts,
+    operatingDays: operatingDaysAvailable ? (ctx.operatingDays as number) : 6,   // solo afecta días_inv; declarado abajo
+    costTargets: ctx.costTargets,
+    requestedRange,
+    fiscalYearStart: ctx.fiscalYearStart,
+  })
 
-  function getInvCat(invAccounts: any[], catKey: string) {
-    const accs=Object.entries(ACCOUNT_MAP).filter(([_,c])=>c===catKey).map(([a])=>a)
-    return {
-      current:invAccounts.filter(a=>accs.includes(a.account)).reduce((s,a)=>s+n(a.current_value),0),
-      previous:invAccounts.filter(a=>accs.includes(a.account)).reduce((s,a)=>s+n(a.previous_value),0),
-    }
+  const period = prep.detailData
+  const effectiveLabel = prep.labels.effectiveRange || prep.labels.requestedRange
+  const hdrSubtitle = restName + ' · ' + effectiveLabel
+
+  pageHdr(slide, 'COSTO DE USO', hdrSubtitle, TEAL)
+
+  const kW = 13.33 / 4
+
+  // KPIs de totales. null se muestra como "—" o "No calculable" con motivo.
+  if (period) {
+    const realPctStr = period.totalRealPct !== null ? period.totalRealPct.toFixed(1) + '%' : '—'
+    const mixPctStr  = period.totalMixPct !== null ? period.totalMixPct.toFixed(1) + '%' : '—'
+    const usoSub  = fmt$(period.totalUsoCost || 0) + ' uso'
+    const theoSub = fmt$(period.totalTheoCost || 0) + ' teórico'
+    const varValStr = period.totalVariacion === null
+      ? '—'
+      : (period.totalVariacion > 0 ? '+' : '') + fmt$(period.totalVariacion)
+    const varColor = period.totalVariacion === null
+      ? GRAY
+      : period.totalVariacion > 0 ? RED : period.totalVariacion < 0 ? GREEN : GRAY
+    const varSub = period.totalVariacion === null
+      ? VARIANCE_REASON_LABEL[period.totalVariacionReason || 'partial_total_theo']
+      : ''
+
+    kpiCard(slide, 0,      0.85, kW, 1.25, '% Costo Real A&B', realPctStr, usoSub, '', GRAY, BLUE)
+    kpiCard(slide, kW,     0.85, kW, 1.25, '% Costo P.Mix',    mixPctStr,  theoSub, '', GRAY, GREEN)
+    kpiCard(slide, kW*2,   0.85, kW, 1.25, 'Variación $',      varValStr,  varSub, '', varColor, varColor)
+    kpiCard(slide, kW*3,   0.85, kW, 1.25, 'Ventas A&B',       fmt$(period.totalABSales || 0), 'del período', '', GRAY)
+  } else {
+    // Sin cierre. No inventar totales.
+    kpiCard(slide, 0,      0.85, kW, 1.25, '% Costo Real A&B', '—', 'sin cierre en el rango', '', GRAY, BLUE)
+    kpiCard(slide, kW,     0.85, kW, 1.25, '% Costo P.Mix',    '—', 'sin cierre en el rango', '', GRAY, GREEN)
+    kpiCard(slide, kW*2,   0.85, kW, 1.25, 'Variación $',      '—', 'sin cierre en el rango', '', GRAY, GRAY)
+    kpiCard(slide, kW*3,   0.85, kW, 1.25, 'Ventas A&B',       fmt$(data.weeks.reduce((s, w) => s + n(w.sales?.net_sales), 0)), 'período sin cerrar', '', GRAY)
   }
 
-  const invAccs=cur?.inventory?.by_account||[]
-  const cogsCat=cur?.cogs?.by_category||{}
-  const hasInv=invAccs.length>0
+  // Chart % Real vs P.Mix por período — usa la serie por cierre del engine
+  const series = prep.periodSeries
+  if (series.length > 0) {
+    const labels = series.map((s: any) => wL(s.activityLastLabel || s.fullWeek))
+    const realArr = series.map((s: any) => (s.totalRealPct as number | null) ?? 0)
+    const mixArr  = series.map((s: any) => (s.totalMixPct  as number | null) ?? 0)
+    const svgCU = svgLine(labels, [
+      { values: realArr, color: BLUE, label: '% Real' },
+      { values: mixArr,  color: GREEN, label: '% P.Mix' },
+    ], 540, 170, '%')
+    await svgImg(slide, svgCU, 0.15, 2.18, 7.28, 2.3)
 
-  let totalUso=0, totalSales=0, totalTheo=0
-  const catData=CATS.map(cat=>{
-    const inv=getInvCat(invAccs,cat.key)
-    const purchases=n((cogsCat as any)[cat.key])
-    const uso=hasInv?Math.max(inv.previous+purchases-inv.current,0):0
-    const catSales=n(cur?.sales?.net_sales||0)/CATS.length // simplificado
-    const theo=n(cur?.productMix?.theo_cost_by_category?.[cat.key]||0)
-    const realPct=catSales>0?uso/catSales*100:0
-    const mixPct=catSales>0?theo/catSales*100:0
-    totalUso+=uso; totalSales+=catSales; totalTheo+=theo
-    return {cat,uso,realPct,mixPct}
-  })
-  const totalRealPct=totalSales>0?totalUso/totalSales*100:0
-  const totalMixPct=totalSales>0?totalTheo/totalSales*100:0
-  const totalVariacion=totalRealPct&&totalMixPct?(totalRealPct-totalMixPct)/100*totalSales:0
-
-  pageHdr(slide,'COSTO DE USO', restName+' · '+wL(cur.week), TEAL)
-
-  const kW=13.33/4
-  const realPctStr=totalRealPct?totalRealPct.toFixed(1)+'%':'—'
-  const mixPctStr=totalMixPct?totalMixPct.toFixed(1)+'%':'—'
-  const usoSubStr=fmt$(totalUso)+' uso'
-  const theoSubStr=fmt$(totalTheo)+' teórico'
-  kpiCard(slide,0,     0.85,kW,1.25,'% Costo Real A&B',realPctStr,usoSubStr,'',GRAY,BLUE)
-  kpiCard(slide,kW,    0.85,kW,1.25,'% Costo P.Mix',mixPctStr,theoSubStr,'',GRAY,GREEN)
-  kpiCard(slide,kW*2,  0.85,kW,1.25,'Variación $',(totalVariacion>0?'+':'')+fmt$(totalVariacion),'','',(totalVariacion>0?RED:GREEN),totalVariacion>0?RED:GREEN)
-  kpiCard(slide,kW*3,  0.85,kW,1.25,'Inv. Actual',fmt$(cur?.inventory?.grand_total_current||0),'cierre semana','',GRAY)
-
-  // Chart % Real vs P.Mix por semana
-  const hist=data.weeks.slice(-6)
-  const histReal=hist.map(w=>{
-    const inv2=w.inventory?.by_account||[]
-    const cogs2=w.cogs?.by_category||{}
-    const sales2=n(w.sales?.net_sales||1)
-    let uso2=0
-    CATS.forEach(cat=>{
-      const i2=getInvCat(inv2,cat.key)
-      const pur2=n((cogs2 as any)[cat.key])
-      uso2+=Math.max(i2.previous+pur2-i2.current,0)
-    })
-    return sales2>0?uso2/sales2*100:0
-  })
-  const histMix=hist.map(w=>{
-    const sales2=n(w.sales?.net_sales||1)
-    const theo2=CATS.reduce((s,cat)=>s+n(w.productMix?.theo_cost_by_category?.[cat.key]||0),0)
-    return sales2>0?theo2/sales2*100:0
-  })
-  const svgCU=svgLine(hist.map(w=>wL(w.week)),[
-    {values:histReal,color:BLUE,label:'% Real'},
-    {values:histMix,color:GREEN,label:'% P.Mix'},
-  ],540,170,'%')
-  await svgImg(slide, svgCU, 0.15, 2.18, 7.28, 2.3)
-
-  // Variación $ por semana
-  const histVar=hist.map((w,i)=>{
-    const r=histReal[i], m=histMix[i]
-    const s=n(w.sales?.net_sales||0)
-    return r&&m?(r-m)/100*s:0
-  })
-  const svgVar=svgBar(hist.map(w=>wL(w.week)), histVar, RED, 430, 170)
-  await svgImg(slide, svgVar, 7.6, 2.18, 5.55, 2.3)
-
-  // Cards por categoría
-  if(hasInv) {
-    sectionLabel(slide,'DETALLE POR CATEGORÍA',0.15,4.56,13.03)
-    const cW=13.33/CATS.length
-    CATS.forEach((cat,i)=>{
-      const d=catData[i]
-      const x=i*cW
-      slide.addShape('rect',{x,y:4.75,w:cW-0.06,h:1.52,fill:{color:CARD},line:{color:'2D3748'},rectRadius:0.06})
-      slide.addShape('rect',{x,y:4.75,w:cW-0.06,h:0.08,fill:{color:cat.color},line:{color:cat.color},rectRadius:0.05})
-      slide.addText(cat.label,{x:x+0.12,y:4.84,w:cW-0.2,h:0.22,fontSize:8,color:LGRAY,fontFace:'Arial'})
-      slide.addText(d.realPct?d.realPct.toFixed(1)+'%':'—',{x:x+0.12,y:5.06,w:cW-0.2,h:0.42,fontSize:16,color:d.realPct>35?RED:WHITE,bold:true,fontFace:'Arial'})
-      slide.addText('Real',{x:x+0.12,y:5.46,w:(cW-0.2)/2,h:0.18,fontSize:7,color:GRAY,fontFace:'Arial'})
-      slide.addText(d.mixPct?d.mixPct.toFixed(1)+'%':'—',{x:x+(cW-0.2)/2+0.12,y:5.46,w:(cW-0.2)/2,h:0.18,fontSize:9,color:GREEN,bold:true,align:'right',fontFace:'Arial'})
-      slide.addText('P.Mix',{x:x+(cW-0.2)/2+0.12,y:5.62,w:(cW-0.2)/2,h:0.16,fontSize:6.5,color:GRAY,align:'right',fontFace:'Arial'})
+    // Variación $ por período — desde importes sin redondear.
+    // null → 0 en la barra pero se anota como "no calculable" en el label.
+    const varArr = series.map((s: any) => (s.totalVariacion as number | null) ?? 0)
+    const svgVar = svgBar(labels, varArr, RED, 430, 170)
+    await svgImg(slide, svgVar, 7.6, 2.18, 5.55, 2.3)
+  } else {
+    slide.addText('Sin cierres de inventario en el rango solicitado. Se muestran únicamente ventas y compras.', {
+      x: 0.15, y: 2.5, w: 12.98, h: 0.5, fontSize: 10, color: AMBER, italic: true, fontFace: 'Arial',
     })
   }
-  if(note) slide.addText('📝 '+note,{x:0.3,y:6.95,w:12.73,h:0.3,fontSize:8,color:AMBER,italic:true,fontFace:'Arial'})
+
+  // Detalle por categoría
+  if (period) {
+    sectionLabel(slide, 'DETALLE POR CATEGORÍA', 0.15, 4.56, 13.03)
+    const cats = CATEGORIES_BASE
+    const cW = 13.33 / cats.length
+    cats.forEach((cat, i) => {
+      const usoPct = period[cat.key + '_uso_pct'] as number
+      const mixPct = period[cat.key + '_theo_pct'] as number
+      const reason = period[cat.key + '_variacion_reason'] as string
+      const isNullVar = period[cat.key + '_variacion'] === null
+      const color = PPTX_CAT_COLORS[cat.key] || GRAY
+      const x = i * cW
+      slide.addShape('rect', { x, y: 4.75, w: cW - 0.06, h: 1.52, fill: { color: CARD }, line: { color: '2D3748' }, rectRadius: 0.06 })
+      slide.addShape('rect', { x, y: 4.75, w: cW - 0.06, h: 0.08, fill: { color }, line: { color }, rectRadius: 0.05 })
+      slide.addText(CATEGORY_LABELS[cat.key] || cat.label, { x: x+0.12, y: 4.84, w: cW-0.2, h: 0.22, fontSize: 8, color: LGRAY, fontFace: 'Arial' })
+      slide.addText(usoPct ? usoPct.toFixed(1) + '%' : '—', { x: x+0.12, y: 5.06, w: cW-0.2, h: 0.42, fontSize: 16, color: (usoPct > 35 ? RED : WHITE), bold: true, fontFace: 'Arial' })
+      slide.addText('Real', { x: x+0.12, y: 5.46, w: (cW-0.2)/2, h: 0.18, fontSize: 7, color: GRAY, fontFace: 'Arial' })
+      slide.addText(mixPct ? mixPct.toFixed(1) + '%' : '—', { x: x+(cW-0.2)/2+0.12, y: 5.46, w: (cW-0.2)/2, h: 0.18, fontSize: 9, color: GREEN, bold: true, align: 'right', fontFace: 'Arial' })
+      slide.addText('P.Mix', { x: x+(cW-0.2)/2+0.12, y: 5.62, w: (cW-0.2)/2, h: 0.16, fontSize: 6.5, color: GRAY, align: 'right', fontFace: 'Arial' })
+      if (isNullVar) {
+        slide.addText('⚠ ' + (VARIANCE_REASON_LABEL[reason] || 'variación no calculable'), {
+          x: x+0.12, y: 5.86, w: cW-0.24, h: 0.35, fontSize: 6.5, color: AMBER, italic: true, fontFace: 'Arial',
+        })
+      }
+    })
+  }
+
+  // Advertencias del engine — sin ellas, un PPTX "sin incidencias" no
+  // garantiza exactitud.
+  const diagItems = (prep.rangeDiagnostics?.items || []) as any[]
+  const warnings: string[] = []
+  if (prep.labels.externalAnchorWeek) {
+    warnings.push('Inv. inicial de referencia: cierre de la semana ' + prep.labels.externalAnchorWeek + ' (fuera del rango).')
+  }
+  if (diagItems.some(d => d.type === 'unclosed_tail')) {
+    warnings.push('Hay semanas sin cierre pendientes al final del rango.')
+  }
+  if (diagItems.some(d => d.type === 'missing_week' || d.type === 'coverage_gap_days' || d.type === 'inverted_dates')) {
+    warnings.push('Se detectaron huecos calendario entre reportes.')
+  }
+  if (diagItems.some(d => d.type === 'theo_cost_source_missing' || d.type === 'theo_cost_partial')) {
+    warnings.push('Costo teórico ausente o incompleto en al menos una categoría con ventas.')
+  }
+  if (diagItems.some(d => d.type === 'negative_gross_consumption')) {
+    warnings.push('Al menos un período tuvo consumo bruto negativo (mostrado como 0).')
+  }
+  if (diagItems.some(d => d.type === 'inventory_carry_mismatch')) {
+    warnings.push('Discrepancia entre inv. final y siguiente inv. inicial en al menos una semana.')
+  }
+  if (diagItems.some(d => d.type === 'duplicate_week')) {
+    warnings.push('Hay semanas con más de un reporte cargado.')
+  }
+  if (diagItems.some(d => d.type === 'unmapped_activity_category')) {
+    warnings.push('Alguna categoría con inventario/compras/teórico no tiene mapping de ventas.')
+  }
+  if (!operatingDaysAvailable) {
+    warnings.push('operating_days no definido en restaurants; los días de inventario no son fiables.')
+  }
+  if (includeOpDiscounts === false && ctx.opDiscountMappings.length > 0) {
+    warnings.push('Este PPTX no aplica el toggle "+Desc. Op."; usa ventas netas.')
+  }
+
+  if (warnings.length > 0) {
+    const warnText = warnings.map(w => '• ' + w).join('\n')
+    slide.addText(warnText, {
+      x: 0.15, y: 6.35, w: 13.03, h: 0.55, fontSize: 7, color: AMBER, italic: true, fontFace: 'Arial',
+    })
+  }
+  if (note) slide.addText('📝 ' + note, { x: 0.3, y: 6.95, w: 12.73, h: 0.3, fontSize: 8, color: AMBER, italic: true, fontFace: 'Arial' })
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -778,6 +864,14 @@ export async function generatePPTX(config: ExportConfig, dataByRestaurant: Expor
     const restName = data.restaurant.name
     const logoUrl = config.template.logoUrl || data.restaurant.logo_url || undefined
 
+    // Rango solicitado por Costo de Uso — derivado de las semanas que
+    // eligió el usuario en el Export Center (config.weeks). Mismo criterio
+    // que la UI: la primera y la última seleccionadas en orden.
+    const sortedWeeks = [...config.weeks].sort()
+    const requestedRange = sortedWeeks.length > 0
+      ? { from: sortedWeeks[0], to: sortedWeeks[sortedWeeks.length - 1] }
+      : { from: current.week, to: current.week }
+
     addCover(pptx, logoUrl, restName, current, previous)
 
     for(const section of config.sections) {
@@ -791,7 +885,7 @@ export async function generatePPTX(config: ExportConfig, dataByRestaurant: Expor
           await addLabor(pptx, logoUrl, restName, current, previous, data, note); break
         case 'food_cost':
           await addFoodCost(pptx, logoUrl, restName, current, previous, data, note)
-          await addCostoUso(pptx, logoUrl, restName, current, previous, data, note); break
+          await addCostoUso(pptx, logoUrl, restName, current, previous, data, note, requestedRange); break
         case 'waste':
           await addWaste(pptx, logoUrl, restName, current, previous, data, note); break
         case 'avt':

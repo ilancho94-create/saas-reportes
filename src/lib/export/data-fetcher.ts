@@ -24,6 +24,29 @@ export interface ExportData {
   restaurant: any
   weeks: WeekData[]
   summary: SummaryData
+  /**
+   * Contexto de Costo de Uso — mismos inputs que la vista productiva.
+   * Se usa solo por la sección Costo de Uso del PPTX (vía
+   * prepareCostoUsoResult). Si alguno viene con `null`, el consumidor
+   * debe decidir explícitamente qué hacer; no hay valores por defecto
+   * silenciosos que cambien el cálculo.
+   */
+  costoUsoContext: {
+    /** category_mappings del restaurante. */
+    mappings: any[]
+    /** costo_uso_adjustments del restaurante. */
+    adjustments: any[]
+    /** skipped_inventory_weeks del restaurante. */
+    skippedWeeks: any[]
+    /** discount_mappings donde is_operational=true — SOLO los nombres. */
+    opDiscountMappings: string[]
+    /** cost_targets por categoría. */
+    costTargets: Record<string, number>
+    /** restaurants.operating_days — null si el registro no lo trae. */
+    operatingDays: number | null
+    /** restaurants.fiscal_year_start (fecha ISO o null). */
+    fiscalYearStart: string | null
+  }
 }
 
 export interface WeekData {
@@ -57,9 +80,17 @@ export interface SummaryData {
 }
 
 export async function fetchExportData(restaurantId: string, weekIds: string[]): Promise<ExportData | null> {
-  const [restRes, reportsRes] = await Promise.all([
+  // Traemos también el contexto que Costo de Uso necesita
+  // (mismos inputs que /dashboard/costo-uso). RLS garantiza aislamiento
+  // por restaurante: cada select se filtra por restaurant_id.
+  const [restRes, reportsRes, mapsRes, adjsRes, skippedRes, discMapsRes, tgtsRes] = await Promise.all([
     supabase.from('restaurants').select('*, organizations(name)').eq('id', restaurantId).single(),
     supabase.from('reports').select('*').eq('restaurant_id', restaurantId).in('week', weekIds).order('week'),
+    supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
+    supabase.from('costo_uso_adjustments').select('*').eq('restaurant_id', restaurantId),
+    supabase.from('skipped_inventory_weeks').select('*').eq('restaurant_id', restaurantId),
+    supabase.from('discount_mappings').select('discount_name').eq('restaurant_id', restaurantId).eq('is_operational', true),
+    supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
   ])
 
   if (!restRes.data || !reportsRes.data?.length) return null
@@ -108,6 +139,12 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
   const totalOrders = weeksData.reduce((s, w) => s + n(w.sales?.orders), 0)
   const totalGuests = weeksData.reduce((s, w) => s + n(w.sales?.guests), 0)
 
+  // costTargets: category → target_pct (número). Sin defaults silenciosos.
+  const costTargets: Record<string, number> = {}
+  if (tgtsRes.data?.length) {
+    tgtsRes.data.forEach((t: any) => { costTargets[t.category] = Number(t.target_pct) })
+  }
+
   return {
     restaurant: restRes.data,
     weeks: weeksData,
@@ -118,7 +155,16 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
       profit: totalSales - totalLabor - totalCOGS,
       profitPct: totalSales > 0 ? (totalSales - totalLabor - totalCOGS) / totalSales * 100 : null,
       avgGuest: totalGuests > 0 ? totalSales / totalGuests : null,
-    }
+    },
+    costoUsoContext: {
+      mappings: mapsRes.data || [],
+      adjustments: adjsRes.data || [],
+      skippedWeeks: skippedRes.data || [],
+      opDiscountMappings: (discMapsRes.data || []).map((d: any) => d.discount_name),
+      costTargets,
+      operatingDays: restRes.data?.operating_days ?? null,
+      fiscalYearStart: restRes.data?.fiscal_year_start ?? null,
+    },
   }
 }
 
