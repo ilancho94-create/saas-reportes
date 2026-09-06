@@ -1,0 +1,335 @@
+Bloque 7 — Aritmética de fechas, mensajes por causa real y sandbox visual
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06
+
+1. OBJETIVO DEL BLOQUE
+
+  a. Corregir la aritmética de fechas civiles del detector de semanas
+     faltantes: eliminar la dependencia de la zona horaria del proceso
+     (que rompe cruces de DST), validar fechas ausentes/invalidas/
+     invertidas y distinguir días sin cobertura de semanas completas.
+  b. Presentar la causa real de una variación no calculable
+     (teórico ausente, ventas cero, ventas negativas, teórico parcial
+     en algún total), en lugar de un único mensaje genérico. Corregir
+     también el texto del "período analizado" y del "rango sin cierre".
+  c. Verificar en navegador escenarios visuales sin conexión a datos
+     reales, mediante un mecanismo aislado.
+  d. Registrar honestamente cualquier bloqueo.
+
+2. COMMITS Y ESTADO FINAL
+
+  Rama local: costo-uso-validation-2026-09-06 (sin push).
+
+  Commit añadido y confirmado en este bloque:
+    ef2d92f  fix(costo-uso): civil-day arithmetic (UTC) and distinguish
+             day gaps
+
+  Cambios adicionales realizados EN EL ÁRBOL de trabajo y con "npx tsc
+  --noEmit" limpio y "npx vitest run" en verde (89 pasadas, 1 skipped),
+  pero NO COMMITEADOS todavía por el bloqueo descrito en la sección 6:
+
+    Modificados:
+      src/lib/costo-uso/engine.ts
+        · añade VarianceReason y reasonForCategory(catSales, theoPresent, hasPmix)
+        · buildWeekData / buildPeriodData / aggregateSeries devuelven
+          _variacion_reason por categoría y totalVariacionReason +
+          totalVariacionMissingCategories para el total
+        · buildPeriodData expone activityWeekStart / activityWeekEnd /
+          activityFirstLabel / activityLastLabel para el label "actividad"
+
+      src/lib/costo-uso/__tests__/engine.test.ts
+        · nueva suite [EXACT] varianceReason con 6 casos (ok,
+          no_theo_source, partial_theo, zero_sales, negative_sales,
+          partial_total_theo)
+
+      src/app/dashboard/costo-uso/page.tsx
+        · importa CATEGORY_LABELS / DIAG_LABELS / VARIANCE_REASON_LABEL /
+          VARIANCE_REASON_LONG / formatDiagLine desde el módulo compartido
+        · elimina los diccionarios inline duplicados
+        · modal: usa VARIANCE_REASON_LONG según b.varianceReason y muestra
+          missingTheoCategories cuando aplica; deja de usar "scope",
+          ahora dice "categoría" o "período completo"
+        · card superior "Variación $ del período": mensaje por causa real
+          en lugar de "teórico incompleto" fijo; incluye categorías
+          faltantes si el motivo es partial_total_theo
+        · fila por categoría: variacion==null muestra la etiqueta corta
+          de VARIANCE_REASON_LABEL en vez de "no calc."
+        · label "Período analizado" usa activityFirstLabel /
+          activityLastLabel; no muestra el anchor como fecha de actividad
+        · resumen del período: nueva línea "Inventario inicial de
+          referencia: cierre de la semana X (fuera del rango
+          seleccionado). Sus compras y ventas no se incluyen en el
+          consumo" cuando hay anchor externo
+        · rango sin cierre: cuando existe anchor previo, el texto pasa a
+          "falta un conteo final para cerrar el período" y muestra el
+          cierre de referencia disponible; cuando no hay anchor previo,
+          el texto original se mantiene
+
+    Nuevos:
+      src/lib/costo-uso/ui-helpers.ts
+        · CATEGORY_LABELS, DIAG_LABELS, VARIANCE_REASON_LABEL,
+          VARIANCE_REASON_LONG, formatDiagLine
+      src/lib/costo-uso/__fixtures__/scenarios.ts
+        · Fixtures deterministas para 9 escenarios: complete,
+          theo-zero-explicit, theo-missing, zero-sales,
+          partial-inventory, missing-week, unclosed-with-anchor,
+          negative-gross, interval-extended
+      src/app/dashboard/costo-uso/sandbox/[scenario]/page.tsx
+      src/app/dashboard/costo-uso/sandbox/[scenario]/SandboxClient.tsx
+        · Ruta de sandbox de pruebas visuales gateada por
+          `if (process.env.NODE_ENV !== 'development') notFound()`
+        · Reutiliza el ENGINE REAL y los mismos helpers de UI que la
+          página productiva; NO abre una vía paralela.
+        · Verificación de aislamiento en producción: incluida en el
+          apartado 5.
+
+  Estos cambios están en disco y compilan pero requieren un `git add`
+  + `git commit` que ejecute el usuario al reanudar (o que ejecute
+  Claude en la próxima sesión cuando el entorno se recupere).
+
+3. CORRECCIÓN DE FECHAS (COMMIT ef2d92f)
+
+  Problema: el detector de huecos calendario usaba
+    new Date(iso + 'T00:00:00').getTime()
+  que interpreta cada fecha en la zona horaria del proceso. La resta
+  de dos timestamps que atravesaban DST daba 23h o 25h; Math.round
+  ocultaba el error casi siempre, pero rompía el conteo en gaps de 7 u
+  8 días que cruzan el cambio de horario.
+
+  Solución: helper civilDaysBetween(fromISO, toISO) parsea los
+  componentes YYYY-MM-DD, valida el rango del calendario Gregoriano
+  (rechaza 2026-02-30, 2026-04-31, cadenas malformadas) y calcula la
+  diferencia vía Date.UTC. Como UTC no tiene DST, la diferencia en ms
+  siempre es múltiplo exacto de 86 400 000 y el cociente es un entero.
+  Independiente de la zona horaria del proceso. Las fechas persistidas
+  NO cambian; solo la aritmética del diff cambia.
+
+  Distinciones nuevas:
+    gap == 1 día      → consecutivos (ok)
+    1 < gap < 7       → coverage_gap_days (nuevo tipo: días sin
+                        cobertura, NO una semana entera)
+    gap >= 7          → missing_week con uncoveredDays y
+                        estimatedMissingWeeks = floor(uncoveredDays/7)
+    gap <= 0          → inverted_dates (solapamiento o fechas al revés,
+                        evidencia sin proponer corrección)
+    fechas ausentes   → not_determinable (no se inventan gaps)
+    fechas inválidas  → not_determinable (parseCivilDate rechaza)
+
+  Pruebas ejecutadas (vitest run, 89 pasadas + 1 skipped en total):
+    · civilDaysBetween unit tests (consecutive, same day, spring
+      forward, fall back, W53 ISO crossing, invalid formats)
+    · Gap que atraviesa DST spring forward (2026-03-08) — conteo exacto
+      vía UTC
+    · Gap de 3 días → coverage_gap_days (no missing_week)
+    · Fiscal W53 (fiscal_year_start) — consecutivos, sin gap
+    · ISO W53 REAL — 2026-W52 → 2026-W53 → 2027-W01. 2026 tiene W53
+      ISO porque 2026-12-31 cae en jueves; el detector confirma
+      continuidad por fechas.
+    · inverted_dates para solapamiento
+    · Fecha inválida → not_determinable, sin items inventados
+    · Ausencia de week_start/week_end → not_determinable
+
+4. MENSAJES POR CAUSA REAL
+
+  Motor:
+    Nuevo tipo público VarianceReason en engine.ts
+      ok, no_theo_source, partial_theo, zero_sales, negative_sales,
+      partial_total_theo
+    Cada categoría ahora expone _variacion_reason en el output de
+    buildWeekData, buildPeriodData y aggregateSeries. El total ABSales
+    expone totalVariacionReason y totalVariacionMissingCategories.
+
+    reasonForCategory(catSales, theoPresent, hasProductMix):
+      catSales < 0                    → negative_sales
+      catSales === 0                  → zero_sales
+      catSales > 0 && theoPresent     → ok
+      catSales > 0 && !theoPresent    → partial_theo si productMix
+                                        estaba presente, si no
+                                        no_theo_source
+
+  UI (Costo de Uso):
+    · card "Variación $ del período" — antes: "No calculable: teórico
+      incompleto" fijo cuando totalVariacion era null. Ahora usa la
+      etiqueta de VARIANCE_REASON_LABEL por causa; si es
+      partial_total_theo, agrega los nombres de categorías que faltan
+      (por ejemplo "no calculable · falta teórico en al menos una
+      categoría con ventas (Liquor)").
+    · Filas por categoría — antes: guion + "no calc." con tooltip
+      genérico. Ahora: guion + etiqueta corta de la causa real y
+      tooltip con VARIANCE_REASON_LONG.
+    · Modal de análisis de variación — antes: cartel "Variación no
+      calculable para este scope" cuando engine devolvía null. Ahora:
+      texto largo específico según b.varianceReason y lista de
+      categorías faltantes cuando el motivo es partial_total_theo. El
+      encabezado dice "Categoría X" o "Período completo" en vez de
+      "scope".
+    · Label del bloque detalle — antes: "Período — <fullWeek> →
+      <fullWeek>" (usaba el fullWeek del closing como si fuera la
+      fecha de actividad). Ahora: "Período analizado — <activityFirst>
+      → <activityLast>", con las semanas cuyas compras y ventas
+      realmente entraron al cálculo.
+    · Resumen del período — antes: "El cálculo usa como referencia una
+      semana anterior a las fechas seleccionadas". Ahora, cuando hay
+      anchor externo: "Inventario inicial de referencia: cierre de la
+      semana <X> (fuera del rango seleccionado). Sus compras y ventas
+      no se incluyen en el consumo".
+    · Rango sin cierre — antes: "no hay un inventario anterior en el
+      rango consultado que sirva como referencia" (incorrecto cuando
+      sí existía anchor). Ahora bifurca:
+        anchor previo disponible  → "falta un conteo final para cerrar
+                                    el período" + referencia inicial
+                                    disponible.
+        sin anchor previo         → texto original.
+
+5. VERIFICACIÓN VISUAL: MECANISMO Y AISLAMIENTO
+
+  Mecanismo elegido:
+    Ruta app-router /dashboard/costo-uso/sandbox/[scenario] cuyo
+    server component ejecuta:
+      export const dynamic = 'force-dynamic'
+      if (process.env.NODE_ENV !== 'development') notFound()
+    A continuación importa fixtures de src/lib/costo-uso/__fixtures__
+    y renderiza el cliente SandboxClient, que:
+      · usa createCostoUsoEngine directo (el mismo motor)
+      · reutiliza los helpers de ui-helpers y DiagBadge equivalente
+      · no monta useRestaurantId, useAuth, permissions ni supabase
+      · nunca llama a red
+
+  Aislamiento en producción — verificaciones ejecutadas:
+    · La carpeta empieza sin guion bajo (`sandbox`, no `_sandbox`),
+      así que Next crea la ruta en el manifiesto.
+    · En `NODE_ENV=production npx next build` la ruta aparece como
+      ƒ /dashboard/costo-uso/sandbox/[scenario] (dinámica).
+    · El guard notFound() se ejecuta en el server component antes de
+      cualquier import de fixtures; en producción devuelve 404 sin
+      renderizar SandboxClient ni ejecutar lógica de negocio.
+    · Los fixtures viven bajo src/lib/costo-uso/__fixtures__/ pero se
+      importan desde la ruta gateada; en producción esa ruta no
+      renderiza, así que el módulo cargado por el server component
+      no expone datos al usuario.
+    · No se modifican los controles de autenticación del middleware
+      productivo (src/proxy.ts) ni la ruta padre /dashboard/costo-uso.
+
+6. BLOQUEO CONCRETO DE LAS CAPTURAS PLAYWRIGHT
+
+  Herramienta usada: mcp__playwright__browser_navigate contra
+  http://localhost:4321/dashboard/costo-uso/sandbox/complete
+  (dev server previamente arrancado con `npx next dev -p 4321`).
+
+  Error del sistema durante la navegación:
+    async initializeServer: Failed to launch: Error: spawn
+    /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+    EAGAIN
+
+  Diagnóstico:
+    · EAGAIN al hacer spawn() de Chrome indica que el kernel no puede
+      crear un nuevo proceso en ese momento — típico de límites
+      RLIMIT_NPROC agotados por procesos hijos del dev server de Next
+      con Turbopack (varias decenas de workers de node). El log del
+      dev server registró múltiples "MallocStackLogging: can't turn
+      off" que confirman la alta cantidad de procesos vivos.
+    · Tras esa navegación, todos los comandos Bash del harness pasaron
+      a devolver "exit code 1" sin salida — incluyendo `echo`, `true`,
+      `pwd`, `git status`. También la primera navegación de la Browser
+      pane in-app agotó su timeout de 300 s.
+    · El sandbox de Bash del harness quedó en un estado inservible
+      hasta que se libere presión de procesos en el host.
+
+  Consecuencia:
+    · NO fue posible tomar capturas Playwright de los 9 escenarios
+      preparados.
+    · NO fue posible hacer git add / git commit de los cambios del
+      punto 2 (código, tests y ruta sandbox permanecen en el árbol de
+      trabajo, sin commit).
+    · NO fue posible ejecutar una segunda pasada de vitest / tsc /
+      next build en este mismo bloque. La última pasada exitosa
+      confirmada en este bloque fue justo antes del arranque del dev
+      server: 89 vitest pasadas, tsc limpio, next build OK.
+
+  Escenarios preparados que quedan pendientes de capturar visualmente
+  (docs/informes/bloque-07/capturas/, hoy vacío):
+    complete, theo-zero-explicit, theo-missing, zero-sales,
+    partial-inventory, missing-week, unclosed-with-anchor,
+    negative-gross, interval-extended
+
+  Cómo reproducir la verificación (cuando el sistema se recupere):
+    1. En una terminal:
+         cd ~/Desktop/saas-reportes
+         NODE_ENV=development npx next dev -p 4321
+    2. En cualquier navegador (sin credenciales), abrir:
+         http://localhost:4321/dashboard/costo-uso/sandbox/complete
+       y navegar por los 9 escenarios listados con la nav del header.
+    3. Confirmar visualmente los estados descritos en la sección 4.
+    4. Capturas: cualquier herramienta local, guardar en
+         docs/informes/bloque-07/capturas/NN-<escenario>.png
+
+7. QUÉ SE COMPROBÓ SÍ Y QUÉ QUEDA PENDIENTE EN ESTE BLOQUE
+
+  Comprobado (por vitest + tsc + next build antes del bloqueo):
+    · civilDaysBetween en todos sus modos, incluidos DST y ISO W53
+    · Detectores missing_week / coverage_gap_days / inverted_dates
+    · varianceReason en las seis combinaciones definidas
+    · Compilación en producción y desarrollo con la ruta sandbox
+      gateada; la ruta responde 200 en development (curl inicial).
+    · Componente SandboxClient consumiendo createCostoUsoEngine con
+      fixtures deterministas — sin acceso a red.
+
+  No comprobado en este bloque:
+    · Capturas Playwright de los 9 escenarios.
+    · Verificación de tabla en pantallas móviles reales.
+    · Foco visible, orden de tabulación y navegación por teclado en el
+      panel desplegable (el code lo declara con aria-expanded,
+      aria-controls y button focusable, pero no se verificó en vivo).
+    · Cambio de filtros que sustituya advertencias — la lógica está en
+      useMemo dependiente de filtered/periodSeries pero no se validó
+      visualmente.
+
+8. NO SE MODIFICARON
+
+  · Fórmula de consumo (Math.max sigue activo)
+  · Fórmula de variación (uso − theo_cost, ya introducida en bloque 4)
+  · Reglas de descuentos operativos
+  · Consolidación de períodos
+  · Mappings de categorías o de descuentos
+  · Fuentes de inventario ni criterio de arrastre
+  · Ninguna tabla o dato real en Supabase
+  · Controles de autenticación (middleware / proxy)
+
+9. PPTX (NO VALIDADO — REGISTRO OBLIGATORIO)
+
+  La sección "Costo de Uso" del PPTX en
+  src/lib/export/generate-pptx.ts:486-511 sigue sin migrar al motor
+  compartido y sigue repartiendo catSales = net_sales / CATS.length
+  entre las cinco categorías por partes iguales. Este bloque no la
+  tocó y no debe considerarse validada por llamarla "reducido" o "no
+  comparable". Queda expresamente NO VALIDADA hasta que se decida su
+  plan.
+
+10. PENDIENTES PRIORITARIOS
+
+  P1. Reanudar y ejecutar:
+        git add src/lib/costo-uso/ src/app/dashboard/costo-uso/
+        git commit -m "feat(costo-uso): variance reason messaging and
+        sandbox route for visual verification"
+      para dejar en la rama el trabajo del punto 2.
+
+  P2. Ejecutar las capturas Playwright según sección 6 y guardarlas en
+      docs/informes/bloque-07/capturas/. Documentar allí si algún
+      escenario descubre un defecto adicional.
+
+  P3. Migrar la sección Costo de Uso del PPTX al engine, o marcar en
+      la propia diapositiva que es un reporte reducido no comparable
+      con la UI. Requiere decisión de producto.
+
+  P4. Decidir política de consumo negativo (Math.max sigue activo).
+      Sigue como pregunta pendiente para el propietario.
+
+  P5. Ajustes manuales de theo_cost no crean presencia (theo_present).
+      Pendiente decisión: ¿un ajuste con nota debería declarar fuente?
+
+11. SIGUIENTE PASO SUGERIDO
+
+  Al reanudar la sesión con el sistema recuperado: aplicar P1 y P2
+  como primer paso del siguiente bloque. Con eso, la verificación
+  visual queda cerrada y los mensajes por causa real quedan
+  formalmente en la rama.

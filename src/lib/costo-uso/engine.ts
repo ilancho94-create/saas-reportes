@@ -11,6 +11,30 @@
 import { diagnoseWeek, diagnosePeriod, diagnoseSeries, type Diagnostics, type DiagnosticsContext } from './diagnostics'
 export type { Diagnostic, DiagnosticType, Diagnostics, CheckState } from './diagnostics'
 
+/**
+ * Motivo por el que la variación de una categoría o del total puede ser null.
+ * Diseñado para que la interfaz muestre la causa correcta en cada caso, en
+ * lugar de un único mensaje genérico.
+ */
+export type VarianceReason =
+  | 'ok'                     // Variación calculada correctamente
+  | 'no_theo_source'         // productMix ausente para la semana / período
+  | 'partial_theo'           // productMix presente pero categoría sin asignación
+  | 'zero_sales'             // catSales === 0
+  | 'negative_sales'         // catSales < 0
+  | 'partial_total_theo'     // (solo para totales) alguna cat. con ventas sin teórico
+
+function reasonForCategory(
+  catSales: number,
+  theoPresent: boolean,
+  hasProductMix: boolean,
+): VarianceReason {
+  if (catSales < 0) return 'negative_sales'
+  if (catSales === 0) return 'zero_sales'
+  if (theoPresent) return 'ok'
+  return hasProductMix ? 'partial_theo' : 'no_theo_source'
+}
+
 export type CategoryKey = 'food' | 'na_beverage' | 'liquor' | 'beer' | 'wine'
 
 export const ACCOUNT_MAP: Record<string, CategoryKey> = {
@@ -235,6 +259,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       result[cat.key + '_uso_pct'] = realPct || 0
       result[cat.key + '_theo_pct'] = mixPct || 0
       result[cat.key + '_variacion'] = variacionDolares
+      result[cat.key + '_variacion_reason'] = reasonForCategory(catSales, theoPresent, hasProductMixForWeek)
       result[cat.key + '_dias_inv'] = diasInv
       result[cat.key + '_inv_current'] = invCurrent
       result[cat.key + '_inv_previous'] = invPrevious
@@ -255,6 +280,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     const anyIncludedCatMissingTheo = CATEGORIES.some(
       c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present']
     )
+    const missingTheoCats = CATEGORIES
+      .filter(c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present'])
+      .map(c => c.key)
     result.totalUsoCost = totalUsoCost
     result.totalTheoCost = totalTheoCost
     result.totalABSales = totalABSales
@@ -264,6 +292,10 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       ? parseFloat((totalUsoCost - totalTheoCost).toFixed(2))
       : null
     result.totalTheoComplete = !anyIncludedCatMissingTheo
+    result.totalVariacionReason = (totalABSales === 0)
+      ? (CATEGORIES.some(c => (result[c.key + '_sales'] || 0) < 0) ? 'negative_sales' : 'zero_sales')
+      : (anyIncludedCatMissingTheo ? 'partial_total_theo' : 'ok') as VarianceReason
+    result.totalVariacionMissingCategories = missingTheoCats
     result.hasAnyAdj = hasAdjustments(week)
     result.diagnostics = diagnoseWeek(w, diagCtx)
     return result
@@ -277,6 +309,11 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       .filter(w => ctx.skippedWeekSet.has(w.report.week))
       .map(w => w.report.week)
 
+    // "Actividad" del período = intermediates + closing (excluye el anchor,
+    // que solo aporta inventario inicial de referencia). Es el rango cuyas
+    // compras y ventas realmente entran al cálculo.
+    const firstActivity = periodWeeks[0]
+    const lastActivity  = periodWeeks[periodWeeks.length - 1]
     const result: any = {
       week: closingWeek.replace('2026-', ''),
       fullWeek: closingWeek,
@@ -288,6 +325,11 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       isConsolidated,
       spannedSkippedWeeks,
       anchorWeek: anchor?.report.week || null,
+      anchorWeekEnd: anchor?.report?.week_end || null,
+      activityWeekStart: firstActivity?.report?.week_start || null,
+      activityWeekEnd:   lastActivity?.report?.week_end   || null,
+      activityFirstLabel: firstActivity?.report?.week || null,
+      activityLastLabel:  lastActivity?.report?.week   || null,
       periodWeekCount: periodWeeks.length,
       closingReport: closing.report,
       closingRaw: closing,
@@ -362,10 +404,13 @@ export function createCostoUsoEngine(ctx: EngineContext) {
         getAdj(w.report.week, cat.key, 'theo_cost') !== 0
       )
 
+      const hasPmixInPeriod = periodWeeks.some(w => !!w.productMix)
+
       result[cat.key + '_uso'] = uso
       result[cat.key + '_uso_pct'] = realPct || 0
       result[cat.key + '_theo_pct'] = mixPct || 0
       result[cat.key + '_variacion'] = variacionDolares
+      result[cat.key + '_variacion_reason'] = reasonForCategory(catSales, theoPresent, hasPmixInPeriod)
       result[cat.key + '_dias_inv'] = diasInv
       result[cat.key + '_inv_current'] = invCurrent
       result[cat.key + '_inv_previous'] = invPrevious
@@ -383,6 +428,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     const anyIncludedCatMissingTheo = CATEGORIES.some(
       c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present']
     )
+    const missingTheoCats = CATEGORIES
+      .filter(c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present'])
+      .map(c => c.key)
     result.totalUsoCost = totalUsoCost
     result.totalTheoCost = totalTheoCost
     result.totalABSales = totalABSales
@@ -392,6 +440,10 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       ? parseFloat((totalUsoCost - totalTheoCost).toFixed(2))
       : null
     result.totalTheoComplete = !anyIncludedCatMissingTheo
+    result.totalVariacionReason = (totalABSales === 0)
+      ? (CATEGORIES.some(c => (result[c.key + '_sales'] || 0) < 0) ? 'negative_sales' : 'zero_sales')
+      : (anyIncludedCatMissingTheo ? 'partial_total_theo' : 'ok') as VarianceReason
+    result.totalVariacionMissingCategories = missingTheoCats
     result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
     result.diagnostics = diagnosePeriod(anchor, intermediates, closing, diagCtx, getAdj)
     return result
@@ -459,7 +511,6 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       const sales = series.reduce((s, p) => s + (p[cat.key + '_sales'] || 0), 0)
       const purchases = series.reduce((s, p) => s + (p[cat.key + '_purchases'] || 0), 0)
       // Presencia agregada: TODOS los períodos deben tener theo_present=true.
-      // Un solo período sin teórico → la categoría del rango es indeterminable.
       const theoPresent = series.every(p => p[cat.key + '_theo_present'] === true)
       const realPct = sales > 0 ? pct(uso, sales) : null
       const mixPct = sales > 0 ? pct(theo, sales) : null
@@ -471,11 +522,15 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       const diasInv = uso > 0
         ? parseFloat((((invCurr + invPrev) / 2) / uso * totalOpDays).toFixed(1))
         : null
+      // Razón del null: si hay ventas <= 0, esa gana; si no, decide teórico.
+      const hasPmixSomewhere = series.some(p => p.hasProductMix)
+      const reason: VarianceReason = reasonForCategory(sales, theoPresent, hasPmixSomewhere)
 
       result[cat.key + '_uso'] = uso
       result[cat.key + '_uso_pct'] = realPct || 0
       result[cat.key + '_theo_pct'] = mixPct || 0
       result[cat.key + '_variacion'] = variacion
+      result[cat.key + '_variacion_reason'] = reason
       result[cat.key + '_inv_current'] = invCurr
       result[cat.key + '_inv_previous'] = invPrev
       result[cat.key + '_purchases'] = purchases
@@ -495,6 +550,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     const anyIncludedCatMissingTheo = CATEGORIES.some(
       c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present']
     )
+    const missingTheoCats = CATEGORIES
+      .filter(c => (result[c.key + '_sales'] || 0) > 0 && !result[c.key + '_theo_present'])
+      .map(c => c.key)
     result.totalUsoCost = totalUso
     result.totalTheoCost = totalTheo
     result.totalABSales = totalSales
@@ -504,6 +562,14 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       ? parseFloat((totalUso - totalTheo).toFixed(2))
       : null
     result.totalTheoComplete = !anyIncludedCatMissingTheo
+    result.totalVariacionReason = (totalSales === 0)
+      ? (CATEGORIES.some(c => (result[c.key + '_sales'] || 0) < 0) ? 'negative_sales' : 'zero_sales')
+      : (anyIncludedCatMissingTheo ? 'partial_total_theo' : 'ok') as VarianceReason
+    result.totalVariacionMissingCategories = missingTheoCats
+    result.activityWeekStart = series[0].activityWeekStart
+    result.activityWeekEnd   = series[series.length - 1].activityWeekEnd
+    result.activityFirstLabel = series[0].activityFirstLabel
+    result.activityLastLabel  = series[series.length - 1].activityLastLabel
     // Los diagnósticos del agregado consolidan los de sus períodos
     // (dedup por firma). Los de nivel serie (unclosed_tail, duplicates,
     // interval_extension) se añaden al llamar a diagnoseRange desde el

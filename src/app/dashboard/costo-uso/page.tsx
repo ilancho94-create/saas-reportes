@@ -15,6 +15,13 @@ import {
   CATEGORIES_BASE,
   createCostoUsoEngine,
 } from '@/lib/costo-uso/engine'
+import {
+  CATEGORY_LABELS,
+  DIAG_LABELS,
+  VARIANCE_REASON_LABEL,
+  VARIANCE_REASON_LONG,
+  formatDiagLine,
+} from '@/lib/costo-uso/ui-helpers'
 
 const ADJUSTMENT_FIELDS = [
   { key: 'inv_previous', label: 'Inv. Anterior' },
@@ -375,22 +382,25 @@ export default function CostoUsoPage() {
     const rawWeeks: any[] = period?.periodWeeksRaw || []
     const catKey = category // null = total A&B
 
-    // Uso y teórico del scope solicitado.
     // La variación proviene EXCLUSIVAMENTE del engine. Si el engine devuelve
     // null (falta información teórica o ventas <= 0), NO reconstruimos la
-    // cifra con uso − theo (eso convertiría un "no calculable" en un número
-    // aparentemente válido). Los consumidores deben tolerar null.
+    // cifra con uso − theo. Los consumidores deben tolerar null.
     let uso: number, theo: number, sales: number, variance: number | null
+    let varianceReason: string
+    let missingTheoCategories: string[] = []
     if (catKey) {
       uso = period[catKey + '_uso'] || 0
       theo = period[catKey + '_theo_cost'] || 0
       sales = period[catKey + '_sales'] || 0
       variance = period[catKey + '_variacion'] ?? null
+      varianceReason = period[catKey + '_variacion_reason'] || 'ok'
     } else {
       uso = period.totalUsoCost || 0
       theo = period.totalTheoCost || 0
       sales = period.totalABSales || 0
       variance = period.totalVariacion ?? null
+      varianceReason = period.totalVariacionReason || 'ok'
+      missingTheoCategories = period.totalVariacionMissingCategories || []
     }
 
     // ── Waste registrado en R365 ─────────────────────────────────────────
@@ -490,9 +500,16 @@ export default function CostoUsoPage() {
     // Si la variación no es calculable, el residuo tampoco lo es.
     const residual = variance === null ? null : variance - totalExplained
 
+    const scopeLabel = catKey
+      ? CATEGORIES.find(c => c.key === catKey)?.label || catKey
+      : 'Total A&B'
     return {
-      scope: catKey ? CATEGORIES.find(c => c.key === catKey)?.label || catKey : 'Total A&B',
+      scope: scopeLabel,   // legacy, aún leído por el modal
+      period: catKey ? undefined : 'Total A&B',
+      category: catKey ? scopeLabel : undefined,
       uso, theo, sales, variance,
+      varianceReason,
+      missingTheoCategories,
       wasteAttributed, wasteUncategorized, wasteItems,
       voidsTotal, voidsCount, voidsItems,
       compsTotal, compsCount, compsItems,
@@ -554,75 +571,6 @@ export default function CostoUsoPage() {
     })
   }
 
-  const CATEGORY_LABELS: Record<string, string> = {
-    food: 'Food', na_beverage: 'NA Beverage', liquor: 'Liquor', beer: 'Beer', wine: 'Wine',
-  }
-  const DIAG_LABELS: Record<string, { title: string, hint: string }> = {
-    missing_week: {
-      title: 'Semana(s) faltante(s) entre reportes',
-      hint: 'Faltan reportes en el intervalo. El cálculo puede omitir compras y ventas de esas semanas.',
-    },
-    week_present_no_inventory: {
-      title: 'Semana sin conteo de inventario',
-      hint: 'Se cargó la semana pero no llegó el inventario. Sus compras y ventas se consolidarán con la próxima semana con inventario.',
-    },
-    source_missing: {
-      title: 'Fuente de datos ausente',
-      hint: 'Un archivo o sección no llegó para esta semana. Revisar carga en Upload.',
-    },
-    field_undetermined: {
-      title: 'Dato no comprobable',
-      hint: 'El archivo no permite distinguir "cero real" de "campo faltante".',
-    },
-    inventory_account_missing: {
-      title: 'Falta cuenta de inventario esperada',
-      hint: 'No se encontró ninguna cuenta R365 para esta categoría en el conteo semanal.',
-    },
-    unmapped_activity_category: {
-      title: 'Categoría con actividad pero sin mapping de ventas',
-      hint: 'Llegaron compras/inventario/teórico para una categoría, pero el mapping de ventas no existe. Sus ventas pueden no estar contabilizadas.',
-    },
-    inventory_carry_mismatch: {
-      title: 'Discrepancia entre inventarios',
-      hint: 'El inventario inicial de referencia (cierre anterior) no coincide con el inventario inicial declarado del siguiente reporte.',
-    },
-    theo_cost_source_missing: {
-      title: 'Product Mix ausente',
-      hint: 'No hay Product Mix cargado para esta semana. La variación por categoría no se puede calcular.',
-    },
-    theo_cost_partial: {
-      title: 'Costo teórico incompleto',
-      hint: 'El Product Mix no trae asignación teórica para esta categoría. La variación no es interpretable.',
-    },
-    unmatched_pmix_items: {
-      title: 'Items sin correspondencia en Product Mix',
-      hint: 'Hay items vendidos cuyo costo teórico no se pudo atribuir a una categoría.',
-    },
-    unclosed_tail: {
-      title: 'Semanas sin cierre al final del rango',
-      hint: 'Estas semanas se cargaron sin inventario y aún no hay una semana posterior que las consolide.',
-    },
-    negative_gross_consumption: {
-      title: 'Consumo antes de ajustarlo a cero',
-      hint: 'El cálculo (inventario inicial + compras − inventario final) dio negativo y se muestra como 0. Puede indicar problemas de conteo, factura tardía o transferencia entre unidades.',
-    },
-    duplicate_week: {
-      title: 'Semana con más de un reporte cargado',
-      hint: 'Se recibieron múltiples reportes para la misma semana. Puede afectar el cálculo del inventario de referencia.',
-    },
-    interval_extended: {
-      title: 'Intervalo analizado es mayor al solicitado',
-      hint: 'El cálculo requiere un inventario anterior fuera de las fechas seleccionadas. Se está usando como referencia.',
-    },
-  }
-  function formatDiagLine(it: any): string {
-    const label = DIAG_LABELS[it.type] || { title: it.type, hint: '' }
-    const parts: string[] = [label.title]
-    if (it.category) parts.push('· ' + (CATEGORY_LABELS[it.category] || it.category))
-    if (it.week) parts.push('· semana ' + it.week)
-    else if (it.weekRange) parts.push('· entre ' + it.weekRange[0] + ' y ' + it.weekRange[1])
-    return parts.join(' ')
-  }
   function DiagBadge({ items, tone = 'warning' }: { items: any[]; tone?: 'warning' | 'info' | 'error' }) {
     if (!items.length) return null
     const cls = tone === 'error'
@@ -781,7 +729,7 @@ export default function CostoUsoPage() {
                   <div>
                     <h3 className="text-white font-bold text-base">🔍 Análisis de variación</h3>
                     <p className="text-gray-500 text-xs mt-0.5">
-                      {b.scope} · {varPanel.periodLabel}
+                      {b.category ? 'Categoría ' + b.category : 'Período completo'} · {varPanel.periodLabel}
                     </p>
                   </div>
                   <button onClick={() => setVarPanel(null)} className="text-gray-500 hover:text-white">✕</button>
@@ -810,10 +758,17 @@ export default function CostoUsoPage() {
 
                 {varIsNull ? (
                   <div className="bg-gray-800 rounded-xl p-4 text-center border border-gray-700">
-                    <p className="text-gray-300 text-sm mb-1">Variación no calculable para este scope.</p>
-                    <p className="text-gray-500 text-xs">
-                      Falta información de costo teórico (Product Mix) en al menos una semana o categoría del período. No mostramos una cifra derivada de asumir cero.
+                    <p className="text-gray-300 text-sm mb-1">
+                      Variación no calculable para {b.category ? 'esta categoría' : 'este período'}.
                     </p>
+                    <p className="text-gray-400 text-xs">
+                      {VARIANCE_REASON_LONG[b.varianceReason || 'partial_total_theo']}
+                    </p>
+                    {b.varianceReason === 'partial_total_theo' && (b.missingTheoCategories || []).length > 0 && (
+                      <p className="text-gray-500 text-xs mt-2">
+                        Categoría(s) sin teórico: {(b.missingTheoCategories as string[]).map(k => CATEGORY_LABELS[k] || k).join(', ')}
+                      </p>
+                    )}
                   </div>
                 ) : b.variance === 0 ? (
                   <div className="bg-gray-800 rounded-xl p-4 text-center">
@@ -1310,11 +1265,17 @@ export default function CostoUsoPage() {
               const notDeterminedCount = Object.values(checks).filter(v => v === 'not_determinable').length
               const presentCount = items.length
               const noIncidencesDetected = presentCount === 0 && notDeterminedCount === 0
-              // Etiquetas de rango
+              // Etiquetas de rango.
+              // "Analizado" = fechas de las compras y ventas incluidas
+              // (activityFirstLabel..activityLastLabel), NO la semana anchor.
+              // El anchor solo aporta el inventario inicial de referencia.
               const requestedLbl = requestedRange ? requestedRange.from + ' → ' + requestedRange.to : null
-              const effectiveLbl = periodSeries.length > 0
-                ? (periodSeries[0].anchorWeek || periodSeries[0].fullWeek) + ' → ' + periodSeries[periodSeries.length - 1].fullWeek
+              const first = periodSeries[0]
+              const last  = periodSeries[periodSeries.length - 1]
+              const effectiveLbl = first
+                ? (first.activityFirstLabel || first.fullWeek) + ' → ' + (last.activityLastLabel || last.fullWeek)
                 : null
+              const usesExternalAnchor = first?.anchorWeek && requestedRange && first.anchorWeek < requestedRange.from
               return (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 mb-4 text-sm">
                   <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -1329,9 +1290,14 @@ export default function CostoUsoPage() {
                       ) : requestedLbl ? (
                         <p className="text-gray-300">Rango: <span className="text-white">{requestedLbl}</span></p>
                       ) : null}
-                      {intervalExtended && (
+                      {usesExternalAnchor && (
                         <p className="text-amber-300 text-xs mt-1">
-                          El cálculo usa como referencia una semana anterior a las fechas seleccionadas.
+                          Inventario inicial de referencia: cierre de la semana {first.anchorWeek} (fuera del rango seleccionado). Sus compras y ventas <strong>no</strong> se incluyen en el consumo.
+                        </p>
+                      )}
+                      {intervalExtended && !usesExternalAnchor && (
+                        <p className="text-amber-300 text-xs mt-1">
+                          El cálculo requiere referencia fuera de las fechas seleccionadas.
                         </p>
                       )}
                       {unclosedTail && (
@@ -1411,30 +1377,51 @@ export default function CostoUsoPage() {
             })()}
 
             {/* ── Rango sin cierre: estado útil cuando no hay período ── */}
-            {filtered.length > 0 && periodSeries.length === 0 && !isSelectedWeekSkipped().skipped && (
-              <div className="bg-amber-950/40 border border-amber-800 rounded-xl p-5 mb-4">
-                <p className="text-amber-200 text-sm font-semibold">Rango sin cierre de inventario</p>
-                <p className="text-amber-100/80 text-xs mt-1">
-                  Ninguna de las semanas seleccionadas ({filtered.map(w => w.report.week).join(', ')}) trajo conteo de inventario, y no hay un inventario anterior en el rango consultado que sirva como referencia.
-                </p>
-                <p className="text-amber-100/60 text-xs mt-2">
-                  Sus ventas y compras aparecen en las otras vistas pero no producen consumo consolidado. Al llegar el próximo inventario, se calculará el consumo del período completo.
-                </p>
-              </div>
-            )}
+            {filtered.length > 0 && periodSeries.length === 0 && !isSelectedWeekSkipped().skipped && (() => {
+              const anchor = filtered[0] ? engine.findAnchorBefore(filtered[0]) : null
+              return (
+                <div className="bg-amber-950/40 border border-amber-800 rounded-xl p-5 mb-4">
+                  <p className="text-amber-200 text-sm font-semibold">Rango sin cierre de inventario</p>
+                  {anchor ? (
+                    <>
+                      <p className="text-amber-100/80 text-xs mt-1">
+                        Ninguna de las semanas seleccionadas ({filtered.map(w => w.report.week).join(', ')}) trajo conteo de inventario, así que <strong>falta un conteo final para cerrar el período</strong>.
+                      </p>
+                      <p className="text-amber-100/70 text-xs mt-2">
+                        Referencia inicial disponible: cierre de la semana {anchor.report.week}
+                        {anchor.report.week_end ? ' (' + anchor.report.week_end + ')' : ''}. Se aplicará al próximo conteo que se cargue.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-amber-100/80 text-xs mt-1">
+                      Ninguna de las semanas seleccionadas ({filtered.map(w => w.report.week).join(', ')}) trajo conteo de inventario, y tampoco hay un conteo anterior fuera del rango que sirva como referencia inicial.
+                    </p>
+                  )}
+                  <p className="text-amber-100/60 text-xs mt-2">
+                    Las ventas y compras aparecen en las otras vistas pero no producen consumo consolidado hasta que se cargue el próximo inventario.
+                  </p>
+                </div>
+              )
+            })()}
 
             {detailData && !isSelectedWeekSkipped().skipped && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
                   {(() => {
+                    // "Actividad" = compras y ventas realmente incluidas.
+                    // Excluye la semana anchor (solo aporta inventario inicial de referencia).
+                    const actFirst = detailData.activityFirstLabel || detailData.fullWeek
+                    const actLast  = detailData.activityLastLabel  || detailData.fullWeek
+                    const actStart = detailData.activityWeekStart
+                    const actEnd   = detailData.activityWeekEnd
                     if (isMultiPeriod) {
                       const totalWeeks = periodSeries.reduce((s: number, p: any) => s + (p.periodWeekCount || 1), 0)
-                      return `Período — ${periodSeries[0].fullWeek} → ${periodSeries[periodSeries.length - 1].fullWeek} (${periodSeries.length} cierre${periodSeries.length !== 1 ? 's' : ''} de inventario, ${totalWeeks} semana${totalWeeks !== 1 ? 's' : ''} de actividad)`
+                      return `Período analizado — ${actFirst} → ${actLast} (${periodSeries.length} cierre${periodSeries.length !== 1 ? 's' : ''}, ${totalWeeks} semana${totalWeeks !== 1 ? 's' : ''} de actividad)`
                     }
                     if (consolidatedSkippedWeeks.length > 0) {
-                      return `Cálculo consolidado — ${detailData.fullWeek} + ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario (${consolidatedSkippedWeeks.join(', ')})`
+                      return `Período analizado — ${actFirst} → ${actLast} (incluye ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario: ${consolidatedSkippedWeeks.join(', ')})`
                     }
-                    return `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`
+                    return `Semana ${detailWeek?.report?.week}${actStart && actEnd ? ' — actividad ' + actStart + ' al ' + actEnd : ''}`
                   })()}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -1460,14 +1447,19 @@ export default function CostoUsoPage() {
                     })}
                     disabled={detailData.totalVariacion === null}
                     className="bg-gray-900 border border-gray-800 hover:border-blue-700 hover:bg-gray-800 rounded-xl p-5 text-left transition disabled:cursor-default disabled:hover:bg-gray-900 disabled:hover:border-gray-800"
-                    title={detailData.totalVariacion === null ? 'No calculable: falta información teórica en alguna categoría con ventas.' : 'Click para ver el desglose de la variación: waste, voids, comps, items sin receta y residuo'}>
+                    title={detailData.totalVariacion === null
+                      ? VARIANCE_REASON_LONG[detailData.totalVariacionReason || 'partial_total_theo']
+                      : 'Click para ver el desglose de la variación: waste, voids, comps, items sin receta y residuo'}>
                     <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'del período' : ''} <span className="text-blue-400 text-xs">🔍</span></p>
                     <p className={`text-3xl font-bold ${detailData.totalVariacion === null ? 'text-gray-500' : detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                       {detailData.totalVariacion !== null ? (detailData.totalVariacion > 0 ? '+' : '') + fmt(detailData.totalVariacion) : '—'}
                     </p>
                     <p className="text-gray-600 text-xs mt-1">
                       {detailData.totalVariacion === null
-                        ? 'No calculable: teórico incompleto'
+                        ? (VARIANCE_REASON_LABEL[detailData.totalVariacionReason || 'partial_total_theo'])
+                            + (detailData.totalVariacionReason === 'partial_total_theo' && (detailData.totalVariacionMissingCategories || []).length > 0
+                              ? ' (' + (detailData.totalVariacionMissingCategories as string[]).map(k => CATEGORY_LABELS[k] || k).join(', ') + ')'
+                              : '')
                         : detailData.totalVariacion > 0
                           ? 'sobre lo teórico · click para analizar'
                           : detailData.totalVariacion < 0
@@ -1614,7 +1606,12 @@ export default function CostoUsoPage() {
                                     {variacion > 0 ? '+' : ''}{fmt(variacion)}
                                   </button>
                                 ) : variacion === null ? (
-                                  <span className="text-gray-500" title="No calculable: falta información teórica en esta categoría o alguna semana del período.">— <span className="text-xs">no calc.</span></span>
+                                  <span
+                                    className="text-gray-500"
+                                    title={VARIANCE_REASON_LONG[detailData[cat.key + '_variacion_reason'] || 'partial_theo']}
+                                  >
+                                    — <span className="text-xs">{VARIANCE_REASON_LABEL[detailData[cat.key + '_variacion_reason'] || 'partial_theo'].replace(/^no calculable · /, '').slice(0, 24)}…</span>
+                                  </span>
                                 ) : <span className="text-gray-400">$0</span>}
                               </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>

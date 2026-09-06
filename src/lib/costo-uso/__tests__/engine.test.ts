@@ -27,6 +27,65 @@ const BASE_CTX = {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// VarianceReason — causa concreta cuando la variación es null
+// ═════════════════════════════════════════════════════════════════════════
+describe('[EXACT] varianceReason indica la causa real, no un mensaje único', () => {
+  const inv = [{ account: 'Food Inventory', current_value: 500, previous_value: 500 }]
+
+  it('ok cuando hay ventas positivas y teórico presente', () => {
+    const w = makeWeek({ week: 'X', salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 }, inventory: inv, theoCostByCat: { food: 90 } })
+    const d = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] }).buildWeekData(w)
+    expect(d.food_variacion_reason).toBe('ok')
+    expect(d.food_variacion).not.toBeNull()
+  })
+
+  it('no_theo_source cuando productMix está ausente', () => {
+    const w = makeWeek({ week: 'X', salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 }, inventory: inv })
+    const d = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] }).buildWeekData(w)
+    expect(d.food_variacion_reason).toBe('no_theo_source')
+    expect(d.food_variacion).toBeNull()
+  })
+
+  it('partial_theo cuando productMix existe pero la categoría no aparece', () => {
+    const w = makeWeek({ week: 'X', salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 }, inventory: inv, theoCostByCat: { liquor: 50 } })
+    const d = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] }).buildWeekData(w)
+    expect(d.food_variacion_reason).toBe('partial_theo')
+    expect(d.food_variacion).toBeNull()
+  })
+
+  it('zero_sales cuando catSales === 0 (incluso con teórico completo)', () => {
+    const w = makeWeek({ week: 'X', salesCats: [{ name: 'FOOD', net: 0 }], cogs: { food: 100 }, inventory: inv, theoCostByCat: { food: 90 } })
+    const d = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] }).buildWeekData(w)
+    expect(d.food_variacion_reason).toBe('zero_sales')
+    expect(d.food_variacion).toBeNull()
+  })
+
+  it('negative_sales cuando catSales < 0', () => {
+    const w = makeWeek({ week: 'X', salesCats: [{ name: 'FOOD', net: -100 }], cogs: { food: 100 }, inventory: inv, theoCostByCat: { food: 90 } })
+    const d = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] }).buildWeekData(w)
+    expect(d.food_variacion_reason).toBe('negative_sales')
+    expect(d.food_variacion).toBeNull()
+  })
+
+  it('partial_total_theo cuando total ABSales>0 pero alguna cat con ventas no tiene teórico', () => {
+    const w = makeWeek({
+      week: 'X',
+      salesCats: [{ name: 'FOOD', net: 5000 }, { name: 'LIQUOR', net: 1000 }],
+      cogs: { food: 400, liquor: 100 },
+      inventory: [
+        { account: 'Food Inventory', current_value: 500, previous_value: 500 },
+        { account: 'Alcoholic Inventory', current_value: 200, previous_value: 200 },
+      ],
+      theoCostByCat: { food: 380 },   // liquor con ventas y sin teórico
+    })
+    const d = createCostoUsoEngine({ ...BASE_CTX, weeks: [w] }).buildWeekData(w)
+    expect(d.totalVariacionReason).toBe('partial_total_theo')
+    expect(d.totalVariacionMissingCategories).toContain('liquor')
+    expect(d.totalVariacion).toBeNull()
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════
 // CASO 1 — [EXACT] Semana normal con inventarios y datos completos
 // ═════════════════════════════════════════════════════════════════════════
 describe('[EXACT] Caso 1 — semana normal Food-only', () => {
