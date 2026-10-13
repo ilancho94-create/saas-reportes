@@ -32,7 +32,7 @@ export default function AvtPage() {
   const [weeks, setWeeks] = useState<any[]>([])
   const [selectedWeek, setSelectedWeek] = useState('')
   const restaurantIdHook = useRestaurantId()
-  const restaurantId = restaurantIdHook || '00000000-0000-0000-0000-000000000001'
+  const restaurantId = restaurantIdHook
   const [restaurantName, setRestaurantName] = useState('')
   const [tracking, setTracking] = useState<Record<string, any>>({})
   const [allTracking, setAllTracking] = useState<any[]>([])
@@ -351,6 +351,12 @@ export default function AvtPage() {
               Subir reporte
             </button>
           </div>
+        ) : isSelectedWeekSkipped().skipped ? (
+          <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">
+            <div className="text-5xl mb-4">📭</div>
+            <h2 className="text-white font-semibold text-lg mb-2">Sin AvT para esta semana</h2>
+            <p className="text-gray-500">La semana está marcada como saltada; no hay conteo de inventario y por lo tanto no hay AvT.</p>
+          </div>
         ) : activeTab === 'dashboard' ? (
           <>
             <div className="flex items-center gap-3 flex-wrap">
@@ -381,20 +387,19 @@ export default function AvtPage() {
               </div>
             </div>
 
-            {/* ── NUEVO: Banner informativo cuando varianzas cubren semanas saltadas ── */}
+            {/* Las semanas saltadas NO están cubiertas por este AvT (R365 solo lo computa para la semana con conteo). */}
             {(() => {
               const covered = getCoveredSkippedWeeks(selectedWeek)
               if (covered.length === 0) return null
-              const totalSemanas = covered.length + 1
               return (
                 <div className="bg-orange-950 border border-orange-800 rounded-xl px-5 py-3 flex items-start gap-3">
                   <span className="text-orange-400 text-xl mt-0.5">📭</span>
                   <div className="flex-1">
                     <p className="text-orange-300 text-sm font-medium">
-                      Estas varianzas cubren {totalSemanas} semanas: {covered.join(', ')} (sin inventario) + {selectedWeek}
+                      AvT de R365 solo de esta semana ({selectedWeek}); las semanas saltadas ({covered.join(', ')}) no tienen AvT.
                     </p>
                     <p className="text-orange-500 text-xs mt-1 leading-relaxed">
-                      R365 acumuló las diferencias de las semanas saltadas en este reporte. Los totales y montos individuales corresponden al rango completo.
+                      R365 calcula el AvT a partir del conteo de inventario de la semana. Las semanas sin conteo no aparecen aquí y no están incluidas en los totales.
                     </p>
                   </div>
                 </div>

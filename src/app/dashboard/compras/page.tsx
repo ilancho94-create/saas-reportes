@@ -12,7 +12,7 @@ const CATEGORIES = ['Todas', 'BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
 
 export default function ComprasPage() {
   const restaurantIdHook = useRestaurantId()
-  const restaurantId = restaurantIdHook || '00000000-0000-0000-0000-000000000001'
+  const restaurantId = restaurantIdHook
   const [restaurantName, setRestaurantName] = useState('')
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<string[]>([])
