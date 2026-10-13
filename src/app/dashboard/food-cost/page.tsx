@@ -55,11 +55,13 @@ export default function FoodCostPage() {
       supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
       supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
       supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
+      // ascending:false + limit(52) + reverse() = 52 semanas MÁS RECIENTES,
+      // en orden ascendente (como el resto del cálculo espera).
       supabase.from('reports').select(`
         id, week, week_start, week_end, restaurant_id,
         sales_data(net_sales, categories),
         cogs_data(total, by_category, by_vendor)
-      `).eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52),
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(52),
     ])
 
     setRestaurantName(restRes.data?.name || '')
@@ -75,7 +77,7 @@ export default function FoodCostPage() {
     if (!reports || reports.length === 0) { setLoading(false); return }
 
     const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
-    const weeksData = reports.map((r: any) => {
+    const weeksData = reports.slice().reverse().map((r: any) => {
       const { sales_data, cogs_data, ...report } = r
       return { report, sales: pickOne(sales_data), cogs: pickOne(cogs_data) }
     })
@@ -127,7 +129,12 @@ export default function FoodCostPage() {
     if (!categories || !mappings.length) return 0
     return categories
       .filter((cat: any) => {
-        const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
+        // Filtra por source_system='toast' para no capturar un mapeo de
+        // R365 con nombre idéntico.
+        const mapping = mappings.find(m =>
+          m.source_system === 'toast' &&
+          m.source_category.toLowerCase() === cat.name.toLowerCase()
+        )
         return mapping?.mapped_to === targetType
       })
       .reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
@@ -137,12 +144,15 @@ export default function FoodCostPage() {
     const netSales = w.sales?.net_sales || 0
     const cat = w.cogs?.by_category || {}
     const categories = w.sales?.categories || []
-    const foodSales = getMappedSales(categories, 'food') || netSales
-    const beerSales = getMappedSales(categories, 'beer') || netSales
-    const liquorSales = getMappedSales(categories, 'liquor') || netSales
-    const naBevSales = getMappedSales(categories, 'na_beverage') || netSales
-    const wineSales = getMappedSales(categories, 'wine') || netSales
-    const totalABSales = foodSales + beerSales + liquorSales + naBevSales + wineSales || netSales
+    // Sin fallback por categoría: si no hay ventas mapeadas a esa
+    // categoría, su denominador es 0 y la fracción quedará null; el
+    // denominador combinado A&B es la suma real de A&B.
+    const foodSales = getMappedSales(categories, 'food')
+    const beerSales = getMappedSales(categories, 'beer')
+    const liquorSales = getMappedSales(categories, 'liquor')
+    const naBevSales = getMappedSales(categories, 'na_beverage')
+    const wineSales = getMappedSales(categories, 'wine')
+    const totalABSales = foodSales + beerSales + liquorSales + naBevSales + wineSales
     const totalABRaw = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
     return {
       week: w.report.week.replace('2026-', ''),
@@ -167,6 +177,28 @@ export default function FoodCostPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [filtered, mappings]
   )
+
+  // Avisos: categorías de ventas de Toast que no tienen mapeo en
+  // category_mappings con source_system='toast'. Se calcula sobre el
+  // rango filtrado y se deduplica por nombre.
+  const unmappedCats: string[] = useMemo(() => {
+    if (!mappings.length) return []
+    const toastMap = new Set(
+      mappings
+        .filter((m: any) => m.source_system === 'toast')
+        .map((m: any) => (m.source_category || '').toLowerCase())
+    )
+    const seen = new Set<string>()
+    for (const w of filtered) {
+      const cats = (w.sales?.categories || []) as any[]
+      for (const cat of cats) {
+        const name = (cat?.name || '').trim()
+        if (!name) continue
+        if (!toastMap.has(name.toLowerCase())) seen.add(name)
+      }
+    }
+    return Array.from(seen).sort()
+  }, [filtered, mappings])
   const latest = filtered[filtered.length - 1]
   const latestData = latest ? buildWeekData(latest) : null
   const weekAData = compareA ? buildWeekData(weeks.find(w => w.report.week === compareA) || weeks[0]) : null
@@ -371,6 +403,19 @@ export default function FoodCostPage() {
       </div>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+        {unmappedCats.length > 0 && (
+          <div className="bg-yellow-950 border border-yellow-900 rounded-xl px-5 py-3 flex items-start gap-3">
+            <span className="text-yellow-400 text-lg">⚠️</span>
+            <div className="flex-1">
+              <p className="text-yellow-300 text-sm font-medium">
+                Categorías de ventas sin mapear: {unmappedCats.join(', ')}
+              </p>
+              <p className="text-yellow-500 text-xs mt-1 leading-relaxed">
+                Estas categorías de Toast no están mapeadas en Settings {'>'}Mapeo. Sus ventas no se contaron en el denominador por categoría. Mapea cada una para que la fracción sea correcta.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="bg-orange-950 border border-orange-900 rounded-xl px-5 py-3 flex items-start gap-3">
           <span className="text-orange-400 text-lg">ℹ️</span>
           <div>

@@ -179,6 +179,9 @@ export default function CostoUsoPage() {
       supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
       supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
       supabase.from('discount_mappings').select('discount_name').eq('restaurant_id', restaurantId).eq('is_operational', true),
+      // ascending:false + limit(52) + reverse() = últimas 52 semanas,
+      // en orden ascendente para el resto del cálculo. Antes esto traía
+      // las 52 MÁS VIEJAS.
       supabase.from('reports').select(`
         id, week, week_start, week_end, restaurant_id,
         sales_data(net_sales, categories),
@@ -188,7 +191,7 @@ export default function CostoUsoPage() {
         discounts_data(total, items),
         waste_data(total_cost, items),
         voids_data(total, items)
-      `).eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52),
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(52),
       supabase.from('costo_uso_adjustments').select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false }),
       supabase.from('skipped_inventory_weeks').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true }),
       userRestaurantPromise,
@@ -235,7 +238,7 @@ export default function CostoUsoPage() {
     const reports = reportsRes.data
     if (!reports || reports.length === 0) { setLoading(false); return }
     const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
-    const weeksData = reports.map((r: any) => {
+    const weeksData = reports.slice().reverse().map((r: any) => {
       const { sales_data, cogs_data, inventory_data, product_mix_data, discounts_data, waste_data, voids_data, ...report } = r
       return {
         report,
@@ -383,6 +386,28 @@ export default function CostoUsoPage() {
     }
     return weeks.slice(-4)
   }, [weeks, shortcut, selectedWeek, customFrom, customTo])
+
+  // Avisos: categorías de ventas de Toast sin mapeo (source_system='toast').
+  // Si una categoría no está mapeada no contribuye al denominador y la
+  // fracción queda baja; el aviso le dice al usuario que vaya a Settings.
+  const unmappedCats: string[] = useMemo(() => {
+    if (!mappings.length) return []
+    const toastMap = new Set(
+      mappings
+        .filter((m: any) => m.source_system === 'toast')
+        .map((m: any) => (m.source_category || '').toLowerCase())
+    )
+    const seen = new Set<string>()
+    for (const w of filtered) {
+      const cats = (w.sales?.categories || []) as any[]
+      for (const cat of cats) {
+        const name = (cat?.name || '').trim()
+        if (!name) continue
+        if (!toastMap.has(name.toLowerCase())) seen.add(name)
+      }
+    }
+    return Array.from(seen).sort()
+  }, [filtered, mappings])
 
   // ── Contexto iterativo compartido con el PPTX ──────────────────────
   // Cuando la selección de la UI cambia, disparamos el mismo loader que
@@ -1299,6 +1324,20 @@ export default function CostoUsoPage() {
             <p className="text-yellow-300 text-sm">{alert}</p>
           </div>
         ))}
+
+        {unmappedCats.length > 0 && (
+          <div className="bg-yellow-950 border border-yellow-800 rounded-xl px-5 py-3 flex items-start gap-3">
+            <span className="text-yellow-400 shrink-0">⚠️</span>
+            <div className="flex-1">
+              <p className="text-yellow-300 text-sm font-medium">
+                Categoría{unmappedCats.length === 1 ? '' : 's'} de ventas sin mapear: {unmappedCats.join(', ')}
+              </p>
+              <p className="text-yellow-500 text-xs mt-1 leading-relaxed">
+                Mapéa{unmappedCats.length === 1 ? '' : 'las'} en Settings {'>'}Mapeo (source_system = Toast) para que su{unmappedCats.length === 1 ? '' : 's'} venta{unmappedCats.length === 1 ? '' : 's'} cuente{unmappedCats.length === 1 ? '' : 'n'} en el denominador.
+              </p>
+            </div>
+          </div>
+        )}
 
         {!hasInventory ? (
           <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">

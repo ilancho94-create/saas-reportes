@@ -161,11 +161,16 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     return ctx.adjustments.filter(a => a.week === week)
   }
 
+  // Filtra por source_system='toast': evita que un mapeo de R365 con el
+  // mismo nombre de categoría gane sobre uno de Toast.
   function getMappedSales(categories: any[], targetType: string): number {
     if (!categories || !ctx.mappings.length) return 0
     return categories
       .filter((cat: any) => {
-        const mapping = ctx.mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
+        const mapping = ctx.mappings.find(m =>
+          m.source_system === 'toast' &&
+          m.source_category.toLowerCase() === cat.name.toLowerCase()
+        )
         return mapping?.mapped_to === targetType
       })
       .reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
@@ -175,7 +180,10 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     if (!categories || !ctx.mappings.length) return 0
     return categories
       .filter((cat: any) => {
-        const mapping = ctx.mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
+        const mapping = ctx.mappings.find(m =>
+          m.source_system === 'toast' &&
+          m.source_category.toLowerCase() === cat.name.toLowerCase()
+        )
         return mapping?.mapped_to === targetType
       })
       .reduce((sum: number, cat: any) => sum + Number(cat.gross || cat.net || 0), 0)
