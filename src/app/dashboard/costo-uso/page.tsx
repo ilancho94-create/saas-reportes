@@ -257,12 +257,15 @@ export default function CostoUsoPage() {
     setCustomTo(last?.report.week || '')
 
     const newAlerts: string[] = []
-    for (let i = 1; i < weeksData.length; i++) {
-      const prev = weeksData[i - 1]; const curr = weeksData[i]
-      if (prev.inventory && curr.inventory) {
-        const diff = Math.abs(Number(prev.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous))
-        if (diff > 10) newAlerts.push(`⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: diferencia de $${diff.toFixed(0)} en inventario`)
+    const skippedSetForAlerts = new Set((skippedRes.data || []).map((s: any) => s.week))
+    let lastInv: any = null
+    for (const curr of weeksData) {
+      if (!curr.inventory || skippedSetForAlerts.has(curr.report.week)) continue
+      if (lastInv) {
+        const diff = Math.abs(Number(lastInv.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous))
+        if (diff > 10) newAlerts.push(`⚠️ ${lastInv.report.week}→${curr.report.week}: inventario no encadena ($${diff.toFixed(0)})`)
       }
+      lastInv = curr
     }
     setAlerts(newAlerts)
     setLoading(false)
@@ -1129,6 +1132,18 @@ export default function CostoUsoPage() {
                     Al marcar la semana sin inventario, el cálculo de Costo de Uso se consolidará automáticamente cuando se haga inventario en una semana posterior.
                   </p>
                 </div>
+                {(() => {
+                  const wk = weeks.find(w => w.report.week === skipWeekTarget)
+                  const hasInv = !!(wk && wk.inventory && Array.isArray(wk.inventory.by_account) && wk.inventory.by_account.length > 0)
+                  if (!hasInv) return null
+                  return (
+                    <div className="bg-amber-950 border border-amber-900 rounded-lg px-4 py-3">
+                      <p className="text-amber-300 text-xs leading-relaxed">
+                        Esta semana tiene conteo cargado; se ignorará en el cálculo.
+                      </p>
+                    </div>
+                  )
+                })()}
                 <div>
                   <label className="text-gray-400 text-xs block mb-1">Motivo <span className="text-red-400">*</span></label>
                   <textarea value={skipReason} onChange={e => setSkipReason(e.target.value)}

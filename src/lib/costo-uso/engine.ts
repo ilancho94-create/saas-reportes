@@ -185,7 +185,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     const idx = ctx.weeks.findIndex(w => w.report.week === targetWeek.report.week)
     if (idx <= 0) return null
     for (let i = idx - 1; i >= 0; i--) {
-      if (ctx.weeks[i].inventory?.by_account?.length > 0) return ctx.weeks[i]
+      // Una semana marcada como skipped NO puede ser anchor aunque
+      // traiga inventory_data (ignoramos ese conteo en el cálculo).
+      if (ctx.weeks[i].inventory?.by_account?.length > 0 && !ctx.skippedWeekSet.has(ctx.weeks[i].report.week)) return ctx.weeks[i]
     }
     return null
   }
@@ -489,7 +491,9 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     let intermediates: any[] = [...preIntermediates]
 
     for (const w of weekList) {
-      const hasInv = w.inventory?.by_account?.length > 0
+      // Una semana marcada como skipped NO cierra período aunque
+      // tenga inventory_data cargado; se absorbe como intermedia.
+      const hasInv = w.inventory?.by_account?.length > 0 && !ctx.skippedWeekSet.has(w.report.week)
       if (!hasInv) {
         intermediates.push(w)
         continue
