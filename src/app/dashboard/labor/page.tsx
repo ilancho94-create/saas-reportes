@@ -35,11 +35,13 @@ export default function LaborPage() {
     // 2 queries en paralelo con embedded select (antes: 1 + 1 + 12*2 = 26).
     const [restRes, reportsRes] = await Promise.all([
       supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      // Ordenar por semana (no por created_at): una subida tardía de
+      // una semana vieja no debe aparecer como "latest".
       supabase.from('reports').select(`
         id, week, week_start, week_end, restaurant_id, created_at,
         sales_data(net_sales),
         labor_data(total_pay, total_hours, total_ot_hours, by_position, by_employee)
-      `).eq('restaurant_id', restaurantId).order('created_at', { ascending: false }).limit(12),
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12),
     ])
 
     setRestaurantName(restRes.data?.name || '')

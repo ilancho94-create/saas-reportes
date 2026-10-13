@@ -400,9 +400,13 @@ async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileTy
     insertData.total_hours = data.total_regular_hours; insertData.total_ot_hours = data.total_ot_hours
     insertData.total_pay = data.total_pay; insertData.by_position = data.by_position
     insertData.by_employee = data.by_employee
+    insertData.hours_unpaid_regular = data.hours_unpaid_regular
+    insertData.hours_unpaid_ot = data.hours_unpaid_ot
+    insertData.by_employee_unpaid = data.by_employee_unpaid
   } else if (fileType === 'cogs') {
     insertData.total = data.total; insertData.by_vendor = data.by_vendor
     insertData.by_category = data.by_category
+    insertData.by_account = data.by_account
   } else if (fileType === 'waste') {
     insertData.total_cost = data.total_cost; insertData.items = data.items
   } else if (fileType === 'voids') {

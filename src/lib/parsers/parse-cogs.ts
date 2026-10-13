@@ -70,12 +70,15 @@ export function parseCOGSExcel(buffer: Buffer): any {
   })
 
   // ── by_vendor ─────────────────────────────────────────────────────────────
+  // SheetJS lee celdas vacías como "" cuando defval es null solo para
+  // celdas FUERA de la hoja útil; dentro, un "" sigue siendo string.
+  // Antes `r[1] == null` perdía los vendors cuando la celda era "".
   const by_vendor = rows
     .filter((r: any[], i: number) => {
       if (i < 7) return false
-      return r[0] != null && String(r[0]).trim() !== '' &&
-             String(r[0]).trim() !== 'Total' &&
-             r[1] == null
+      const firstCell = String(r[0] ?? '').trim()
+      return firstCell !== '' && firstCell !== 'Total' &&
+             (r[1] == null || String(r[1]).trim() === '')
     })
     .map((r: any[]) => ({
       name:        String(r[0]).trim(),

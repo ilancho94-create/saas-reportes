@@ -41,9 +41,12 @@ export function parseLaborCsv(csvContent: string): any {
   const iOtPay      = idx('Overtime Pay')
   const iTotalPay   = idx('Total Pay')
 
-  // Solo empleados con Hourly Rate > 0
-  const employees = rows
-    .filter(r => r[iHourlyRate] && num(r[iHourlyRate]) > 0)
+  // Mapeo de todas las filas con datos de empleado (sin filtrar por
+  // Hourly Rate). Asalariados y usuarios "placeholder" como "Bar, Bar"
+  // reportan horas pero no pay/hourly_rate; se guardan para que el total
+  // de horas cuadre con Toast.
+  const allRows = rows
+    .filter(r => (r[iEmployee] || '').trim() !== '')
     .map(r => ({
       name:          (r[iEmployee] || '').trim(),
       position:      (r[iJobTitle] || '').trim(),
@@ -55,12 +58,24 @@ export function parseLaborCsv(csvContent: string): any {
       total_pay:     num(r[iTotalPay]),
     }))
 
-  // Totales
+  // Pagados: hourly_rate > 0. Siguen siendo los que alimentan los
+  // totales y el by_position históricos (el UI de labor espera que el
+  // total_pay sea solo de empleados pagados).
+  const employees = allRows.filter(r => r.hourly_rate > 0)
+  // No-pagados: filas sin hourly_rate, usadas para completar el total
+  // de horas que Toast reporta.
+  const unpaidRows = allRows.filter(r => r.hourly_rate <= 0)
+
+  // Totales (solo pagados — mantiene compatibilidad con la UI actual)
   const total_regular_hours = parseFloat(employees.reduce((s, e) => s + e.regular_hours, 0).toFixed(2))
   const total_ot_hours      = parseFloat(employees.reduce((s, e) => s + e.ot_hours, 0).toFixed(2))
   const total_pay           = parseFloat(employees.reduce((s, e) => s + e.total_pay, 0).toFixed(2))
 
-  // Por puesto
+  // Horas no pagadas, para cuadrar con Toast.
+  const hours_unpaid_regular = parseFloat(unpaidRows.reduce((s, r) => s + r.regular_hours, 0).toFixed(2))
+  const hours_unpaid_ot      = parseFloat(unpaidRows.reduce((s, r) => s + r.ot_hours, 0).toFixed(2))
+
+  // Por puesto (solo pagados)
   const posMap: Record<string, { regular_hours: number; ot_hours: number; total_pay: number }> = {}
   employees.forEach(e => {
     if (!posMap[e.position]) posMap[e.position] = { regular_hours: 0, ot_hours: 0, total_pay: 0 }
@@ -79,8 +94,11 @@ export function parseLaborCsv(csvContent: string): any {
     total_regular_hours,
     total_ot_hours,
     total_pay,
+    hours_unpaid_regular,
+    hours_unpaid_ot,
     by_position,
     by_employee: employees,
+    by_employee_unpaid: unpaidRows,
     date_warning: null,
   }
 }
