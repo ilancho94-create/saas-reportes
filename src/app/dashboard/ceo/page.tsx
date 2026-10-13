@@ -24,7 +24,7 @@ async function fetchInitialCeoData(): Promise<CeoInitialData> {
     .select('restaurant_id, role')
     .eq('user_id', user.id)
 
-  if (!userRests?.length) return { allRestData: [], sortedWeeks: [] }
+  if (!userRests?.length) return { allRestData: [], sortedWeeks: [], skippedByRest: {} }
   const restIds = userRests.map((r: any) => r.restaurant_id)
 
   const reportsSelect = `
@@ -39,15 +39,23 @@ async function fetchInitialCeoData(): Promise<CeoInitialData> {
     avt_data(net_variance, total_shortage_dollar, total_overage_dollar)
   `
 
-  const [restsRes, ...reportsByRest] = await Promise.all([
+  const [restsRes, skippedRes, ...reportsByRest] = await Promise.all([
     supabase.from('restaurants').select('*').in('id', restIds),
+    supabase.from('skipped_inventory_weeks')
+      .select('restaurant_id, week').in('restaurant_id', restIds),
     ...restIds.map((rid: string) =>
       supabase.from('reports').select(reportsSelect)
         .eq('restaurant_id', rid).order('week', { ascending: false }).limit(13)
     ),
   ])
 
-  if (!restsRes.data?.length) return { allRestData: [], sortedWeeks: [] }
+  if (!restsRes.data?.length) return { allRestData: [], sortedWeeks: [], skippedByRest: {} }
+
+  const skippedByRest: Record<string, string[]> = {}
+  for (const row of ((skippedRes.data || []) as any[])) {
+    if (!skippedByRest[row.restaurant_id]) skippedByRest[row.restaurant_id] = []
+    skippedByRest[row.restaurant_id].push(row.week)
+  }
 
   const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
   const mapReport = (r: any) => {
@@ -80,7 +88,7 @@ async function fetchInitialCeoData(): Promise<CeoInitialData> {
   allRestData.forEach((r: any) => r.weeks.forEach((w: any) => weekSet.add(w.report.week)))
   const sortedWeeks = Array.from(weekSet).sort().reverse()
 
-  return { allRestData, sortedWeeks }
+  return { allRestData, sortedWeeks, skippedByRest }
 }
 
 export default async function CeoPage() {
