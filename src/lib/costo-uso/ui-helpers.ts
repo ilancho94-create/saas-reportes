@@ -63,8 +63,8 @@ export const DIAG_LABELS: Record<string, { title: string; hint: string }> = {
     hint: 'Estas semanas se cargaron sin inventario y aún no hay una semana posterior que las consolide.',
   },
   negative_gross_consumption: {
-    title: 'Consumo antes de ajustarlo a cero',
-    hint: 'El cálculo (inventario inicial + compras − inventario final) dio negativo y se muestra como 0. Puede indicar problemas de conteo, factura tardía o transferencia entre unidades.',
+    title: 'Uso negativo detectado',
+    hint: 'El cálculo (inventario inicial + compras − inventario final) dio negativo. Se publica tal cual para revisar: conteo erróneo, factura tardía o transferencia entre unidades.',
   },
   duplicate_week: {
     title: 'Semana con más de un reporte cargado',

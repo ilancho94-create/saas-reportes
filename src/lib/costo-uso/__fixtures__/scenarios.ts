@@ -5,7 +5,7 @@
 
 export interface ScenarioInput {
   weeks: any[]
-  mappings: { source_category: string; mapped_to: string }[]
+  mappings: { source_system: string; source_category: string; mapped_to: string }[]
   adjustments: any[]
   skippedWeeks: any[]
   opDiscountMappings: string[]
@@ -15,11 +15,11 @@ export interface ScenarioInput {
 }
 
 const MAPPINGS_FULL = [
-  { source_category: 'FOOD',       mapped_to: 'food' },
-  { source_category: 'LIQUOR',     mapped_to: 'liquor' },
-  { source_category: 'BEER',       mapped_to: 'beer' },
-  { source_category: 'WINE',       mapped_to: 'wine' },
-  { source_category: 'NA BEV',     mapped_to: 'na_beverage' },
+  { source_system: 'toast', source_category: 'FOOD',       mapped_to: 'food' },
+  { source_system: 'toast', source_category: 'LIQUOR',     mapped_to: 'liquor' },
+  { source_system: 'toast', source_category: 'BEER',       mapped_to: 'beer' },
+  { source_system: 'toast', source_category: 'WINE',       mapped_to: 'wine' },
+  { source_system: 'toast', source_category: 'NA BEV',     mapped_to: 'na_beverage' },
 ]
 
 function week(
@@ -94,8 +94,8 @@ export function getScenario(name: string): ScenarioInput | null {
           }),
         ],
         mappings: [
-          { source_category: 'FOOD',   mapped_to: 'food' },
-          { source_category: 'LIQUOR', mapped_to: 'liquor' },
+          { source_system: 'toast', source_category: 'FOOD',   mapped_to: 'food' },
+          { source_system: 'toast', source_category: 'LIQUOR', mapped_to: 'liquor' },
         ],
         adjustments: [],
         skippedWeeks: [],
@@ -117,7 +117,7 @@ export function getScenario(name: string): ScenarioInput | null {
             productMixRaw: { unmatched_items: [] },
           }),
         ],
-        mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+        mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
         adjustments: [], skippedWeeks: [], opDiscountMappings: [],
         requestedRange: { from: '2026-W20', to: '2026-W20' },
       }
@@ -134,7 +134,7 @@ export function getScenario(name: string): ScenarioInput | null {
             // sin productMix
           }),
         ],
-        mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+        mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
         adjustments: [], skippedWeeks: [], opDiscountMappings: [],
         requestedRange: { from: '2026-W21', to: '2026-W21' },
       }
@@ -152,7 +152,7 @@ export function getScenario(name: string): ScenarioInput | null {
             productMixRaw: { unmatched_items: [] },
           }),
         ],
-        mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+        mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
         adjustments: [], skippedWeeks: [], opDiscountMappings: [],
         requestedRange: { from: '2026-W22', to: '2026-W22' },
       }
@@ -196,7 +196,7 @@ export function getScenario(name: string): ScenarioInput | null {
             productMixRaw: { unmatched_items: [] },
           }),
         ],
-        mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+        mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
         adjustments: [], skippedWeeks: [], opDiscountMappings: [],
         requestedRange: { from: '2026-W20', to: '2026-W22' },
       }
@@ -225,7 +225,7 @@ export function getScenario(name: string): ScenarioInput | null {
             invAccounts: null,
           }),
         ],
-        mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+        mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
         adjustments: [], skippedWeeks: [], opDiscountMappings: [],
         // Solicitud solo W31..W32 → no hay período, pero W30 sí es referencia
         requestedRange: { from: '2026-W31', to: '2026-W32' },
@@ -252,7 +252,7 @@ export function getScenario(name: string): ScenarioInput | null {
             productMixRaw: { unmatched_items: [] },
           }),
         ],
-        mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+        mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
         adjustments: [], skippedWeeks: [], opDiscountMappings: [],
         requestedRange: { from: '2026-W40', to: '2026-W41' },
       }
@@ -277,7 +277,7 @@ export function getScenario(name: string): ScenarioInput | null {
             productMixRaw: { unmatched_items: [] },
           }),
         ],
-        mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+        mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
         adjustments: [], skippedWeeks: [], opDiscountMappings: [],
         // Solo W15 seleccionada → el motor absorbe W14 como anchor externo.
         requestedRange: { from: '2026-W15', to: '2026-W15' },

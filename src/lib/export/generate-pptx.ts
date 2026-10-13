@@ -646,7 +646,7 @@ async function addCostoUso(pptx: any, logoUrl: string|undefined, restName: strin
     warnings.push('Costo teórico ausente o incompleto en al menos una categoría con ventas.')
   }
   if (diagItems.some(d => d.type === 'negative_gross_consumption')) {
-    warnings.push('Al menos un período tuvo consumo bruto negativo (mostrado como 0).')
+    warnings.push('Al menos un período tuvo uso negativo; revisar conteo/compras.')
   }
   if (diagItems.some(d => d.type === 'inventory_carry_mismatch')) {
     warnings.push('Discrepancia entre inv. final y siguiente inv. inicial en al menos una semana.')

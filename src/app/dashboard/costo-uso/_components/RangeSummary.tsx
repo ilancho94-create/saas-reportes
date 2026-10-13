@@ -135,7 +135,7 @@ export function RangeSummary({
                 )}
                 {it.type === 'negative_gross_consumption' && (
                   <p className="text-gray-500 text-xs mt-1">
-                    Consumo antes de ajustar a cero: {fmt(it.evidence?.bruto)}
+                    Uso negativo publicado: {fmt(it.evidence?.bruto)}
                   </p>
                 )}
                 {it.type === 'missing_week' && it.evidence?.previousWeekEnd && it.evidence?.nextWeekStart && (

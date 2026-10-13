@@ -69,6 +69,10 @@ export async function POST(request: NextRequest) {
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
+    // Fallos de guardado de sales/labor/cogs/inventory se marcan como
+    // críticos: todos son insumos directos de Costo de Uso y la UI debe
+    // ver el error en vez de un "✅" falso.
+    let criticalSaveFailed = false
 
     // ── SALES (.xlsx) ──────────────────────────────────────────────────────
     const salesFile = formData.get('sales') as File | null
@@ -78,14 +82,22 @@ export async function POST(request: NextRequest) {
         const data = parseSalesExcel(buffer)
         const warning = buildSalesDateWarning(data, weekStart, weekEnd)
         if (warning) warnings['sales'] = warning
+        if (data.sanity_warning) warnings['sales_sanity'] = data.sanity_warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await supabase.from('sales_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'sales', data)
-        results['sales'] = { net_sales: data.net_sales, orders: data.orders }
+        const delRes = await supabase.from('sales_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'sales', data)
+        if (saveRes.error) {
+          results['sales'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['sales'] = { net_sales: data.net_sales, orders: data.orders }
+        }
       } catch (err: any) {
         console.error('Error processing sales:', err)
-        results['sales'] = { error: 'No se pudo procesar el archivo de sales' }
+        results['sales'] = { error: err?.message || 'No se pudo procesar el archivo de sales' }
+        criticalSaveFailed = true
       }
     }
 
@@ -95,12 +107,19 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await laborFile.arrayBuffer())
         const data = parseLaborCsv(buffer.toString('utf-8'))
-        await supabase.from('labor_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'labor', data)
-        results['labor'] = { total_pay: data.total_pay, employees: data.by_employee?.length }
+        const delRes = await supabase.from('labor_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'labor', data)
+        if (saveRes.error) {
+          results['labor'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['labor'] = { total_pay: data.total_pay, employees: data.by_employee?.length }
+        }
       } catch (err: any) {
         console.error('Error processing labor:', err)
-        results['labor'] = { error: 'No se pudo procesar el archivo de labor' }
+        results['labor'] = { error: err?.message || 'No se pudo procesar el archivo de labor' }
+        criticalSaveFailed = true
       }
     }
 
@@ -114,12 +133,19 @@ export async function POST(request: NextRequest) {
         if (warning) warnings['cogs'] = warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await supabase.from('cogs_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'cogs', data)
-        results['cogs'] = { total: data.total }
+        const delRes = await supabase.from('cogs_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'cogs', data)
+        if (saveRes.error) {
+          results['cogs'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['cogs'] = { total: data.total }
+        }
       } catch (err: any) {
         console.error('Error processing cogs:', err)
-        results['cogs'] = { error: 'No se pudo procesar el archivo de cogs' }
+        results['cogs'] = { error: err?.message || 'No se pudo procesar el archivo de cogs' }
+        criticalSaveFailed = true
       }
     }
 
@@ -129,12 +155,14 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await voidsFile.arrayBuffer())
         const data = parseVoidsCsv(buffer.toString('latin1'))
-        await supabase.from('voids_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'voids', data)
-        results['voids'] = { total: data.total, items: data.items?.length }
+        const delRes = await supabase.from('voids_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'voids', data)
+        if (saveRes.error) results['voids'] = { error: saveRes.error }
+        else results['voids'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing voids:', err)
-        results['voids'] = { error: 'No se pudo procesar el archivo de voids' }
+        results['voids'] = { error: err?.message || 'No se pudo procesar el archivo de voids' }
       }
     }
 
@@ -144,15 +172,20 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await discountsFile.arrayBuffer())
         const data = parseDiscountsCsv(buffer.toString('latin1'))
-        await supabase.from('discounts_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'discounts', data)
-        if (data._discount_names?.length) {
-          await upsertDiscountMappings(supabase, restaurantId, data._discount_names)
+        const delRes = await supabase.from('discounts_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'discounts', data)
+        if (saveRes.error) {
+          results['discounts'] = { error: saveRes.error }
+        } else {
+          if (data._discount_names?.length) {
+            await upsertDiscountMappings(supabase, restaurantId, data._discount_names)
+          }
+          results['discounts'] = { total: data.total, items: data.items?.length }
         }
-        results['discounts'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing discounts:', err)
-        results['discounts'] = { error: 'No se pudo procesar el archivo de discounts' }
+        results['discounts'] = { error: err?.message || 'No se pudo procesar el archivo de discounts' }
       }
     }
 
@@ -166,12 +199,14 @@ export async function POST(request: NextRequest) {
         if (warning) warnings['waste'] = warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await supabase.from('waste_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'waste', data)
-        results['waste'] = { total_cost: data.total_cost, items: data.items?.length }
+        const delRes = await supabase.from('waste_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'waste', data)
+        if (saveRes.error) results['waste'] = { error: saveRes.error }
+        else results['waste'] = { total_cost: data.total_cost, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing waste:', err)
-        results['waste'] = { error: 'No se pudo procesar el archivo de waste' }
+        results['waste'] = { error: err?.message || 'No se pudo procesar el archivo de waste' }
       }
     }
 
@@ -181,12 +216,22 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await inventoryFile.arrayBuffer())
         const data = parseInventoryExcel(buffer)
-        await supabase.from('inventory_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'inventory', data)
-        results['inventory'] = { grand_total_current: data.grand_total_current }
+        if (data.sanity_warnings && data.sanity_warnings.length > 0) {
+          warnings['inventory_sanity'] = data.sanity_warnings.join(' · ')
+        }
+        const delRes = await supabase.from('inventory_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'inventory', data)
+        if (saveRes.error) {
+          results['inventory'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['inventory'] = { grand_total_current: data.grand_total_current }
+        }
       } catch (err: any) {
         console.error('Error processing inventory:', err)
-        results['inventory'] = { error: 'No se pudo procesar el archivo de inventory' }
+        results['inventory'] = { error: err?.message || 'No se pudo procesar el archivo de inventory' }
+        criticalSaveFailed = true
       }
     }
 
@@ -197,14 +242,19 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await avtFile.arrayBuffer())
         const isCsv = avtFile.name.endsWith('.csv')
         const avtData = isCsv ? parseAvtCsv(buffer.toString('utf-8')) : parseAvtExcel(buffer)
-        results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
-        await supabase.from('avt_data').delete().eq('report_id', reportId)
-        await saveToDatabase(supabase, reportId, 'avt', avtData)
-        const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
-        for (const cat of detectedCats) {
-          await supabase.from('avt_categories').upsert({
-            restaurant_id: restaurantId, category: cat, active: true,
-          }, { onConflict: 'restaurant_id,category', ignoreDuplicates: true })
+        const delRes = await supabase.from('avt_data').delete().eq('report_id', reportId)
+        if (delRes.error) throw delRes.error
+        const saveRes = await saveToDatabase(supabase, reportId, 'avt', avtData)
+        if (saveRes.error) {
+          results['avt'] = { error: saveRes.error }
+        } else {
+          results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
+          const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
+          for (const cat of detectedCats) {
+            await supabase.from('avt_categories').upsert({
+              restaurant_id: restaurantId, category: cat, active: true,
+            }, { onConflict: 'restaurant_id,category', ignoreDuplicates: true })
+          }
         }
       } catch (err: any) {
         console.error('Error processing avt:', err)
@@ -315,7 +365,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ success: true, report_id: reportId, week, processed: Object.keys(results), warnings })
+    return NextResponse.json({
+      success: !criticalSaveFailed,
+      report_id: reportId,
+      week,
+      processed: Object.keys(results),
+      results,
+      warnings,
+      ...(criticalSaveFailed ? { error: 'Error guardando sales/labor/cogs/inventory; el reporte quedó incompleto' } : {}),
+    }, { status: criticalSaveFailed ? 500 : 200 })
 
   } catch (error: any) {
     console.error('process-edit route error:', error)
@@ -323,9 +381,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileType: string, data: any) {
+async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileType: string, data: any): Promise<{ error?: string }> {
   const table = TABLE_MAP[fileType]
-  if (!table) return
+  if (!table) return {}
   // raw_data se mantiene solo en sales y voids (campos no promovidos a columnas).
   const KEEP_RAW = new Set(['sales', 'voids'])
   const insertData: Record<string, any> = { report_id: reportId }
@@ -341,9 +399,13 @@ async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileTy
     insertData.total_hours = data.total_regular_hours; insertData.total_ot_hours = data.total_ot_hours
     insertData.total_pay = data.total_pay; insertData.by_position = data.by_position
     insertData.by_employee = data.by_employee
+    insertData.hours_unpaid_regular = data.hours_unpaid_regular
+    insertData.hours_unpaid_ot = data.hours_unpaid_ot
+    insertData.by_employee_unpaid = data.by_employee_unpaid
   } else if (fileType === 'cogs') {
     insertData.total = data.total; insertData.by_vendor = data.by_vendor
     insertData.by_category = data.by_category
+    insertData.by_account = data.by_account
   } else if (fileType === 'waste') {
     insertData.total_cost = data.total_cost; insertData.items = data.items
   } else if (fileType === 'voids') {
@@ -363,5 +425,9 @@ async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileTy
     insertData.by_category = data.by_category
   }
   const { error } = await supabase.from(table).insert(insertData)
-  if (error) console.error(`Error saving ${fileType}:`, error)
+  if (error) {
+    console.error(`Error saving ${fileType}:`, error)
+    return { error: `No se pudo guardar ${fileType}` }
+  }
+  return {}
 }

@@ -133,8 +133,8 @@ function buildScenario(name: string, weeks: EngineWeekShape[], config: Partial<E
       },
       costoUsoContext: {
         mappings: config.mappings || [
-          { source_category: 'FOOD',   mapped_to: 'food' },
-          { source_category: 'LIQUOR', mapped_to: 'liquor' },
+          { source_system: 'toast', source_category: 'FOOD',   mapped_to: 'food' },
+          { source_system: 'toast', source_category: 'LIQUOR', mapped_to: 'liquor' },
         ],
         adjustments: [],
         skippedWeeks: [],
@@ -217,7 +217,7 @@ maybe('[GEN] PPTX Costo de Uso — 7 escenarios', () => {
     const { config, data } = buildScenario('complete-gross', [w], {
       requestedWeeks: ['2026-W20'],
       costoUsoSalesBase: 'gross',
-      mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+      mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
     })
     await generatePPTX(config, [data])
     const generated = findLatestPptx(process.cwd())
@@ -240,8 +240,8 @@ maybe('[GEN] PPTX Costo de Uso — 7 escenarios', () => {
     const { config, data } = buildScenario('partial-theo', [w], {
       requestedWeeks: ['2026-W22'],
       mappings: [
-        { source_category: 'FOOD',   mapped_to: 'food' },
-        { source_category: 'LIQUOR', mapped_to: 'liquor' },
+        { source_system: 'toast', source_category: 'FOOD',   mapped_to: 'food' },
+        { source_system: 'toast', source_category: 'LIQUOR', mapped_to: 'liquor' },
       ],
     })
     await generatePPTX(config, [data])
@@ -262,7 +262,7 @@ maybe('[GEN] PPTX Costo de Uso — 7 escenarios', () => {
     const { config, data } = buildScenario('no-op-days', [w], {
       requestedWeeks: ['2026-W30'],
       operatingDays: null,
-      mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+      mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
     })
     await generatePPTX(config, [data])
     const generated = findLatestPptx(process.cwd())
@@ -286,7 +286,7 @@ maybe('[GEN] PPTX Costo de Uso — 7 escenarios', () => {
     })
     const { config, data } = buildScenario('non-consecutive', [w1, w2], {
       requestedWeeks: ['2026-W10', '2026-W12'],
-      mappings: [{ source_category: 'FOOD', mapped_to: 'food' }],
+      mappings: [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }],
     })
     await generatePPTX(config, [data])
     const generated = findLatestPptx(process.cwd())

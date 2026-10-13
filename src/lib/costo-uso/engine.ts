@@ -294,7 +294,11 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       result[cat.key + '_theo_cost'] = theoCost
       result[cat.key + '_theo_present'] = theoPresent
 
-      if (uso > 0) totalUsoCost += uso
+      // Antes se filtraba `if (uso > 0)` cuando el motor clampeaba a 0,
+      // efectivamente redundante. Ahora que `uso` puede ser negativo
+      // (fix 10) ese guard escondía la bandera en el total y hacía que
+      // Σ categorías ≠ totalUsoCost. Se acumula el valor tal cual.
+      totalUsoCost += uso
       if (theoCost > 0) totalTheoCost += theoCost
       if (catSales > 0) totalABSales += catSales
     })
@@ -467,7 +471,11 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       result[cat.key + '_theo_cost'] = theoCost
       result[cat.key + '_theo_present'] = theoPresent
 
-      if (uso > 0) totalUsoCost += uso
+      // Antes se filtraba `if (uso > 0)` cuando el motor clampeaba a 0,
+      // efectivamente redundante. Ahora que `uso` puede ser negativo
+      // (fix 10) ese guard escondía la bandera en el total y hacía que
+      // Σ categorías ≠ totalUsoCost. Se acumula el valor tal cual.
+      totalUsoCost += uso
       if (theoCost > 0) totalTheoCost += theoCost
       if (catSales > 0) totalABSales += catSales
     })

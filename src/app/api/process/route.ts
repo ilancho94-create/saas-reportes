@@ -47,21 +47,29 @@ export async function POST(request: NextRequest) {
 
     // Chequeo previo: una (restaurant_id, week) ya existente devuelve 409
     // en lugar de insertar un duplicado silencioso. La migración
-    // supabase/migrations/20261013_add_unique_restaurant_week.sql
-    // añade la restricción UNIQUE a nivel de BD; este guard es la
-    // defensa a nivel de API.
-    const { data: existingReport } = await supabase
+    // 20261013120000_add_unique_restaurant_week.sql añade el UNIQUE a
+    // nivel de BD; este guard es la defensa a nivel de API.
+    //
+    // Usa .limit(1) y chequea `error` para fallar cerrado: con
+    // duplicados ya existentes `maybeSingle` devuelve data:null +
+    // PGRST116, lo que haría caer al INSERT y dependeríamos sólo del
+    // 23505 fallback.
+    const existingLookup = await supabase
       .from('reports')
       .select('id')
       .eq('restaurant_id', restaurant_id)
       .eq('week', week)
-      .maybeSingle()
-    if (existingReport) {
+      .limit(1)
+    if (existingLookup.error) {
+      console.error('reports.select error:', existingLookup.error)
+      return NextResponse.json({ success: false, error: 'No se pudo verificar la semana' }, { status: 500 })
+    }
+    if (existingLookup.data && existingLookup.data.length > 0) {
       return NextResponse.json({
         success: false,
         code: 'REPORT_WEEK_EXISTS',
         error: 'La semana ya existe, usa Editar',
-        existingReportId: existingReport.id,
+        existingReportId: existingLookup.data[0].id,
       }, { status: 409 })
     }
 
@@ -147,11 +155,16 @@ export async function POST(request: NextRequest) {
         delete data._report_start; delete data._report_end
         data.date_warning = warning
         const saveRes = await saveToDatabase(supabase, report.id, 'cogs', data)
-        if (saveRes.error) results['cogs'] = { error: saveRes.error }
-        else results['cogs'] = { total: data.total }
+        if (saveRes.error) {
+          results['cogs'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['cogs'] = { total: data.total }
+        }
       } catch (err: any) {
         console.error('Error processing cogs:', err)
         results['cogs'] = { error: 'No se pudo procesar el archivo de cogs' }
+        criticalSaveFailed = true
       }
     }
 
@@ -220,11 +233,16 @@ export async function POST(request: NextRequest) {
           warnings['inventory_sanity'] = data.sanity_warnings.join(' · ')
         }
         const saveRes = await saveToDatabase(supabase, report.id, 'inventory', data)
-        if (saveRes.error) results['inventory'] = { error: saveRes.error }
-        else results['inventory'] = { grand_total_current: data.grand_total_current }
+        if (saveRes.error) {
+          results['inventory'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['inventory'] = { grand_total_current: data.grand_total_current }
+        }
       } catch (err: any) {
         console.error('Error processing inventory:', err)
         results['inventory'] = { error: 'No se pudo procesar el archivo de inventory' }
+        criticalSaveFailed = true
       }
     }
 
@@ -328,7 +346,7 @@ export async function POST(request: NextRequest) {
       processed: Object.keys(results),
       results,
       warnings,
-      ...(criticalSaveFailed ? { error: 'Error guardando ventas o labor; el reporte quedó incompleto' } : {}),
+      ...(criticalSaveFailed ? { error: 'Error guardando sales/labor/cogs/inventory; el reporte quedó incompleto' } : {}),
     }, { status: criticalSaveFailed ? 500 : 200 })
 
   } catch (error: any) {

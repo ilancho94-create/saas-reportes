@@ -667,7 +667,12 @@ export default function FoodCostPage() {
                   <p className="text-gray-500 text-xs mb-4">Costo de Compra</p>
                   <div className="space-y-3">
                     {CATEGORIES.map(cat => {
-                      const catSales = ({ food: data.foodSales, beer: data.beerSales, liquor: data.liquorSales, na_beverage: data.naBevSales, wine: data.wineSales, general: data.netSales } as any)[cat.key] || data.netSales
+                      // Sin fallback a netSales por categoría (fix 7): si no
+                      // hay ventas mapeadas en esa categoría, el denominador
+                      // queda 0 y la fracción se renderiza como "—".
+                      const catSales = cat.key === 'general'
+                        ? data.netSales
+                        : (({ food: data.foodSales, beer: data.beerSales, liquor: data.liquorSales, na_beverage: data.naBevSales, wine: data.wineSales } as any)[cat.key] || 0)
                       const val = pct(data.cat[cat.key], catSales)
                       const meta = cat.meta
                       return (
@@ -704,7 +709,10 @@ export default function FoodCostPage() {
               <h2 className="text-white font-semibold mb-4">Diferencias {compareA} vs {compareB}</h2>
               <div className="space-y-3">
                 {CATEGORIES.map(cat => {
-                  const getSales = (d: any) => ({ food: d.foodSales, beer: d.beerSales, liquor: d.liquorSales, na_beverage: d.naBevSales, wine: d.wineSales, general: d.netSales } as any)[cat.key] || d.netSales
+                  // Sin fallback a netSales por categoría (fix 7).
+                  const getSales = (d: any) => cat.key === 'general'
+                    ? d.netSales
+                    : (({ food: d.foodSales, beer: d.beerSales, liquor: d.liquorSales, na_beverage: d.naBevSales, wine: d.wineSales } as any)[cat.key] || 0)
                   const valA = pct(weekAData.cat[cat.key], getSales(weekAData))
                   const valB = pct(weekBData.cat[cat.key], getSales(weekBData))
                   if (!valA && !valB) return null
