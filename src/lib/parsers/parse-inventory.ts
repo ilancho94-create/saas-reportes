@@ -70,12 +70,36 @@ export function parseInventoryExcel(buffer: Buffer): any {
     }
   }
 
+  // Warnings de sanidad:
+  //   • cuenta con current_value=0 cuando previous>500 ($ ) — en Mula,
+  //     el conteo del 22-sep tuvo Food en $0 (error de captura).
+  //   • count_date NO es un lunes (R365 cuenta los lunes posteriores al
+  //     cierre semanal). Advierte pero no bloquea.
+  const sanity_warnings: string[] = []
+  for (const a of by_account) {
+    if (a.current_value === 0 && a.previous_value > 500) {
+      sanity_warnings.push(
+        `Cuenta "${a.account}" trae $0 este conteo con $${a.previous_value.toFixed(0)} anterior; revisar captura.`
+      )
+    }
+  }
+  if (count_date) {
+    const d = new Date(count_date + 'T00:00:00')
+    if (!isNaN(d.getTime()) && d.getDay() !== 1) {
+      const dayNames = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado']
+      sanity_warnings.push(
+        `count_date ${count_date} cayó en ${dayNames[d.getDay()]}; R365 suele contar los lunes posteriores al cierre.`
+      )
+    }
+  }
+
   return {
     count_date,
     by_account,
     grand_total_current,
     grand_total_previous,
     _report_date: count_date,
+    sanity_warnings: sanity_warnings.length > 0 ? sanity_warnings : null,
     date_warning: null,
   }
 }

@@ -121,6 +121,13 @@ export function parseSalesExcel(buffer: Buffer): any {
     _report_end   = dates[dates.length - 1]
   }
 
+  // Warning de guests/orders implausible (>8 por orden es anómalo —
+  // típicamente un cheque mal capturado con 1 orden y N guests).
+  const guestsPerOrder = orders > 0 ? guests / orders : 0
+  const sanity_warning = guestsPerOrder > 8
+    ? `Guests por orden implausible: ${guests} guests / ${orders} órdenes = ${guestsPerOrder.toFixed(1)} g/o. Revisar un cheque mal capturado.`
+    : null
+
   return {
     net_sales,
     gross_sales,
@@ -140,6 +147,7 @@ export function parseSalesExcel(buffer: Buffer): any {
     discounts_items,
     _report_start,
     _report_end,
+    sanity_warning,
     date_warning: null, // se asigna en route.ts
   }
 }
@@ -150,8 +158,13 @@ export function buildSalesDateWarning(
   weekEnd: string
 ): string | null {
   if (!data._report_start || !data._report_end) return null
-  if (data._report_start !== weekStart || data._report_end !== weekEnd) {
-    return `Dates in report are ${data._report_start} to ${data._report_end}, but requested week is (${weekStart} to ${weekEnd}). Data does not match requested week.`
-  }
-  return null
+  if (data._report_start === weekStart && data._report_end === weekEnd) return null
+  // Mula cierra los lunes: el reporte puede iniciar martes (día siguiente
+  // al cierre) y terminar en el mismo weekEnd. Aceptamos ese caso.
+  const startD = new Date(weekStart + 'T00:00:00')
+  const expectedTuesday = new Date(startD)
+  expectedTuesday.setDate(startD.getDate() + 1)
+  const expectedTuesdayStr = expectedTuesday.toISOString().slice(0, 10)
+  if (data._report_start === expectedTuesdayStr && data._report_end === weekEnd) return null
+  return `Dates in report are ${data._report_start} to ${data._report_end}, but requested week is (${weekStart} to ${weekEnd}). Data does not match requested week.`
 }

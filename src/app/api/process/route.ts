@@ -99,6 +99,7 @@ export async function POST(request: NextRequest) {
         const data = parseSalesExcel(buffer)
         const warning = buildSalesDateWarning(data, weekStart, weekEnd)
         if (warning) warnings['sales'] = warning
+        if (data.sanity_warning) warnings['sales_sanity'] = data.sanity_warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
         const saveRes = await saveToDatabase(supabase, report.id, 'sales', data)
@@ -215,6 +216,9 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await inventoryFile.arrayBuffer())
         const data = parseInventoryExcel(buffer)
+        if (data.sanity_warnings && data.sanity_warnings.length > 0) {
+          warnings['inventory_sanity'] = data.sanity_warnings.join(' · ')
+        }
         const saveRes = await saveToDatabase(supabase, report.id, 'inventory', data)
         if (saveRes.error) results['inventory'] = { error: saveRes.error }
         else results['inventory'] = { grand_total_current: data.grand_total_current }
