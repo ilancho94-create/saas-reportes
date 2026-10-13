@@ -2,12 +2,14 @@
 // NO usan datos reales de ningún cliente. Los números están elegidos
 // para que las verificaciones sean fáciles de hacer a mano.
 
+// Los mapeos vienen con source_system='toast' porque el engine filtra
+// por este campo (un mapeo de R365 con el mismo nombre no debería ganar).
 export const DEFAULT_MAPPINGS = [
-  { source_category: 'FOOD',       mapped_to: 'food' },
-  { source_category: 'LIQUOR',     mapped_to: 'liquor' },
-  { source_category: 'BEER',       mapped_to: 'beer' },
-  { source_category: 'WINE',       mapped_to: 'wine' },
-  { source_category: 'NA BEV',     mapped_to: 'na_beverage' },
+  { source_system: 'toast', source_category: 'FOOD',       mapped_to: 'food' },
+  { source_system: 'toast', source_category: 'LIQUOR',     mapped_to: 'liquor' },
+  { source_system: 'toast', source_category: 'BEER',       mapped_to: 'beer' },
+  { source_system: 'toast', source_category: 'WINE',       mapped_to: 'wine' },
+  { source_system: 'toast', source_category: 'NA BEV',     mapped_to: 'na_beverage' },
 ]
 
 // Ayuda: construye una fila `weeks` con la forma exacta que produce loadData().

@@ -58,8 +58,8 @@ describe('[EXACT] Ventas desiguales entre categorías', () => {
       theoCostByCat: { food: 700, liquor: 90 },
     })
     const mappings = [
-      { source_category: 'FOOD',   mapped_to: 'food' },
-      { source_category: 'LIQUOR', mapped_to: 'liquor' },
+      { source_system: 'toast', source_category: 'FOOD',   mapped_to: 'food' },
+      { source_system: 'toast', source_category: 'LIQUOR', mapped_to: 'liquor' },
     ]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w2],
@@ -97,7 +97,7 @@ describe('[EXACT] Período consolidado', () => {
       inventory: [{ account: 'Food Inventory', current_value: 780, previous_value: 800 }],
       theoCostByCat: { food: 420 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w1, w2],
       requestedRange: { from: '2026-W10', to: '2026-W11' },
@@ -125,7 +125,7 @@ describe('[EXACT] Ajustes manuales', () => {
       inventory: [{ account: 'Food Inventory', current_value: 400, previous_value: 500 }],
       theoCostByCat: { food: 200 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const adjustments = [
       { week: '2026-W30', category: 'food', field: 'inv_current', adjustment_value: 50 },
     ]
@@ -153,7 +153,7 @@ describe('[EXACT] Teórico cero explícito', () => {
       inventory: [{ account: 'Food Inventory', current_value: 300, previous_value: 400 }],
       theoCostByCat: { food: 0 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w],
       requestedRange: { from: '2026-W40', to: '2026-W40' },
@@ -179,7 +179,7 @@ describe('[EXACT] Teórico ausente', () => {
       inventory: [{ account: 'Food Inventory', current_value: 300, previous_value: 400 }],
       // sin theoCostByCat → productMix null
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w],
       requestedRange: { from: '2026-W41', to: '2026-W41' },
@@ -205,7 +205,7 @@ describe('[EXACT] Ventas cero', () => {
       inventory: [{ account: 'Food Inventory', current_value: 400, previous_value: 500 }],
       theoCostByCat: { food: 90 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w],
       requestedRange: { from: '2026-W42', to: '2026-W42' },
@@ -229,7 +229,7 @@ describe('[EXACT] Rango sin cierre — detailData es null', () => {
       cogs: { food: 500 },
       inventory: null,
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w],
       requestedRange: { from: '2026-W50', to: '2026-W50' },
@@ -263,7 +263,7 @@ describe('[EXACT] Diagnósticos de datos incompletos', () => {
       inventory: [{ account: 'Food Inventory', current_value: 410, previous_value: 400 }],
       theoCostByCat: { food: 420 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w20, w22],
       requestedRange: { from: '2026-W20', to: '2026-W22' },
@@ -290,7 +290,7 @@ describe('[EXACT] Anchor externo → externalAnchorWeek en labels', () => {
       inventory: [{ account: 'Food Inventory', current_value: 520, previous_value: 500 }],
       theoCostByCat: { food: 400 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w14, w15],
       requestedRange: { from: '2026-W15', to: '2026-W15' },
@@ -321,7 +321,7 @@ describe('[EXACT] Modo weekList (UI) vs modo requestedRange (PPTX)', () => {
       inventory: [{ account: 'Food Inventory', current_value: 920, previous_value: 900 }],
       theoCostByCat: { food: 480 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
 
     const prepRange = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [wA, wB],
@@ -364,7 +364,7 @@ describe('[EXACT] Semanas intermedias necesarias (fuera del rango solicitado)', 
       inventory: [{ account: 'Food Inventory', current_value: 550, previous_value: 500 }],
       theoCostByCat: { food: 340 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
 
     // Con el universo completo — motor absorbe w11 dentro del período
     // que cierra en w12.
@@ -395,7 +395,7 @@ describe('[EXACT] Base de ventas net vs gross', () => {
       inventory: [{ account: 'Food Inventory', current_value: 900, previous_value: 1000 }],
       theoCostByCat: { food: 480 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
 
     const net = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w], includeOpDiscounts: false,
@@ -428,7 +428,7 @@ describe('[EXACT] operatingDays=null → días_inv null; resto de métricas inta
       inventory: [{ account: 'Food Inventory', current_value: 800, previous_value: 900 }],
       theoCostByCat: { food: 480 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
 
     const withOps = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w], operatingDays: 6,
@@ -489,7 +489,7 @@ describe('[EXACT] Teórico ausente vs cero explícito — respuestas distintas',
       cogs: { food: 500 },
       inventory: [{ account: 'Food Inventory', current_value: 800, previous_value: 900 }],
     }
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
 
     const wZero = makeWeek({ ...(base as any), theoCostByCat: { food: 0 } })
     const wMissing = makeWeek({ ...(base as any) })
@@ -538,7 +538,7 @@ describe('[EXACT] Días ausentes: misma respuesta en UI y PPTX', () => {
       inventory: [{ account: 'Food Inventory', current_value: 800, previous_value: 900 }],
       theoCostByCat: { food: 480 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const uiPrep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w], operatingDays: null,
       weekList: [w],
@@ -568,7 +568,7 @@ describe('[EXACT] Días ausentes: misma respuesta en UI y PPTX', () => {
 describe('[EXACT] Selección histórica con >52 semanas en el universo', () => {
   it('con anchor histórico presente en weeks, el motor lo usa para el período efectivo', () => {
     // Universo de 60 semanas sintéticas (numeradas 2025-W01..2026-W08).
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const weeks: any[] = []
     // Genera semanas ficticias. week_start = 2025-01-06 + i*7 días
     // (etiquetas simples; no verificamos calendario ISO aquí).
@@ -624,7 +624,7 @@ describe('[EXACT] Selección consecutiva produce valores esperados', () => {
       inventory: [{ account: 'Food Inventory', current_value: 510, previous_value: 500 }],
       theoCostByCat: { food: 290 },
     })
-    const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const prep = prepareCostoUsoResult({
       ...BASE, mappings, weeks: [w10, w11],
       requestedRange: { from: '2026-W10', to: '2026-W11' },
@@ -641,7 +641,7 @@ describe('[EXACT] Selección consecutiva produce valores esperados', () => {
 // por categoría cuando no hay anchor previo.
 // ─────────────────────────────────────────────────────────────────────
 describe('[EXACT] Sin anchor: inv_previous presente vs cero explícito vs ausente por categoría', () => {
-  const mappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+  const mappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
 
   it('sin anchor y previous_value NUMÉRICO en food → invPreviousPresent=true; variación calculable', () => {
     // closing sí trae previous_value = 900 en Food Inventory

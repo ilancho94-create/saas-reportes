@@ -475,8 +475,10 @@ export function diagnosePeriod(
       weekRange: [anchor?.report.week || closing.report.week, closing.report.week],
       evidence: {
         I0, purchases: P, I1, bruto,
-        clampedTo: 0,
-        note: 'Anomalía a investigar (posibles: conteo, factura tardía, transferencia).',
+        // Antes se clampeaba a 0 ocultando el signo. Ahora el valor
+        // negativo se publica tal cual para forzar la revisión.
+        clampedTo: null,
+        note: 'Uso negativo: revisar conteo / compras no registradas / transferencias.',
       },
     })
   })

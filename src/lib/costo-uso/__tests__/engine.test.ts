@@ -415,13 +415,16 @@ describe('[EXACT] Caso 12 — ajustes de inventario/compras/theo', () => {
     inventory: [{ account: 'Food Inventory', current_value: 2000, previous_value: 1000 }],
     theoCostByCat: { food: 800 },
   })
-  it('ajuste +5000 a inv_current → uso = max(1000+100−7000, 0) = 0 (clampeo)', () => {
+  it('ajuste +5000 a inv_current → uso = 1000+100−7000 = -5900 (sin clamp, publicado tal cual)', () => {
     const engine = createCostoUsoEngine({
       ...BASE_CTX, weeks: [w],
       adjustments: [{ week: '2026-W30', category: 'food', field: 'inv_current', adjustment_value: 5000 }],
     })
     const d = engine.buildWeekData(w)
-    expect(d.food_uso).toBe(0)
+    // Antes se clampeaba a 0; ahora se publica el valor negativo real
+    // para que se vea en el UI como ⚠️ "uso negativo, revisar
+    // conteo/compras".
+    expect(d.food_uso).toBe(-5900)
     expect(d.food_inv_current).toBe(7000)
   })
   it('ajustes de misma semana/categoría/campo se SUMAN (dos filas de $50 = +$100)', () => {
@@ -636,58 +639,46 @@ describe('[EXACT] Afirmación A — comparación con intervalos iguales', () => 
   })
   const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w2, w3] })
 
-  it('con MISMO INTERVALO [w1..w3]: Σ sin recortar = directo; Σ recortado difiere solo por el clampeo', () => {
+  it('con MISMO INTERVALO [w1..w3]: Σ (sin clamp) = directo — ya no se diferencia porque quitamos Math.max', () => {
     // Series individuales dentro del intervalo (excluye el sombrero):
-    const p_w1_w2 = engine.buildPeriodData(w1, [], w2)      // uso bruto = −400 → clamp 0
+    const p_w1_w2 = engine.buildPeriodData(w1, [], w2)      // uso bruto = −400 (publicado tal cual)
     const p_w2_w3 = engine.buildPeriodData(w2, [], w3)      // uso bruto = 500
 
-    // Recuperamos el bruto SIN pasar por buildPeriodData (que ya clampea):
-    // Fórmula pura I0 + P − I1
+    // Fórmula pura I0 + P − I1 (bruto)
     const bruto_p1 = p_w1_w2.food_inv_previous + p_w1_w2.food_purchases - p_w1_w2.food_inv_current
     const bruto_p2 = p_w2_w3.food_inv_previous + p_w2_w3.food_purchases - p_w2_w3.food_inv_current
     expect(bruto_p1).toBe(-400)
     expect(bruto_p2).toBe(500)
 
-    // (a) Σ sin recortar
+    // Σ sin recortar y Σ "recortado" ahora son iguales — ya no hay recorte.
     const sumSinRecortar = bruto_p1 + bruto_p2
+    const sumPublicado = p_w1_w2.food_uso + p_w2_w3.food_uso
     expect(sumSinRecortar).toBe(100)
-
-    // (b) Σ recortado — lo que devuelve el motor por-período
-    const sumRecortado = p_w1_w2.food_uso + p_w2_w3.food_uso
-    expect(sumRecortado).toBe(500)
+    expect(sumPublicado).toBe(100)
 
     // (c) Directo del mismo intervalo [w1 → w3] con w2 como intermedio
     const directo = engine.buildPeriodData(w1, [w2], w3)
     expect(directo.food_uso).toBe(100)
 
-    // Conclusiones con intervalos iguales:
-    //   (a) = (c) = 100  → la telescopía SÍ se cumple sin clampeo.
-    //   (b) = 500 ≠ 100  → +400 de sobrestimación por Math.max(uso, 0).
+    // La telescopía SÍ se cumple ahora que no clampeamos — y el total
+    // publicado por el motor coincide con el bruto y con el directo.
+    expect(sumPublicado).toBe(directo.food_uso)
     expect(sumSinRecortar).toBe(directo.food_uso)
-    expect(sumRecortado).not.toBe(directo.food_uso)
-    expect(sumRecortado - directo.food_uso).toBe(400)   // exactamente el consumo negativo clampeado
   })
 
-  it('la suma que reporté como 200 correspondía a 3 períodos, no a 2 (intervalos distintos)', () => {
-    // Documenta la corrección: buildPeriodSeries emite [∅→w1], [w1→w2], [w2→w3].
-    // El "período sombrero" [∅→w1] usa closing.inv_previous como I0 y no está
-    // cubierto por el directo [w1..w3].
+  it('agg.food_uso suma los 3 períodos sin ocultar el negativo', () => {
+    // buildPeriodSeries emite [∅→w1], [w1→w2], [w2→w3].
     const series = engine.buildPeriodSeries([w1, w2, w3])
     expect(series).toHaveLength(3)
     expect(series[0].anchorWeek).toBeNull()
     expect(series[0].food_uso).toBe(100)   // el sombrero
+    expect(series[1].food_uso).toBe(-400)  // negativo publicado
+    expect(series[2].food_uso).toBe(500)
 
-    // Con el sombrero incluido, el agregado (b*) da 100 + 0 + 500 = 600
+    // Agregado = suma directa (ya no se filtra con "if uso > 0" en la
+    // acumulación por período agregada): 100 + (-400) + 500 = 200.
     const agg = engine.aggregateSeries(series)
-    expect(agg.food_uso).toBe(600)
-
-    // Y la suma sin recortar de los TRES períodos (que era mi "200") viene de:
-    const brutoTotal =
-      series[0].food_uso +                                              // 100 (no negativo)
-      (series[1].food_inv_previous + series[1].food_purchases - series[1].food_inv_current) +   // −400
-      (series[2].food_inv_previous + series[2].food_purchases - series[2].food_inv_current)     // 500
-    expect(brutoTotal).toBe(200)
-    // 200 (3 períodos sin recortar) − 100 (2 períodos sin recortar) = 100 = consumo del sombrero.
+    expect(agg.food_uso).toBe(200)
   })
 })
 

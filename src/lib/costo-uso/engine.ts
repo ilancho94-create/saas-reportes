@@ -238,7 +238,12 @@ export function createCostoUsoEngine(ctx: EngineContext) {
       const invPrevious = inv.previous + adjInvPrev
       const purchases = (cogsCat[cat.key] || 0) + adjPurchases
       const invCurrent = inv.current + adjInvCurr
-      const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
+      // Uso real, SIN clamp a 0: invPrev + purchases − invCurrent puede
+      // ser negativo cuando el conteo final subió más que las compras
+      // (típicamente error de conteo o compra no registrada). El valor
+      // negativo se publica tal cual y la UI muestra un badge
+      // "⚠️ uso negativo, revisar conteo/compras".
+      const uso = hasInventory ? (invPrevious + purchases - invCurrent) : 0
       const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
       const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
       const adjSales = getAdj(week, cat.key, 'sales_adjustment')
@@ -397,7 +402,8 @@ export function createCostoUsoEngine(ctx: EngineContext) {
         return sum + (cogsCat[cat.key] || 0) + adj
       }, 0)
 
-      const uso = Math.max(invPrevious + purchases - invCurrent, 0)
+      // SIN clamp a 0: ver nota en el cálculo semanal.
+      const uso = invPrevious + purchases - invCurrent
 
       const catSales = periodWeeks.reduce((sum, w) => {
         const salesCategories = w.sales?.categories || []

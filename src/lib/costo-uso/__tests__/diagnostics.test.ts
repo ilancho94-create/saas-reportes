@@ -372,7 +372,7 @@ describe('[EXACT] C — cuentas esperadas por categoría', () => {
 
   it('no presupone las 5 categorías canónicas — solo revisa las de mappings del restaurante', () => {
     // Mappings restringidos: solo food (sin liquor, beer, wine, na_beverage)
-    const restrictedMappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const restrictedMappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const w = makeWeek({
       week: '2026-W16', reportId: 'r16',
       salesCats: [{ name: 'FOOD', net: 5000 }],
@@ -391,7 +391,7 @@ describe('[EXACT] C — cuentas esperadas por categoría', () => {
     // Solo food está mapeado; pero R365 nos manda datos de liquor
     // (inventario, compras y teórico). Esas ventas no llegan porque
     // el mapping de ventas no existe. Debe alertarse.
-    const restrictedMappings = [{ source_category: 'FOOD', mapped_to: 'food' }]
+    const restrictedMappings = [{ source_system: 'toast', source_category: 'FOOD', mapped_to: 'food' }]
     const w = makeWeek({
       week: '2026-W17', reportId: 'r17',
       salesCats: [{ name: 'FOOD', net: 5000 }],
@@ -645,7 +645,7 @@ describe('[EXACT] F — unclosed_tail a nivel serie', () => {
 // G. CONSUMO BRUTO NEGATIVO
 // ═════════════════════════════════════════════════════════════════════════
 describe('[EXACT] G — negative_gross_consumption con evidencia', () => {
-  it('registra I0, P, I1, bruto y clampedTo=0 sin cambiar el uso', () => {
+  it('registra I0, P, I1, bruto; publica el uso negativo SIN clampear', () => {
     const w1 = makeWeek({
       week: '2026-W40', reportId: 'r40',
       salesCats: [{ name: 'FOOD', net: 1000 }], cogs: { food: 100 },
@@ -660,14 +660,14 @@ describe('[EXACT] G — negative_gross_consumption con evidencia', () => {
     })
     const engine = createCostoUsoEngine({ ...BASE_CTX, weeks: [w1, w2] })
     const p = engine.buildPeriodData(w1, [], w2)
-    expect(p.food_uso).toBe(0)  // clampeado — NO cambia
+    expect(p.food_uso).toBe(-400)  // uso bruto negativo publicado tal cual
     const neg = (p.diagnostics.items as any[])
       .find(i => i.type === 'negative_gross_consumption')
     expect(neg.evidence.I0).toBe(1000)
     expect(neg.evidence.purchases).toBe(100)
     expect(neg.evidence.I1).toBe(1500)
     expect(neg.evidence.bruto).toBe(-400)
-    expect(neg.evidence.clampedTo).toBe(0)
+    expect(neg.evidence.clampedTo).toBeNull()
   })
 })
 

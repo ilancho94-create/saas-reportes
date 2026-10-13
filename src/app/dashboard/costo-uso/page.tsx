@@ -1519,7 +1519,9 @@ export default function CostoUsoPage() {
                       const realPct = detailData[cat.key + '_uso_pct']
                       const variacion = detailData[cat.key + '_variacion']
                       const overMeta = cat.meta && realPct && realPct > cat.meta
-                      if (!detailData[cat.key + '_uso']) return null
+                      const usoVal = detailData[cat.key + '_uso']
+                      const usoNegative = typeof usoVal === 'number' && usoVal < 0
+                      if (usoVal === undefined || usoVal === null || usoVal === 0) return null
                       return (
                         <div key={cat.key} className="bg-gray-800 rounded-xl px-4 py-3 flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -1528,7 +1530,7 @@ export default function CostoUsoPage() {
                           </div>
                           <div className="text-right">
                             <p className={`text-sm font-bold ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</p>
-                            <p className="text-gray-500 text-xs">{fmt(detailData[cat.key + '_uso'])} uso</p>
+                            <p className={`text-xs ${usoNegative ? 'text-orange-400' : 'text-gray-500'}`}>{usoNegative ? '-' : ''}{fmt(Math.abs(usoVal))} uso{usoNegative && <span className="ml-1" title="uso negativo, revisar conteo/compras">⚠️</span>}</p>
                             {variacion !== null ? (
                               <p className={`text-xs font-medium ${variacion > 0 ? 'text-red-400' : variacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                                 {variacion > 0 ? '+' : ''}{fmt(variacion)}
@@ -1600,7 +1602,20 @@ export default function CostoUsoPage() {
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_inv_previous'])}</td>
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_purchases'])}</td>
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_inv_current'])}</td>
-                              <td className="py-3 text-right text-white text-sm font-medium">{fmt(detailData[cat.key + '_uso'])}</td>
+                              <td className="py-3 text-right text-sm font-medium">
+                                {(() => {
+                                  const u = detailData[cat.key + '_uso']
+                                  const neg = typeof u === 'number' && u < 0
+                                  return (
+                                    <span className={neg ? 'text-orange-400' : 'text-white'}>
+                                      {neg ? '-' : ''}{fmt(Math.abs(u))}
+                                      {neg && (
+                                        <span className="ml-1 text-xs" title="uso negativo, revisar conteo/compras">⚠️</span>
+                                      )}
+                                    </span>
+                                  )
+                                })()}
+                              </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{fmt(detailData[cat.key + '_sales'])}</td>
                               <td className="py-3 text-right"><span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</span></td>
                               <td className="py-3 text-right text-blue-400 text-sm">{fmtPct(mixPct)}</td>
