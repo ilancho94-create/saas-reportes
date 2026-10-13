@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -239,7 +240,7 @@ export default function AvtPage() {
     const filtered_o = selectedCategory === 'Todas' ? wOverages : wOverages.filter((i: any) => i.category === selectedCategory)
     const faltantes = filtered_s.reduce((a: number, b: any) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
     const sobrantes = filtered_o.reduce((a: number, b: any) => a + Math.abs(Number(b.variance_dollar || 0)), 0)
-    return { week: w.report.week.replace('2026-', ''), faltantes, sobrantes, neto: faltantes - sobrantes }
+    return { week: shortWeek(w.report.week), faltantes, sobrantes, neto: faltantes - sobrantes }
   })
 
   const itemStatsMap: Record<string, { weekCount: number; totalDollar: number; category: string }> = {}
@@ -628,7 +629,7 @@ function InventarioTab({ allItems, selectedWeek, fmt, fmtN, weeks }: any) {
     return weeks.map((w: any) => {
       const item = (w.avt?.all_items || []).find((i: any) => i.name === itemName)
       if (!item) return null
-      return { week: w.report.week.replace('2026-', ''), fullWeek: w.report.week, ...item }
+      return { week: shortWeek(w.report.week), fullWeek: w.report.week, ...item }
     }).filter(Boolean).reverse()
   }
 
@@ -853,7 +854,7 @@ function DetalleTab({ weeks, selectedWeek, allShortages, allOverages, fmt }: any
       const item = s || o
       if (!item) return null
       return {
-        week: w.report.week.replace('2026-', ''),
+        week: shortWeek(w.report.week),
         fullWeek: w.report.week,
         variance_dollar: s ? Math.abs(Number(item.variance_dollar)) : -Math.abs(Number(item.variance_dollar)),
         variance_qty: s ? Math.abs(Number(item.variance_qty)) : -Math.abs(Number(item.variance_qty)),

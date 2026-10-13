@@ -119,8 +119,12 @@ export default function CostoUsoPage() {
     } else if (shortcut === 'last4') subset = weeks.slice(-4)
     else if (shortcut === 'last8') subset = weeks.slice(-8)
     else if (shortcut === 'month') {
-      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
-      subset = weeks.filter(w => { const d = new Date(w.report.week_start); return d.getFullYear() === y && d.getMonth() === m })
+      // Comparar como string YYYY-MM evita que new Date('2026-06-01')
+      // en zona Chicago lo interprete como 31-may UTC. week_start ya es
+      // 'YYYY-MM-DD' en el calendario local del restaurante.
+      const now = new Date()
+      const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      subset = weeks.filter(w => (w.report.week_start || '').slice(0, 7) === yyyymm)
     } else if (shortcut === 'custom' && customFrom && customTo) {
       const from = customFrom <= customTo ? customFrom : customTo
       const to = customFrom <= customTo ? customTo : customFrom
@@ -376,8 +380,9 @@ export default function CostoUsoPage() {
     if (shortcut === 'last4') return weeks.slice(-4)
     if (shortcut === 'last8') return weeks.slice(-8)
     if (shortcut === 'month') {
-      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
-      return weeks.filter(w => { const d = new Date(w.report.week_start); return d.getFullYear() === y && d.getMonth() === m })
+      const now = new Date()
+      const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      return weeks.filter(w => (w.report.week_start || '').slice(0, 7) === yyyymm)
     }
     if (shortcut === 'custom' && customFrom && customTo) {
       const from = customFrom <= customTo ? customFrom : customTo

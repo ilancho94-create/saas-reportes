@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import * as XLSX from 'xlsx'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
@@ -100,12 +101,12 @@ export default function FoodCostPage() {
     if (shortcut === 'last4') return weeks.slice(-4)
     if (shortcut === 'last8') return weeks.slice(-8)
     if (shortcut === 'month') {
+      // Comparar como string 'YYYY-MM' en vez de new Date(week_start):
+      // en zona negativa (Chicago, Pacific) new Date('2026-06-01') se
+      // vuelve 31-may por UTC.
       const now = new Date()
-      const y = now.getFullYear(), m = now.getMonth()
-      return weeks.filter(w => {
-        const d = new Date(w.report.week_start)
-        return d.getFullYear() === y && d.getMonth() === m
-      })
+      const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      return weeks.filter(w => (w.report.week_start || '').slice(0, 7) === yyyymm)
     }
     if (shortcut === 'custom' && customFrom && customTo) {
       const from = customFrom <= customTo ? customFrom : customTo
@@ -155,7 +156,7 @@ export default function FoodCostPage() {
     const totalABSales = foodSales + beerSales + liquorSales + naBevSales + wineSales
     const totalABRaw = (cat.food || 0) + (cat.na_beverage || 0) + (cat.liquor || 0) + (cat.beer || 0) + (cat.wine || 0)
     return {
-      week: w.report.week.replace('2026-', ''),
+      week: shortWeek(w.report.week),
       food: pct(cat.food, foodSales) || 0,
       na_beverage: pct(cat.na_beverage, naBevSales) || 0,
       liquor: pct(cat.liquor, liquorSales) || 0,

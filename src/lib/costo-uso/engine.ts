@@ -9,6 +9,7 @@
 // ir en un commit separado con pruebas antes/después.
 
 import { diagnoseWeek, diagnosePeriod, diagnoseSeries, type Diagnostics, type DiagnosticsContext } from './diagnostics'
+import { shortWeek } from '../week-label'
 export type { Diagnostic, DiagnosticType, Diagnostics, CheckState } from './diagnostics'
 
 /**
@@ -219,7 +220,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     const opDiscTotal = getOpDiscountTotal(w)
 
     const result: any = {
-      week: week.replace('2026-', ''),
+      week: shortWeek(week),
       fullWeek: week,
       reportId: w.report.id,
       netSales,
@@ -339,7 +340,7 @@ export function createCostoUsoEngine(ctx: EngineContext) {
     const firstActivity = periodWeeks[0]
     const lastActivity  = periodWeeks[periodWeeks.length - 1]
     const result: any = {
-      week: closingWeek.replace('2026-', ''),
+      week: shortWeek(closingWeek),
       fullWeek: closingWeek,
       reportId: closing.report.id,
       netSales: periodWeeks.reduce((s, w) => s + (w.sales?.net_sales || 0), 0),

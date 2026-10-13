@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import useSWR from 'swr'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth-context'
@@ -228,7 +229,7 @@ export default function CeoDashboardClient({ initialData }: { initialData: CeoIn
       })
       const profit = sales - labor - cogs
       return {
-        week: week.replace('2026-', ''),
+        week: shortWeek(week),
         ventas: sales > 0 ? sales : null, labor: labor > 0 ? labor : null,
         cogs: cogs > 0 ? cogs : null, profit: sales > 0 ? profit : null,
         waste: waste > 0 ? waste : null,
