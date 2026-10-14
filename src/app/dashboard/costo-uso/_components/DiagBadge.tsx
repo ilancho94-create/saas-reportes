@@ -4,17 +4,31 @@
 // (Enter/Space). aria-label + title siguen presentes para lectores de
 // pantalla y para el hover en desktop; el popover garantiza que el
 // usuario táctil también vea la explicación.
+//
+// Tono: si no se pasa, se infiere de los items — todos info → sky,
+// cualquier warning/error → amber. Evita que una semana con solo
+// avisos informativos aparezca en amarillo como si fuera un problema.
 
 import { useEffect, useRef, useState } from 'react'
-import { formatDiagLine } from '@/lib/costo-uso/ui-helpers'
+import { formatDiagLine, DIAG_LABELS } from '@/lib/costo-uso/ui-helpers'
 
 export function DiagBadge({
   items,
-  tone = 'warning',
+  tone,
 }: {
   items: any[]
   tone?: 'warning' | 'info' | 'error'
 }) {
+  // Infer tone when not forced.
+  const inferredTone: 'warning' | 'info' | 'error' = (() => {
+    if (!items?.length) return 'warning'
+    const sevs = items.map(it => DIAG_LABELS[it.type]?.severity || 'warning')
+    if (sevs.includes('error')) return 'error'
+    if (sevs.includes('warning')) return 'warning'
+    return 'info'
+  })()
+  const effectiveTone = tone || inferredTone
+  const iconChar = effectiveTone === 'info' ? 'ℹ' : '⚠'
   const [open, setOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement | null>(null)
   const popRef = useRef<HTMLDivElement | null>(null)
@@ -47,12 +61,16 @@ export function DiagBadge({
   if (!items?.length) return null
 
   const cls =
-    tone === 'error'
+    effectiveTone === 'error'
       ? 'bg-red-950/80 border border-red-800 text-red-300'
-      : tone === 'warning'
+      : effectiveTone === 'warning'
         ? 'bg-amber-950/80 border border-amber-800 text-amber-300'
         : 'bg-sky-950/80 border border-sky-800 text-sky-300'
   const label = items.map(formatDiagLine).join('; ')
+  const popoverCls = effectiveTone === 'info'
+    ? 'absolute z-30 top-full left-0 mt-1 w-64 max-w-[80vw] rounded-lg border border-sky-800 bg-gray-950 shadow-xl p-3 space-y-1.5'
+    : 'absolute z-30 top-full left-0 mt-1 w-64 max-w-[80vw] rounded-lg border border-amber-800 bg-gray-950 shadow-xl p-3 space-y-1.5'
+  const popTextCls = effectiveTone === 'info' ? 'text-sky-100' : 'text-amber-100'
 
   return (
     <span className="relative inline-block">
@@ -67,7 +85,7 @@ export function DiagBadge({
         aria-label={label}
         title={label}
       >
-        <span aria-hidden="true">⚠</span>
+        <span aria-hidden="true">{iconChar}</span>
         {items.length}
       </button>
       {open && (
@@ -76,10 +94,10 @@ export function DiagBadge({
           role="dialog"
           aria-label="Detalles del hallazgo"
           data-testid="diag-badge-popover"
-          className="absolute z-30 top-full left-0 mt-1 w-64 max-w-[80vw] rounded-lg border border-amber-800 bg-gray-950 shadow-xl p-3 space-y-1.5"
+          className={popoverCls}
         >
           {items.map((it, i) => (
-            <p key={i} className="text-amber-100 text-xs leading-snug" data-testid="diag-badge-item">
+            <p key={i} className={`text-xs leading-snug ${popTextCls}`} data-testid="diag-badge-item">
               {formatDiagLine(it)}
             </p>
           ))}
