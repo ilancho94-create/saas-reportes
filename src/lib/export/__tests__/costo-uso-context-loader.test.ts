@@ -213,3 +213,52 @@ describe('[EXACT] Constantes documentadas', () => {
     expect(LOOKBACK_PAGE_SIZE).toBe(12)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════
+// Semanas marcadas como skipped NO cuentan como anchor
+// ═══════════════════════════════════════════════════════════════════
+describe('[EXACT] skippedWeeks excluye del anchor las semanas marcadas', () => {
+  it('semana con inventory_data marcada como skipped NO detiene el loader; sigue hasta la siguiente con inventario', async () => {
+    // Escenario Mula W40 con W39 saltada:
+    //   - selección = W40 (sin inventory en el embed de selección)
+    //   - historia DESC = W39 (hasInv, pero skipped) → W38 (hasInv real) → W37...
+    // Sin skippedWeeks: el loader se detiene en W39 (status complete,
+    // anchor "W39"), lo que produce un invPrevious erróneo (0 para
+    // la cuenta cuyo conteo no se hizo).
+    // Con skippedWeeks: el loader salta W39 y encuentra W38 como anchor real.
+    const sel = [report('2026-W40')]
+    const hist = [
+      report('2026-W39', { hasInv: true }),
+      report('2026-W38', { hasInv: true }),
+      report('2026-W37'),
+    ]
+    const skipped = new Set<string>(['2026-W39'])
+    const provider = makeProvider({ selection: sel, history: hist })
+    const res = await loadCostoUsoContext(provider, { pageSize: 6, skippedWeeks: skipped })
+    expect(res.status).toBe('complete')
+    const weeks = res.weeks.map(w => w.report.week)
+    // W38 debe estar en el contexto para que el engine la pueda usar
+    // como anchor. W39 también se incluye en el contexto porque fue
+    // una página devuelta por el provider, pero el engine la ignora
+    // vía skippedWeekSet.
+    expect(weeks).toContain('2026-W38')
+    expect(weeks).toContain('2026-W40')
+  })
+
+  it('sin skippedWeeks el loader mantiene el comportamiento anterior', async () => {
+    // Regresión: sin pasar skippedWeeks, cualquier semana con
+    // inventory_data detiene el loader (compatibilidad con call-sites
+    // que todavía no actualicen).
+    const sel = [report('2026-W40')]
+    const hist = [
+      report('2026-W39', { hasInv: true }),
+      report('2026-W38', { hasInv: true }),
+    ]
+    const provider = makeProvider({ selection: sel, history: hist })
+    const res = await loadCostoUsoContext(provider, { pageSize: 6 })
+    expect(res.status).toBe('complete')
+    // Al no pasar skippedWeeks, el loader se detiene en la primera
+    // página sin recorrer más allá de W39.
+    expect(res.pagesUsed).toBe(1)
+  })
+})

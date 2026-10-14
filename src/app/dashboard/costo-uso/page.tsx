@@ -432,7 +432,10 @@ export default function CostoUsoPage() {
     ;(async () => {
       const weekIds = filtered.map((w: any) => w.report.week)
       const provider = createSupabaseContextProvider(supabase as any, restaurantId, weekIds)
-      const res = await loadCostoUsoContext(provider)
+      // El loader debe conocer las semanas saltadas para no detenerse
+      // en una de ellas al buscar anchor (fix bug "inv_ant=$0" cuando
+      // la semana inmediatamente anterior está marcada).
+      const res = await loadCostoUsoContext(provider, { skippedWeeks: skippedWeekSet })
       if (cancelled) return
       // Ignora si esta ya no es la carga más reciente.
       setContextLoadId(curr => {
@@ -452,7 +455,7 @@ export default function CostoUsoPage() {
     })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restaurantId, filtered])
+  }, [restaurantId, filtered, skippedWeekSet])
 
   // Universo efectivo que pasamos al helper: si el loader trajo
   // contexto adicional, tiene precedencia sobre los weeks iniciales

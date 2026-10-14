@@ -280,6 +280,13 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
       voids_data(total, items)
     `
 
+  // El loader debe saltar las semanas marcadas al buscar anchor;
+  // sin esto, el anchor cae en la semana saltada (que tiene
+  // inventory_data pero el engine la ignora) y el período queda con
+  // invPrevious = 0 silencioso.
+  const skippedWeeksSet = new Set<string>(
+    ((skippedRes.data as any[] | null) ?? []).map((s: any) => s.week)
+  )
   const ctxResult = await loadCostoUsoContext({
     fetchSelectionEmbed: async () => {
       const r = await supabase.from('reports').select(EMBED_SELECT)
@@ -296,7 +303,7 @@ export async function fetchExportData(restaurantId: string, weekIds: string[]): 
         .range(offset, offset + limit - 1)
       return { data: (r.data as any[] | null) ?? null, error: r.error ?? null }
     },
-  })
+  }, { skippedWeeks: skippedWeeksSet })
   const ctxWeeks = ctxResult.weeks
   if (ctxResult.status === 'error') {
     // 'reports_selection_embed' / 'reports_anchor_lookback' — nombres

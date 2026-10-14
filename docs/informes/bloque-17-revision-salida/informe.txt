@@ -1,0 +1,950 @@
+Bloque 17 — Revisión de salida (14 fixes + 3 migraciones)
+Restaurant X-Ray / DineWise · repo saas-reportes
+Rama: costo-uso-validation-2026-09-06 · 2026-10-13
+MODO LIGERO · SIN TURNO PESADO · todo por LECTURA
+
+════════════════════════════════════════════════════════════════════
+1. ESTADO CONFIRMADO
+════════════════════════════════════════════════════════════════════
+Rama:          costo-uso-validation-2026-09-06
+HEAD:          96beeef48a34b4a1ad4c559a880114afd3697508
+Base previa:   be02da3 (informe bloque 15, 2026-09-06)
+git status:    limpio (sin cambios locales no commiteados).
+
+Commits desde la base (git log --oneline be02da3..HEAD): 12.
+El informe del bloque 16 listó 11 porque fue escrito y commiteado
+DESPUÉS. El 12.º commit (96beeef) es ese mismo informe. No hay
+inconsistencia nueva — es solo que el bloque 16 cuenta su propio
+commit en el total pero no se incluyó en la lista interna. Secuencia
+real, orden cronológico:
+
+  9353b1d  fix(costo-uso): skip ignora inventario (fix 1)
+  42c48cd  fix(avt,compras): skip + banner + sin hardcode (fix 2)
+  e26e5dc  fix(ceo): no mostrar AvT de semanas saltadas (fix 3)
+  276278b  fix(api/process): 409 + propagar + ISO week (fixes 4-5-6)
+  3a79649  fix(food-cost,costo-uso): denominador + order + mapping (fixes 7-8-9)
+  abcf070  fix(costo-uso): no clampear uso a 0 + badge (fix 10)
+  5a55edc  fix(parsers,labor): cogs vacío + hours_unpaid + order (fixes 11-12)
+  a8b3b65  fix(parsers): warnings sales + inventory + martes (fix 13)
+  71464d8  fix(filtros,kitchen): mes YYYY-MM + local + shortWeek (fix 14)
+  44da591  docs(status): PROJECT_STATUS.md con los 14 fixes
+  f2024fc  fix(review): follow-ups del code-reviewer
+  96beeef  docs(informes): bloque 16
+
+git diff --stat be02da3..HEAD: 36 archivos · +1044 / −249.
+
+Fuente autoritativa de las 14 reglas: /Users/ilan/Downloads/prompt_fixes_xray.md
+(auditor, 12-oct-2026). Esta revisión las contrasta 1:1 — NO se
+reconstruyen por título de commit.
+
+════════════════════════════════════════════════════════════════════
+2. MATRIZ DE LAS 14 CORRECCIONES
+════════════════════════════════════════════════════════════════════
+
+Convención de columnas:
+  P   problema original (según el prompt del auditor)
+  A→N comportamiento antes → ahora
+  F   archivos afectados
+  C   evidencia de verificación (lo que REALMENTE comprueba el cambio)
+  R   resultado ya registrado y limitaciones
+  D   dependencia de migración / reprocesado
+
+Convención de evidencia:
+  [behav]   test de comportamiento del motor / parser (vitest)
+  [compile] solo pasa typecheck / build; no corre lógica
+  [manual]  pendiente de verificación manual (nadie lo ha corrido)
+  [lectura] inspeccionado por lectura del código, sin ejecución
+
+─ FIX 1 — costo-uso: el skip ignora inventario preexistente ─
+P   skippedWeekSet solo etiquetaba; una semana marcada "sin inventario"
+    pero con inventory_data cargado seguía siendo ancla.
+A→N Era anchor y cerraba su propio período → ahora se absorbe como
+    intermedia; findAnchorBefore salta a la anterior con inventory.
+F   src/lib/costo-uso/engine.ts (líneas 199, 519)
+    src/app/dashboard/costo-uso/page.tsx (loop de alertas; modal)
+C   [behav] engine.test.ts "Caso 2 — consolidación con 1 y con 2
+    intermedias" cubre que una intermedia aporta compras/ventas al
+    período que la cierra. La inter­acción con skippedWeekSet NO tiene
+    un test unitario dedicado nuevo: el cambio en engine.ts es una
+    sola línea añadida ante el `by_account.length>0`, respalda­do por
+    [lectura]. El loop de alertas y el modal: solo [lectura] + [compile].
+R   Si la semana marcada no tiene inventory, nada cambia. Si tiene
+    inventory, el valor queda en BD pero el engine lo ignora como ancla.
+D   Ninguna (no toca BD).
+
+─ FIX 2 — AvT respeta semanas saltadas y quita hardcode ─
+P   AvT seguía mostrando avt_data de una semana saltada; el banner
+    "consolidación" era falso; fallback hardcoded restaurant_id.
+A→N (a) early-return con banner "Sin AvT para esta semana"; (b) texto
+    "AvT de R365 solo de esta semana (…); las saltadas no tienen AvT";
+    (c) `restaurantIdHook` sin fallback a '…0001'.
+F   src/app/dashboard/avt/page.tsx (35, 342, 384-402)
+    src/app/dashboard/compras/page.tsx (15)
+C   [lectura] del JSX, [compile] del tsc. Sin test — es render + fetch.
+R   El `restaurantIdHook` ya era string|null; el guard `if
+    (!restaurantIdHook) return` ya existía en loadData, así que el
+    fallback nunca disparaba en la práctica. Riesgo real: cero.
+D   Ninguna.
+
+─ FIX 3 — CEO no muestra AvT de semanas saltadas ─
+P   El panel AvT del CEO mostraba net_variance de la semana latest
+    aunque estuviera marcada.
+A→N page.tsx (server) + CeoDashboardClient (SWR fetcher) fetchean
+    skipped_inventory_weeks y pasan `skippedByRest`; el panel pinta
+    "📭 Semana saltada — sin AvT" si latest.report.week está marcada.
+F   src/app/dashboard/ceo/page.tsx (añade query + shape)
+    src/app/dashboard/ceo/CeoDashboardClient.tsx (fetcher + render)
+C   [lectura] del shape de retorno + consumer. [compile] confirma que
+    `CeoInitialData` y el fetcher coinciden. Sin test.
+R   Edge: la rama temprana "no restaurants" del fetcher cliente también
+    devuelve `skippedByRest: {}` (consistente).
+D   Ninguna.
+
+─ FIX 4 — subir semana duplicada regresa 409 ─
+P   Resubir una semana insertaba un reporte duplicado silencioso.
+A→N (a) pre-check (restaurant_id, week) con `.limit(1)` + chequeo de
+    error → 409 code:'REPORT_WEEK_EXISTS' con existingReportId;
+    (b) 23505 del INSERT también convertido a 409 (race condition);
+    (c) migración 20261013120000_add_unique_restaurant_week.sql con el
+    UNIQUE a nivel BD (sin ejecutar aún).
+F   src/app/api/process/route.ts (48-100)
+    supabase/migrations/20261013120000_add_unique_restaurant_week.sql
+C   [lectura] del flujo + [compile]. Sin test de integración (requiere
+    BD). La migración NO ha sido corrida contra Supabase.
+R   El pre-check SIN la restricción UNIQUE no evita duplicados
+    concurrentes (dos requests paralelos pasan ambos el chequeo e
+    insertan). El 23505 fallback cierra esa ventana, pero depende de
+    que la migración esté aplicada. Mientras no se aplique, el riesgo
+    de duplicado por concurrencia persiste (es muy improbable con un
+    solo usuario, no cero).
+D   Requiere la migración antes de contar con la defensa completa.
+
+─ FIX 5 — fallos silenciosos en /api/process ─
+P   saveToDatabase devolvía {error} pero cada call-site lo ignoraba.
+A→N saveToDatabase devuelve {error?: string}; cada rama lo captura y
+    lo expone en results.<tipo>.error. criticalSaveFailed se activa
+    si falla sales, labor, cogs o inventory → response status 500 con
+    success:false y error consolidado. receiving, employee, kitchen
+    ahora capturan el error del insert.
+F   src/app/api/process/route.ts (85-305, saveToDatabase final)
+    src/app/api/process-edit/route.ts (espejo completo)
+C   [lectura] línea por línea. [compile] limpio. Sin test de
+    integración (requiere BD). El upload/page.tsx y
+    upload/edit/[reportId]/page.tsx muestran `data.error` cuando
+    success:false; cuando success:true pero una rama no crítica trae
+    `.error`, el UI muestra "✅" (ver sección 5).
+R   Cuatro ramas son críticas: sales, labor, cogs, inventory. Las no
+    críticas (voids, discounts, waste, avt, product_mix, receiving,
+    employee, kitchen) devuelven success:true aunque tengan error
+    específico — no se visualiza al usuario (hallazgo abierto).
+D   Ninguna.
+
+─ FIX 6 — semana ISO corrida 7 días cuando no hay fiscal_year_start ─
+P   `jan4.getDay() = 0` para domingo (2026) producía W1 a partir del
+    5-ene en vez de 29-dic-2025.
+A→N `const dow = jan4.getDay() || 7; startOfWeek1.setDate(jan4.getDate() - dow + 1)`.
+F   src/app/api/process/route.ts (getWeekStartISO, ~430)
+C   [lectura]. Sin test unitario (la función es privada del route).
+    Verificación mental: 4-ene-2026 es domingo → dow=7 → setDate(4-7+1)
+    = setDate(-2) → 29-dic-2025 (correcto). Antes: dow=0 → setDate(5) →
+    5-ene-2026 (incorrecto).
+R   Solo entra en acción cuando `restaurants.fiscal_year_start` es NULL.
+    Mula lo tiene lleno; la mayoría de restaurantes nuevos no.
+D   Ninguna. Semanas ya cargadas con el cálculo anterior conservan su
+    week_start en BD; esta función solo se usa en inserts NUEVOS (ver
+    sección 5 → reprocesado).
+
+─ FIX 7 — Food Cost infla el denominador A&B ─
+P   `getMappedSales(categories, 'beer') || netSales` sustituía
+    categorías sin ventas por el total de ventas netas, dividiendo cada
+    costo entre un denominador inflado. Ejemplo W39: Wine sin ventas
+    reportaba "19.7%" cuando lo real era 39.3%.
+A→N Sin fallback: cada categoría se divide contra SU propia venta
+    mapeada; totalABSales = Σ reales; pct() devuelve null cuando el
+    denominador es 0 y la UI pinta "—". Aplicado en Range mode y en los
+    paneles Compare "Semana A / Semana B" y "Diferencias".
+F   src/app/dashboard/food-cost/page.tsx (buildWeekData, compare mode)
+C   [lectura]. Sin test unitario del cálculo del page.tsx.
+R   Divide-by-zero no ocurre: `pct(a, b) = !a||!b ? null : (a/b*100)`.
+    La UI muestra "—" cuando la categoría no tiene ventas mapeadas y
+    sí costos — es el signo visible de que falta mapear o que hubo
+    costo sin venta correspondiente.
+D   Ninguna.
+
+─ FIX 8 — order ascending:false + reverse en costo-uso + food-cost ─
+P   `.order('week', { ascending:true }).limit(52)` traía las 52 semanas
+    MÁS VIEJAS, no las más recientes.
+A→N ascending:false + limit(52) + reverse() → últimas 52, orden
+    ascendente para el resto del cálculo.
+F   src/app/dashboard/costo-uso/page.tsx (191, 245)
+    src/app/dashboard/food-cost/page.tsx (62, 81)
+C   [lectura]. El `.reverse()` sobre el resultado restaura el orden
+    ascendente que el engine espera. El resto del código consume
+    `weeks` como ASC (loop i-1→i en alertas, pickOne lineal, etc.).
+R   Para restaurantes con <52 semanas no cambia nada. Para los que ya
+    pasaron 52, antes se veían semanas antiguas que no afectaban las
+    gráficas visibles pero sí el filtro "Este mes".
+D   Ninguna.
+
+─ FIX 9 — mapeo filtra por source_system='toast' + aviso sin mapear ─
+P   mappings.find(m => m.source_category.toLowerCase() ===
+    cat.name.toLowerCase()) podía capturar un mapeo de R365 con el
+    mismo nombre.
+A→N Filtro adicional `m.source_system === 'toast'`. Aviso nuevo
+    "Categoría de ventas sin mapear: X" en costo-uso y food-cost.
+F   src/lib/costo-uso/engine.ts (getMappedSales, getMappedGross)
+    src/app/dashboard/food-cost/page.tsx (getMappedSales)
+    src/app/dashboard/costo-uso/page.tsx (unmappedCats)
+    tests y fixtures (DEFAULT_MAPPINGS, scenarios.ts, pptx samples)
+C   [behav] engine.test.ts "Caso 1 — Food-only": food_sales usa `net`
+    del mapping — pasa con fixtures que ahora traen source_system='toast'.
+    Antes de este fix, los tests pasaban SIN el filtro (porque no lo
+    aplicaba); ahora pasan CON el filtro aplicado + los fixtures
+    actualizados. Es decir: el test cubre el ANTES y el AHORA
+    comportamiento es idéntico porque la fixture siempre fue de Toast.
+    El riesgo real que el fix elimina (un mapeo de R365 con mismo
+    nombre ganando) NO está cubierto por un test nuevo.
+R   Legacy en BD: Settings UI inserta mappings con source_system='toast'
+    (settings/page.tsx:128). Si en la BD existen filas con
+    source_system NULL, se filtran — se vuelven invisibles para el
+    engine. Validar con query de solo lectura:
+        select count(*) from category_mappings
+        where source_system is null
+          or (source_system <> 'toast' and source_system <> 'r365_item');
+    Si ese count > 0, hay que decidir backfill (ej. UPDATE SET
+    source_system='toast' WHERE source_system IS NULL) antes de
+    desplegar — de otra forma esos mapeos quedarán inactivos.
+D   Potencial backfill de category_mappings (ver R).
+
+─ FIX 10 — mostrar uso negativo (quitar Math.max) ─
+P   `Math.max(invPrev + purchases - invCurrent, 0)` ocultaba usos
+    negativos; aparecían como "0" sin bandera.
+A→N uso = invPrev + purchases − invCurrent (sin clamp). UI pinta en
+    naranja con badge "⚠️ uso negativo, revisar conteo/compras".
+    Diagnostic `negative_gross_consumption.evidence.clampedTo` pasa de
+    0 a null. Totales (`totalUsoCost`) también quitan el guard
+    `if (uso > 0)` para que Σ categorías == totalUsoCost ==
+    aggregateSeries(series).
+F   src/lib/costo-uso/engine.ts (buildWeekData 241, buildPeriodData
+    400, totalUsoCost en ambos)
+    src/lib/costo-uso/diagnostics.ts (clampedTo:null + nota)
+    src/app/dashboard/costo-uso/page.tsx (badge en mobile + desktop)
+    src/lib/costo-uso/ui-helpers.ts (texto)
+    src/app/dashboard/costo-uso/_components/RangeSummary.tsx (texto)
+    src/lib/export/generate-pptx.ts (texto del warning)
+C   [behav]:
+      engine.test.ts "Caso 12 — ajustes": expect(food_uso).toBe(-5900).
+      engine.test.ts "Afirmación A": Σ periodos sin clamp = directo
+      del intervalo (100 = 100); agg suma 100 + (-400) + 500 = 200.
+      diagnostics.test.ts "G": food_uso = -400 (publicado) +
+      clampedTo = null.
+R   Interpretación obligatoria: un uso negativo NO es "consumo real
+    físico" ni automáticamente "error de conteo". Es una ANOMALÍA a
+    revisar — causas típicas incluyen conteo erróneo, factura tardía o
+    transferencia entre unidades. El badge dice "revisar", no afirma
+    ninguna. Si el usuario interpreta de otro modo, es decisión
+    pendiente.
+
+    Efectos secundarios ya mapeados:
+      - `_uso_pct` ahora puede ser negativo (pct(-400, 5000) = -8.0).
+      - `_variacion = uso - theoCost` ahora puede ser más negativa.
+      - `dias_inv`: guard `uso > 0` sigue → cuando uso es negativo, se
+        emite null (no inventa días negativos).
+      - PPTX: incluye la slide con uso negativo tal cual (ver tests
+        skipped en §2 bis: la verificación visual del PPTX es it.skip
+        pendiente).
+D   Ninguna (no toca BD).
+
+─ FIX 11 — parse-cogs: by_vendor vacío + by_account ─
+P   `r[1] == null` perdía filas de vendor cuando SheetJS leía la
+    celda intermedia como "" (string vacío) en vez de null. by_account
+    se calculaba pero no se persistía.
+A→N Filtro: `r[1] == null || String(r[1]).trim() === ''`. Insert
+    guarda data.by_account en cogs_data.by_account.
+F   src/lib/parsers/parse-cogs.ts (73-89)
+    src/app/api/process/route.ts (saveToDatabase cogs)
+    src/app/api/process-edit/route.ts (idem)
+    supabase/migrations/20261013120500_add_by_account_to_cogs_data.sql
+C   [lectura] del parser. Sin test unitario de parse-cogs. [compile].
+R   Sin la migración, el insert de cogs FALLARÁ (columna no existe)
+    y gracias al fix 5 → saveRes.error → results.cogs.error +
+    criticalSaveFailed → 500 al usuario. El UI mostrará el error pero
+    el reporte quedará con cogs vacío.
+D   REQUIERE la migración
+    20261013120500_add_by_account_to_cogs_data.sql ANTES de desplegar
+    el código. Si se despliega antes, cada nueva subida de cogs
+    fallará como critical.
+
+─ FIX 12 — parse-labor: hours_unpaid + labor ordenado por week ─
+P   parse-labor descartaba filas sin Hourly Rate (asalariados y
+    "placeholder" como "Bar, Bar"); labor/page.tsx ordenaba por
+    created_at (una subida tardía aparecía como "latest").
+A→N (a) parse separa pagadas y no pagadas; devuelve by_employee
+    (solo pagadas, idéntico a antes), + hours_unpaid_regular,
+    hours_unpaid_ot, by_employee_unpaid; (b) labor page ordena por
+    week desc.
+F   src/lib/parsers/parse-labor.ts
+    src/app/api/process/route.ts (saveToDatabase labor)
+    src/app/api/process-edit/route.ts (idem)
+    src/app/dashboard/labor/page.tsx (order)
+    supabase/migrations/20261013121000_add_hours_unpaid_to_labor_data.sql
+C   [lectura]. Sin test unitario de parse-labor.
+R   El UI NO muestra todavía hours_unpaid_* ni by_employee_unpaid;
+    total_hours sigue siendo solo pagadas (fuera del alcance del
+    auditor). La información se persiste para que la UI lo consuma
+    después. Si se despliega el código SIN la migración, el insert
+    de labor fallará (columnas inexistentes) → critical → 500.
+D   REQUIERE la migración
+    20261013121000_add_hours_unpaid_to_labor_data.sql ANTES de
+    desplegar.
+
+─ FIX 13 — validaciones en parsers (warnings) ─
+P   parse-sales sin warning para guests/orders>8; buildSalesDateWarning
+    marcaba falso-positivo cuando el rango inicia en martes (Mula
+    cierra lunes); parse-inventory sin warnings de current=0 cuando
+    previous>500 ni de count_date fuera de lunes.
+A→N Agregados sanity_warning (sales) y sanity_warnings[] (inventory);
+    buildSalesDateWarning tolera inicio=martes posterior al weekStart.
+F   src/lib/parsers/parse-sales.ts
+    src/lib/parsers/parse-inventory.ts
+    src/app/api/process/route.ts (recoge → warnings[k])
+    src/app/api/process-edit/route.ts (idem)
+C   [lectura]. Sin test unitario para los nuevos warnings.
+R   Los warnings SE visualizan al usuario (upload page y upload-edit
+    muestran `warnings` cuando están). El warning "count_date fuera
+    de lunes" es específico de R365-con-conteo-de-lunes (Mula). Para
+    otros restaurantes con conteo martes/miércoles este warning
+    sería ruido. Ver §6 Hallazgos fuera de alcance.
+D   Ninguna.
+
+─ FIX 14 — filtros varios ─
+P   (a) "Este mes" en costo-uso/food-cost/kitchen usaba
+    `new Date(week_start)` → en zona horaria al oeste de UTC,
+    '2026-06-01' se vuelve 31-may por conversión implícita a UTC.
+    (b) parse-kitchen-details usaba `toISOString().split('T')[0]`
+    para dateStr → desplazaba la fecha un día en servidores no-UTC.
+    (c) `.replace('2026-', '')` hardcodeado disperso en 10 pantallas +
+    engine → romperá en 2027.
+A→N (a) Comparar por string 'YYYY-MM' sobre week_start.slice(0,7).
+    (b) dateStr se construye con getFullYear/getMonth/getDate local.
+    (c) Nuevo helper src/lib/week-label.ts (shortWeek) reemplaza los
+    replace() en 10 pantallas y engine.
+F   src/lib/week-label.ts (nuevo)
+    src/app/dashboard/costo-uso/page.tsx, food-cost/page.tsx,
+    kitchen/page.tsx, labor, avt, ventas, waste, employee, compras,
+    page.tsx, ceo
+    src/lib/costo-uso/engine.ts (buildWeekData, buildPeriodData)
+    src/lib/parsers/parse-kitchen-details.ts (dateStr)
+C   [lectura]. Sin test. tsc valida imports.
+R   generate-pptx.ts (línea 32) todavía tiene
+    `w.replace('2026-','').replace('2025-','')` — no refactorizado al
+    helper (ver §6).
+D   Ninguna.
+
+════════════════════════════════════════════════════════════════════
+2 bis — PRUEBAS OMITIDAS (9)
+════════════════════════════════════════════════════════════════════
+Las 9 pruebas que vitest reporta como "skipped" son 2 `.todo` + 4
+`.skip` + 3 pruebas dentro de un `describe.skip`:
+
+  it.todo (interactions.pending.tsx, 142-143)
+    1. Modal variación calculable
+    2. Modal variación null
+    → Esperan la extracción de buildVarianceBreakdown a módulo
+      compartido. Pendiente del próximo turno pesado.
+
+  it.skip (engine.test.ts, 487)
+    3. Caso 6 — inv=0 y purchases>0 → uso = purchases
+    4. Caso 14 — ventas negativas (devoluciones)
+    5. Afirmación B — semanas calendario faltantes (engine ni las ve)
+    6. Afirmación D sin toggle (gross vs net con descuentos operativos)
+    7. Afirmación D con toggle + staff meal operativo
+    → Son casos reservados o pendientes de decisión de negocio.
+
+  it.skip (prepare-result.test.ts, 714)
+    8. Verificación visual del PPTX (contenido y layout)
+    → Pendiente de turno pesado (abrir el .pptx en PowerPoint/
+      Keynote).
+
+  describe.skip (generate-pptx.samples.test.ts, 160)
+    9. Generación opcional de PPTX de muestra con GEN_PPTX=1
+    → No pin de assertions numéricas; es generador de archivos para
+      inspección manual.
+
+Impacto en las 14 reglas: NINGUNA de las 9 skipped bloquea
+verificación de un fix aplicado hoy. La #8 sería la relevante si se
+quisiera asegurar que el badge "uso negativo" aparece correctamente
+en el PPTX — por ahora es manual. No se presenta como "verificado".
+
+════════════════════════════════════════════════════════════════════
+3. CAMBIOS DE REGLA DE NEGOCIO
+════════════════════════════════════════════════════════════════════
+
+A. CONSUMO NEGATIVO
+───────────────────
+Autorización explícita del auditor (prompt del 12-oct, regla 10):
+
+  "## 10. No ocultar usos negativos con Math.max(…,0) (MEDIO)
+   Archivo: costo-uso (~384, ~521). Muestra el uso negativo con un
+   badge '⚠️ uso negativo, revisar conteo/compras' en lugar de 0."
+
+Esto es lo que respalda el cambio comercial. El badge dice "revisar",
+no "esto es consumo físico real". La interpretación obligatoria sigue
+siendo que un valor negativo es una ANOMALÍA a investigar, con causas
+plausibles (conteo erróneo, factura tardía, transferencia, merma no
+registrada, devolución de proveedor contabilizada tarde). El código
+NO toma partido entre ellas.
+
+Ejemplo sintético (dos categorías):
+
+  Semana   invPrev  purchases  invCurrent  uso
+  --------------------------------------------
+  Food      1000       100        1500      -400     ← anomalía
+  Liquor    1200       600         800      1000     ← normal
+  Total                                      600
+
+Presentación:
+  Food:   fila con uso "-$400" en NARANJA + ⚠️ (tooltip "uso
+          negativo, revisar conteo/compras"). _uso_pct = -400/ventas,
+          puede imprimirse negativo. _variacion = uso − theo (más
+          negativa). _dias_inv = null (guard uso>0).
+  Liquor: fila normal, blanco, uso "$1,000".
+  Total:  totalUsoCost = 600 (NO oculta la bandera). totalRealPct =
+          600 / ventas totales A&B.
+  Aggregated series: suma plana de _uso por categoría (puede dar
+          negativo global en casos extremos; nunca ha ocurrido en
+          datos reales de Mula).
+  PPTX:   la slide "COSTO DE USO" imprime el valor negativo tal cual
+          + warning "Al menos un período tuvo uso negativo; revisar
+          conteo/compras" en el pie de slide. La verificación visual
+          del PPTX con negativos es la skipped #8 (manual pendiente).
+
+Resumen de ETIQUETA que el UI expone (ui-helpers.ts):
+  title = "Uso negativo detectado"
+  hint  = "El cálculo (inventario inicial + compras − inventario
+          final) dio negativo. Se publica tal cual para revisar:
+          conteo erróneo, factura tardía o transferencia entre
+          unidades."
+
+B. SEMANA SALTADA
+─────────────────
+"Marcar semana sin inventario" afecta SOLO al tratamiento del
+INVENTARIO de esa semana por el engine. Compras y ventas NO se
+descartan.
+
+Detalle preciso (verificado por lectura de engine.ts):
+
+  1. engine.findAnchorBefore ignora la semana marcada aunque tenga
+     by_account.length > 0 → busca una ancla previa real.
+  2. engine.buildPeriodSeries:
+       hasInv = w.inventory?.by_account?.length > 0
+                && !ctx.skippedWeekSet.has(w.report.week)
+     Si hasInv === false, la semana se mete al array
+     `intermediates`. No se descarta, no se duplica.
+  3. engine.buildPeriodData(anchor, intermediates, closing) usa
+     `periodWeeks = [...intermediates, closing]` para calcular
+     purchases y catSales. Es decir:
+       - Las compras (cogs.by_category) de la semana marcada SÍ
+         suman al período.
+       - Las ventas mapeadas (sales.categories) de la semana marcada
+         SÍ suman al período.
+       - Su inventory_data queda intacta en BD pero NO entra como
+         inv_previous ni inv_current (lo que entra es del anchor
+         previo real + del closing).
+  4. UI (costo-uso): el modal "Marcar sin inventario" avisa al usuario
+     si la semana ya tiene conteo cargado — "se ignorará en el
+     cálculo". No borra el conteo.
+  5. UI (avt): si la semana seleccionada está en skipped, no se
+     renderiza su avt_data (banner "Sin AvT para esta semana").
+  6. UI (CEO): el panel AvT no imprime net_variance de una semana
+     saltada; pinta "📭 Semana saltada — sin AvT".
+
+Reversibilidad:
+  deleteSkippedWeek elimina la fila de skipped_inventory_weeks y
+  recarga el estado local. En el próximo recálculo (useEffect sobre
+  skippedWeekSet), la semana vuelve a ser anchor normal — su
+  inventory_data seguía intacta en BD, no hubo pérdida de datos.
+
+Ausencia / duplicación de datos:
+  Lectura del flujo: una semana w entra EXACTAMENTE en un solo
+  período (como closing si tiene inv y no está marcada; como
+  intermediate si no tiene inv O está marcada). Nunca entra dos
+  veces. Si por error una semana aparece dos veces en el input, el
+  diagnostic duplicate_week la detecta.
+
+C. DENOMINADORES
+────────────────
+Qué venta se usa:
+
+  Costo de Uso (engine.getMappedSales):
+    source     = w.sales.categories (array del parser de Toast)
+    filtro     = m.source_system === 'toast'
+                 && m.source_category.toLowerCase() ===
+                    cat.name.toLowerCase()
+    criterio   = sumar categorias cuyo mapping.mapped_to === cat.key
+    valor      = cat.net (campo del parser)
+
+  Costo de Uso con "+Desc. Op." toggle (engine):
+    Si includeOpDiscounts y la suma gross > net, se usa gross +
+    ajuste `sales_adjustment`. Hay dos pruebas skipped (D sin/con
+    toggle) que fijan este comportamiento como pendiente de
+    verificación de negocio.
+
+  Food Cost (page.tsx.getMappedSales):
+    MISMO filtro (source_system='toast'); MISMO campo `cat.net`.
+    En buildWeekData se usan foodSales/beerSales/etc sin fallback a
+    netSales. Para la categoría virtual "general" se usa netSales
+    (único caso). Se aplicó también a los paneles compare "A/B" y
+    "Diferencias".
+
+Ceros y ausencias:
+  Categoría de Toast con mapeo pero cat.net=0 → suma 0.
+  Categoría de Toast SIN mapeo (source_system='toast') → NO entra al
+  denominador por categoría. Aparece en el aviso "Categoría de
+  ventas sin mapear: X".
+  Categoría sin mapeo en absoluto Y con cat.net>0 → se pierde del
+  denominador — es exactamente el bug que fix 7 arregla al no
+  "esconderla" bajo netSales total.
+
+Descuentos:
+  net ya viene sin descuentos (es "net sales" de Toast).
+  gross con toggle +Desc. Op. es el valor sin restar descuentos
+  marcados como operativos — para que el denominador refleje la
+  venta "real" cuando el operador quiere ver el costo contra el
+  precio bruto.
+
+Multisemana:
+  Para un rango de N semanas, el engine suma los `_sales` por
+  categoría a lo largo del rango y los expone en el período
+  consolidado. El pct se calcula como Σuso / Σsales. aggregateSeries
+  hace el mismo cálculo entre períodos.
+
+Consistencia UI ↔ exportaciones:
+  Ambos usan prepareCostoUsoResult sobre el MISMO engine. El
+  informe del bloque 15 ya validó la paridad del loader iterativo
+  (contexto equivalente UI↔PPTX). Lo único que PPTX NO cubre
+  automáticamente es la revisión visual del slide; es la skipped #8.
+
+Decisiones pendientes identificables:
+  - Toggle +Desc. Op.: dos pruebas skipped (Afirmación D) sin
+    cerrar. Si el negocio pide una definición "sin ambigüedad",
+    hay que decidirla antes de considerar las exportaciones
+    "estables".
+  - Visibilidad de hours_unpaid en el UI de labor: fuera del
+    alcance de las 14 reglas; decisión pendiente.
+  - Backfill de category_mappings sin source_system: ver §4 fix 9.
+
+════════════════════════════════════════════════════════════════════
+4. REVISIÓN DE LAS TRES MIGRACIONES
+════════════════════════════════════════════════════════════════════
+
+A) 20261013120000_add_unique_restaurant_week.sql
+   Cambio exacto:
+     alter table public.reports
+       add constraint reports_restaurant_week_unique
+       unique (restaurant_id, week);
+   Riesgo:
+     - FALLA si existen pares (restaurant_id, week) duplicados.
+     - Toma un ACCESS EXCLUSIVE LOCK brevemente mientras construye
+       el índice único (reports es tabla pequeña por diseño; segundos
+       como mucho).
+     - Bloquea otras escrituras concurrentes a `reports` durante la
+       creación del índice.
+   Compatibilidad:
+     - Código anterior desplegado (sin fix 4): intentaría insertar
+       duplicados y recibiría 23505. Si el frontend viejo no maneja
+       23505 → mostraría "error desconocido" al usuario.
+     - Código nuevo: pre-check + fallback 23505 → 409 code
+       REPORT_WEEK_EXISTS. Compatible.
+   Restricciones / default / null:
+     - UNIQUE no acepta NULLs duplicados en Postgres (NULLs son
+       distintos por default). No hay semanas con week=NULL por la
+       NOT NULL original de la columna (asumido; validar).
+   Bloqueos / condiciones:
+     - Depende de que la tabla NO tenga duplicados actuales.
+     - Si falla, no deja residuos — ADD CONSTRAINT en Postgres es
+       atómico.
+   Backfill / reimportar:
+     - Ninguno.
+   Recuperación ante fallo:
+     - Si falla por duplicados, listarlos con pre-check (abajo) y
+       decidir manualmente qué reporte conservar antes de reintentar.
+     - "Recuperación" nunca es borrar automáticamente — podría borrar
+       la copia que SÍ tenía los datos buenos.
+   PRE-CHECK DE SOLO LECTURA (ya documentado en el .sql):
+     select restaurant_id, week, count(*)
+     from public.reports
+     group by 1, 2
+     having count(*) > 1;
+     -- debe devolver cero filas.
+
+   NOTA SOBRE "qué define una semana" (según pide la auditoría §4):
+     La columna real es `reports.week` (string 'YYYY-Www'). La semana
+     se compone de restaurant_id + week (ISO). NO existe
+     source_system en reports (los sources distintos — Toast, R365 —
+     son conciliados dentro de un mismo report semanal). Por tanto
+     UNIQUE (restaurant_id, week) es el criterio correcto para
+     "no duplicar un reporte semanal". El prompt del auditor pide
+     EXACTAMENTE esa restricción.
+
+B) 20261013120500_add_by_account_to_cogs_data.sql
+   Cambio exacto:
+     alter table public.cogs_data
+       add column if not exists by_account jsonb;
+   Riesgo:
+     - Aditiva, nullable, idempotente. Riesgo cero para datos
+       existentes.
+   Compatibilidad:
+     - Código anterior: no leía ni escribía by_account → sigue igual.
+     - Código nuevo (fix 11): INSERTA by_account. SIN esta migración,
+       el insert FALLA con "column does not exist" y gracias al fix 5
+       se refleja como critical save failure (500 al usuario).
+   Null / default:
+     - Columna sin DEFAULT; cualquier fila vieja ve NULL. El UI
+       debe tratar NULL como "sin información", no como "{} vacío".
+   Bloqueos:
+     - add column con nullable es un cambio de catálogo rápido
+       (no reescribe filas).
+   Backfill:
+     - NINGUNO automático. Los reportes históricos NO tendrán
+       by_account hasta que se reprocesen. Esto está bien: el flujo
+       de "Settings > Mapeo COGS" todavía no está implementado — nadie
+       lee by_account aún.
+     - PENDIENTE: cuando se implemente el consumidor, decidir si
+       (i) se reprocesan reportes históricos corriendo parse-cogs
+       nuevo, o (ii) la UI tolera NULL como "sin dato — mapear
+       categorías COGS no disponible para este reporte".
+     - No convertir NULL histórico en {} vacío automáticamente — es
+       información desconocida, no "sin envelopes".
+   Recuperación:
+     - Si el ADD COLUMN falla, no deja residuos.
+
+C) 20261013121000_add_hours_unpaid_to_labor_data.sql
+   Cambio exacto:
+     alter table public.labor_data
+       add column if not exists hours_unpaid_regular numeric,
+       add column if not exists hours_unpaid_ot      numeric,
+       add column if not exists by_employee_unpaid   jsonb;
+   Riesgo:
+     - Aditiva, nullable, idempotente. Riesgo cero para datos
+       existentes.
+   Compatibilidad:
+     - Código anterior: no leía ni escribía estas columnas.
+     - Código nuevo (fix 12): el insert las escribe. SIN la
+       migración, el insert FALLA → critical save → 500.
+   Null:
+     - Reportes históricos ven NULL en estas columnas. El UI debe
+       tratarlas como "información no disponible" (no "0 horas").
+       Decir "0 horas no pagadas en 2026-W35" sería MENTIR sobre un
+       dato nunca capturado.
+   Backfill:
+     - NINGUNO. Para obtener hours_unpaid_* históricos habría que
+       re-correr parse-labor sobre los CSV originales. Esos CSV no
+       están en el repo; están en la carpeta de archivos del cliente.
+       Pendiente de decisión de negocio: ¿re-importar W1..W40 de
+       Mula? Fuera del alcance autorizado.
+   Recuperación:
+     - add column nullable: trivial.
+
+════════════════════════════════════════════════════════════════════
+5. IMPORTACIÓN Y REIMPORTACIÓN
+════════════════════════════════════════════════════════════════════
+
+PARIDAD /api/process VS /api/process-edit
+  Después del commit f2024fc, process-edit espeja a process en:
+    - propagación de errores de saveToDatabase ({error} capturado)
+    - criticalSaveFailed (sales, labor, cogs, inventory)
+    - escritura de hours_unpaid_* y by_employee_unpaid (labor)
+    - escritura de by_account (cogs)
+    - warnings de sanidad (sales_sanity, inventory_sanity)
+  Diferencias restantes INTENCIONALES:
+    - process-edit NO corre el pre-check de duplicados ni el ISO
+      week fallback (ya tiene un reportId existente).
+    - process-edit hace delete-then-insert por tipo de archivo.
+
+REIMPORTACIÓN FALLIDA PUEDE PERDER DATOS PREVIOS
+  Patrón de process-edit, por tipo de archivo:
+      1. supabase.from('<tabla>').delete().eq('report_id', reportId)
+      2. saveToDatabase(..., <tabla>, newData)
+  Si el DELETE pasa y el INSERT falla, la fila anterior se perdió y
+  no hay rollback transaccional. El fix 5+review captura el error y
+  devuelve 500 criticalSaveFailed, pero el dato VIEJO ya se borró —
+  el usuario ve "error", el reporte queda con <tabla> vacía.
+
+  Mitigación mínima que NO está implementada en este stack:
+    - Envolver cada par delete+insert en una RPC o function con
+      BEGIN/ROLLBACK.
+    - O: hacer INSERT primero, DELETE después (idealmente upsert por
+      report_id como PK/UNIQUE).
+  Es un hallazgo abierto. Fuera del alcance del auditor pero sí
+  relevante para la publicación.
+
+ESTADOS PARCIALES AL FALLAR
+  /api/process: si sales/labor/cogs/inventory falla DESPUÉS del
+  reports.insert, el reporte semanal (fila en `reports`) queda
+  creado con sub-tablas incompletas. El próximo intento, gracias al
+  fix 4 (409), bloqueará reinsertar — forzando a usar "Editar". Es
+  intencional pero puede ser confuso: el usuario ve 500 → vuelve a
+  intentar → recibe 409 → entra a Editar sobre un report casi vacío.
+
+LOS NUEVOS WARNINGS LLEGAN AL USUARIO
+  warnings.sales / warnings.sales_sanity / warnings.cogs /
+  warnings.waste / warnings.inventory_sanity: TODOS se renderizan en
+  upload/page.tsx (líneas 162-170) y en upload/edit/[reportId]/page.tsx
+  (118-121) cuando success === true.
+  HALLAZGO abierto (ya marcado por el reviewer): si success === true
+  pero results.<tipo>.error existe en una rama NO crítica (voids,
+  discounts, waste, avt, product_mix, receiving, employee, kitchen),
+  el UI muestra "✅" sin exponer el error específico. Es un gap de
+  visibilidad.
+
+QUÉ CORRECCIONES AFECTAN SOLO ARCHIVOS FUTUROS
+  parse-cogs (fix 11)
+  parse-labor (fix 12)
+  parse-sales warnings (fix 13)
+  parse-inventory warnings (fix 13)
+  parse-kitchen-details dateStr (fix 14)
+  → Solo cambia lo que se persiste a partir de la próxima subida.
+    Los reportes históricos conservan los valores crudos originales.
+
+QUÉ CORRECCIONES CAMBIAN RESULTADOS HISTÓRICOS AUTOMÁTICAMENTE
+  (sin reimportar — recomputa sobre datos ya en BD)
+  engine fix 1 (skip respeta inventario): afecta cualquier semana con
+    skipped_inventory_weeks pre-existente.
+  engine fix 9 (filtro source_system='toast'): un mapping legacy sin
+    source_system queda inactivo → si hay filas así en BD, se
+    perderán ventas por mapeo (BACKFILL recomendado).
+  engine fix 10 (uso sin clamp): recalcula uso para TODO el histórico
+    cada vez que el usuario abre el dashboard. Antes aparecía como "0";
+    ahora puede aparecer negativo.
+  UI fix 2/3/7/8/14: puras capa de presentación.
+
+════════════════════════════════════════════════════════════════════
+6. HALLAZGOS FUERA DEL ALCANCE
+════════════════════════════════════════════════════════════════════
+
+6.1  "2026-" / "2025-" fijo en generate-pptx.ts (línea 32)
+     function wL(w) { return w.replace('2026-','').replace('2025-',''); }
+     Impacto: cosmético — en 2027 las etiquetas semanales del PPTX
+     mostrarán "2027-W05" en vez de "W05". No afecta cifras. Es
+     consistente con el helper shortWeek pero NO fue migrado a él
+     (ver fix 14). Clasificación: limpieza secundaria.
+
+6.2  restaurant_id = '00000000-...-000001' en
+     src/app/dashboard/settings/mapeo-items/page.tsx (línea 31)
+     Impacto:
+       - LEE unmatched items de todos los reportes (sin filtro de
+         restaurante) y lee mappings guardados con restaurantId
+         hardcoded → mezcla potencial entre restaurantes al LEER.
+       - ESCRIBE mappings con restaurant_id = Mula (línea 93) y
+         UPSERT con onConflict 'restaurant_id,source_system,
+         source_category' → cualquier usuario que entre a esta
+         página desde otra organización escribirá mappings
+         ATRIBUIDOS a Mula.
+     Clasificación: AISLAMIENTO DE DATOS. Si el repo tiene más de
+     un restaurante activo con usuarios distintos (hay
+     user_restaurants + useRestaurantId implementados), este
+     hardcode es un POSIBLE BLOQUEADOR DE PUBLICACIÓN multi-tenant.
+     Si en producción hoy solo Mula usa la UI de mapeo-items, el
+     riesgo real es bajo y puede dejarse como limpieza; si cualquier
+     otro usuario de otro restaurante puede abrir esa página, es
+     bloqueo.
+     Decisión pendiente: ¿qué otros restaurantes existen y qué roles
+     ven /dashboard/settings/mapeo-items?
+
+6.3  Warning "count_date fuera de lunes" en parse-inventory
+     Impacto: ruido para restaurantes que cierran otro día de la
+     semana. No bloquea el procesado (es solo un string en
+     sanity_warnings). Clasificación: limpieza secundaria. Decisión
+     pendiente: ¿parametrizar el día de cierre por restaurante
+     (`restaurants.operating_days` ya existe; agregar `inventory_count_dow`)?
+
+6.4  Reimport puede borrar datos previos sin rollback (§5)
+     Clasificación: riesgo abierto; no es parte del alcance del
+     auditor del 12-oct, pero sí es relevante para la publicación
+     porque el nuevo 409 empuja al usuario a la ruta /api/process-edit.
+
+6.5  Errores de ramas no críticas invisibles en UI (§5)
+     Clasificación: visibilidad; no bloquea pero reduce la utilidad
+     del fix 5. Candidato a trabajo de UX en el próximo turno.
+
+════════════════════════════════════════════════════════════════════
+7. PLAN DE PUBLICACIÓN (NO EJECUTADO)
+════════════════════════════════════════════════════════════════════
+
+Para que quede CLARO qué significa cada paso:
+  push de rama : git push origin costo-uso-validation-2026-09-06
+                 (sube los commits al remoto; nadie los ve en main)
+  PR           : abrir pull request desde la rama a `main`
+  merge        : fusionar el PR tras revisión
+  despliegue   : el merge dispara deploy automático a Vercel
+                 (producción apunta a main)
+  migración    : ejecutar SQL en Supabase (independiente del deploy)
+NO son lo mismo. Rollback de código (revertir commit en main +
+redeploy) NO revierte las migraciones ni los datos modificados.
+
+ORDEN RECOMENDADO (requiere decisión del usuario en cada paso):
+
+  Paso 1 (lectura/decisión, NO ejecutar aún)
+    Correr el pre-check de duplicados contra Supabase prod:
+      select restaurant_id, week, count(*)
+      from public.reports group by 1, 2 having count(*) > 1;
+    Resultado esperado: cero filas. Si no, pausar y decidir.
+    Correr también los pre-checks de datos SIN acción:
+      -- category_mappings sin source_system = quedarán inactivas:
+      select count(*) from public.category_mappings
+      where source_system is null;
+      -- labor_data sin las columnas = normal (todavía no hay):
+      select count(*) from information_schema.columns
+      where table_name='labor_data' and column_name='hours_unpaid_regular';
+      -- cogs_data sin by_account = normal:
+      select count(*) from information_schema.columns
+      where table_name='cogs_data' and column_name='by_account';
+    DOS QUERIES DE SOLO LECTURA — no modifican nada.
+
+  Paso 2 (decidir backup/snapshot ANTES de la migración)
+    Supabase proyecto bboikwhfusptkqvdukzc: comprobar si tiene
+    "Point-in-time recovery" habilitado o un backup diario.
+    SI NO LO TIENE, planificar un snapshot manual antes del paso 3.
+    Esta revisión NO asume que exista backup.
+
+  Paso 3 (migraciones, orden específico)
+    Correr en orden:
+      a. 20261013120500_add_by_account_to_cogs_data.sql
+         (aditiva, idempotente, no bloquea escrituras)
+      b. 20261013121000_add_hours_unpaid_to_labor_data.sql
+         (aditiva, idempotente, no bloquea escrituras)
+      c. 20261013120000_add_unique_restaurant_week.sql
+         (requiere pre-check limpio; bloquea escrituras a reports
+          por segundos)
+    ¿Por qué este orden? (a) y (b) son requisito para que el código
+    nuevo pueda guardar sin fallar. (c) debe ir última porque solo
+    tiene sentido con cero duplicados.
+    Si cualquiera falla, ABORTAR y revisar. No borrar nada en
+    automático.
+
+  Paso 4 (push + PR)
+    git push -u origin costo-uso-validation-2026-09-06
+    Abrir PR a main con el informe bloque 16 como descripción + link
+    a este informe.
+    Revisar en GitHub (code review humano opcional).
+
+  Paso 5 (merge + despliegue)
+    Hacer merge del PR. Vercel desplegará automáticamente.
+    Monitorear logs de Vercel por 5-10 min:
+      - 500 por "column does not exist" → la migración NO se aplicó;
+        rollback inmediato del merge (revert).
+      - 500 por "duplicate key" en reports → caso 409 esperable.
+      - 400 "Error guardando sales/labor/cogs/inventory" → ruta
+        crítica activada; investigar antes de que más usuarios
+        suban reportes.
+
+  Paso 6 (comprobaciones posteriores, lectura)
+    Abrir Costo de Uso de Mula para una semana reciente y verificar:
+      - No hay 500.
+      - Si existe alguna semana histórica con uso negativo, se ve el
+        badge y la fila en naranja.
+      - Alertas de inventario entre semanas con skip ya no disparan
+        falsos.
+    Abrir Food Cost para la última semana y verificar denominadores
+    y aviso "sin mapear" cuando aplique.
+    Abrir CEO dashboard y verificar que una semana saltada muestra
+    "📭 Semana saltada — sin AvT".
+    Hacer una subida de prueba de un reporte existente para
+    confirmar que recibe 409 "La semana ya existe, usa Editar".
+
+ROLLBACK
+  Código (rápido): git revert <merge commit> en main → redeploy
+    automático. Reverte código. NO reverte:
+      - datos modificados (ninguno en este stack, excepto nuevos
+        reportes subidos con el código nuevo).
+      - columnas añadidas por las migraciones (quedan nullable y
+        vacías para el código anterior — benignas).
+      - restricción UNIQUE (si se aplicó): el código anterior sigue
+        viendo 23505 como "error desconocido". OK para operación
+        normal pero mala UX. Decidir si rodar también:
+          alter table public.reports
+            drop constraint reports_restaurant_week_unique;
+  Datos: si se perdió un save por el bug §5 "reimport sin rollback",
+    el único camino es volver a subir el archivo original. Esta
+    revisión NO asume que exista mecanismo automático.
+
+════════════════════════════════════════════════════════════════════
+8. BLOQUEADORES REALES DE PUBLICACIÓN
+════════════════════════════════════════════════════════════════════
+
+B1 (ALTO)  Las dos migraciones aditivas (b_y_account, hours_unpaid)
+           DEBEN aplicarse ANTES de desplegar el código. Si no, cada
+           subida de cogs o labor fallará como critical → 500. No es
+           opcional.
+
+B2 (MEDIO) El hardcode de restaurant_id en settings/mapeo-items es
+           AISLAMIENTO DE DATOS. Requiere saber si otro restaurante
+           ya tiene usuarios que puedan abrir esa página. Si sí, es
+           bloqueador de publicación. Si no, limpieza futura.
+
+B3 (MEDIO) El pre-check de duplicados en `reports` debe correrse en
+           Supabase prod. Si devuelve filas, revisar manualmente qué
+           reporte conservar antes de aplicar el UNIQUE. No es
+           bloqueador de publicación del código (el código tolera
+           la ausencia del UNIQUE), pero sí de la migración `(c)`.
+
+B4 (BAJO)  category_mappings con source_system=null quedarán
+           inactivos tras el deploy del fix 9. Si el pre-check
+           muestra >0, decidir backfill:
+             UPDATE public.category_mappings
+               SET source_system = 'toast'
+               WHERE source_system IS NULL;
+           SIN ejecutar hoy — es decisión del usuario.
+
+B5 (ABIERTO, NO BLOQUEA) Reimport con delete+insert sin rollback
+           transaccional: el fix 5 lo expone pero no lo arregla. El
+           peor caso: el usuario pierde datos previos al intentar
+           editar. Documentar como riesgo conocido.
+
+════════════════════════════════════════════════════════════════════
+9. LISTA CERRADA DE VERIFICACIONES PARA EL PRÓXIMO TURNO PESADO
+════════════════════════════════════════════════════════════════════
+
+T1  npm install -D @testing-library/react @testing-library/user-event
+    @testing-library/jest-dom jsdom (del bloque 15, aún pendiente) +
+    activar interactions.pending.tsx como .test.tsx.
+T2  Extraer buildVarianceBreakdown + modal a módulo propio para los
+    dos it.todo del archivo anterior.
+T3  Verificación visual del PPTX con una semana que tenga uso
+    negativo: abrir en Keynote o PowerPoint, confirmar que el badge /
+    pie "revisar conteo/compras" se lee bien, sin cortes.
+T4  Correr pre-checks de solo lectura contra Supabase prod:
+      - duplicados (restaurant_id, week) en reports
+      - category_mappings con source_system NULL
+      - presencia/ausencia de columnas by_account, hours_unpaid_*
+      - inventario de restaurantes activos para evaluar B2
+T5  Decidir backfill de category_mappings sin source_system
+    (B4) y de reportes históricos para hours_unpaid (fuera del
+    alcance de las 14 reglas).
+T6  Confirmar política de backup/snapshot de Supabase antes de la
+    migración (c) del UNIQUE.
+T7  Diseñar el UX de las ramas no críticas con error (§5): mostrar
+    cada results.<tipo>.error aunque success === true.
+T8  Decidir si se refactoriza mapeo-items para usar useRestaurantId
+    y si eso bloquea publicación (B2).
+T9  Decidir si parse-inventory parametriza el "lunes" por restaurante
+    (6.3).
+T10 Revisar PPTX wL() y moverlo al helper shortWeek (6.1).
+
+════════════════════════════════════════════════════════════════════
+10. SIGUIENTE PASO ÚNICO RECOMENDADO
+════════════════════════════════════════════════════════════════════
+
+Antes de push/PR/deploy, correr contra Supabase prod los PRE-CHECKS
+DE SOLO LECTURA del paso 1 arriba (duplicados en reports,
+category_mappings sin source_system, estado de las columnas) y
+compartir los conteos. Con esos tres números en la mano se decide si
+se puede proceder al paso 2 (backup) o si hay que arreglar primero.
+
+Hasta no tenerlos, no se recomienda ni la migración ni el push.
+
+────────────────────────────────────────────────────────────────────
+Estado final: MODO LIGERO, SIN TURNO PESADO.
+Sin push, sin PR, sin despliegue, sin SQL ejecutado.
+Cambios locales íntegros en costo-uso-validation-2026-09-06 @ 96beeef.

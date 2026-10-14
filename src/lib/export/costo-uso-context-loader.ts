@@ -81,7 +81,15 @@ function toEngineWeek(r: any): EngineWeekShape {
   }
 }
 
-function hasInventoryData(r: any): boolean {
+function hasInventoryData(r: any, skippedWeeks?: Set<string>): boolean {
+  // Una semana marcada como "sin inventario" NO cuenta como anchor
+  // aunque R365 traiga inventory_data cargado — el engine la ignora
+  // igual (fix 1 en engine.findAnchorBefore). Sin este chequeo, el
+  // loader se detiene en la semana saltada y el engine se queda sin
+  // anchor real, con lo que invPrevious cae al previous_value del
+  // closing (típicamente 0 para la cuenta cuyo conteo se saltó) y
+  // las compras/ventas de la semana saltada tampoco se suman.
+  if (skippedWeeks && typeof r?.week === 'string' && skippedWeeks.has(r.week)) return false
   const inv = r?.inventory_data
   const arr = Array.isArray(inv) ? inv[0] : inv
   if (!arr) return false
@@ -92,15 +100,24 @@ function hasInventoryData(r: any): boolean {
 /**
  * Carga el contexto para el motor de Costo de Uso con paginación
  * iterativa. Detiene la búsqueda en cuanto encuentra el anchor
- * (primer reporte con inventario anterior a la selección) O al llegar
- * al fin real del historial O al alcanzar MAX_LOOKBACK_REPORTS.
+ * (primer reporte con inventario anterior a la selección y NO
+ * marcado como skipped) O al llegar al fin real del historial O al
+ * alcanzar MAX_LOOKBACK_REPORTS.
+ *
+ * El consumidor debe pasar `skippedWeeks` (ids 'YYYY-Www' de
+ * skipped_inventory_weeks del restaurante) para que el loader se
+ * salte las semanas marcadas al buscar anchor. Si no se pasa, el
+ * comportamiento es compatible con el anterior pero puede producir
+ * un período con inventario inicial = 0 cuando hay una semana saltada
+ * inmediatamente anterior a la selección.
  */
 export async function loadCostoUsoContext(
   provider: ContextQueryProvider,
-  opts?: { maxLookbackReports?: number; pageSize?: number },
+  opts?: { maxLookbackReports?: number; pageSize?: number; skippedWeeks?: Set<string> },
 ): Promise<ContextLoadResult> {
   const maxLookback = opts?.maxLookbackReports ?? MAX_LOOKBACK_REPORTS
   const pageSize    = opts?.pageSize          ?? LOOKBACK_PAGE_SIZE
+  const skippedWeeks = opts?.skippedWeeks
 
   // 1) Selección.
   const sel = await provider.fetchSelectionEmbed()
@@ -134,7 +151,7 @@ export async function loadCostoUsoContext(
     const rows = page.data || []
     priorRows.push(...rows)
     if (rows.length < limit) reachedHistoryEnd = true
-    if (rows.some(hasInventoryData)) anchorFound = true
+    if (rows.some(r => hasInventoryData(r, skippedWeeks))) anchorFound = true
   }
 
   // 3) Determinar status. anchorFound siempre gana; sino, distinguir
