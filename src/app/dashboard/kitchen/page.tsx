@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -94,8 +95,12 @@ export default function KitchenPage() {
     if (shortcut === 'week') return weeks.filter(w => w.report.week === selectedWeek)
     if (shortcut === 'last4') return weeks.slice(0, 4)
     if (shortcut === 'month') {
-      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
-      return weeks.filter(w => { const d = new Date(w.report.week_start || w.report.week); return d.getFullYear() === y && d.getMonth() === m })
+      // Comparar como string 'YYYY-MM' en vez de new Date(week_start):
+      // new Date('2026-06-01') en zona Chicago/Pacific se vuelve 31-may
+      // por UTC. week_start ya es 'YYYY-MM-DD' local.
+      const now = new Date()
+      const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      return weeks.filter(w => ((w.report.week_start || '') as string).slice(0, 7) === yyyymm)
     }
     if (shortcut === 'custom' && customFrom && customTo) {
       const from = customFrom <= customTo ? customFrom : customTo
@@ -161,7 +166,7 @@ export default function KitchenPage() {
     const wT: any[] = w.kp?.tickets || []
     const expT = wT.filter(t => t.expediter_level === '1' && t.fulfillment_seconds)
     const barT = wT.filter(t => barStations.includes(t.station) && t.fulfillment_seconds)
-    return { week: w.report.week.replace('2026-', ''), cocina: expT.length ? avg(expT) / 60 : null, bar: barT.length ? avg(barT) / 60 : null }
+    return { week: shortWeek(w.report.week), cocina: expT.length ? avg(expT) / 60 : null, bar: barT.length ? avg(barT) / 60 : null }
   })
 
   const kitchenDayData = byDay(kitchenTickets, kitchenTarget)

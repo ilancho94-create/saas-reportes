@@ -1,0 +1,123 @@
+Bloque 8 — Inspección ligera y recuperación tras bloqueo
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · MODO LIGERO, SIN TURNO PESADO
+
+1. PROYECTO IDENTIFICADO
+   DineWise / Restaurant X-Ray (repositorio local
+   /Users/ilan/Desktop/saas-reportes). Confirmado por la sesión de
+   Claude Code (PID 5215) con --add-dir apuntando a esa ruta.
+
+2. ESTADO DEL TRABAJO
+   Rama: costo-uso-validation-2026-09-06 (local, sin push).
+   HEAD:  ef2d92f  fix(costo-uso): civil-day arithmetic (UTC) and
+                   distinguish day gaps
+
+   Cambios sin commit en el árbol de trabajo (coherentes con el
+   informe del bloque 7):
+     M  src/app/dashboard/costo-uso/page.tsx
+     M  src/lib/costo-uso/__tests__/engine.test.ts
+     M  src/lib/costo-uso/engine.ts
+     ??  docs/informes/bloque-07/
+     ??  src/app/dashboard/costo-uso/sandbox/
+     ??  src/lib/costo-uso/__fixtures__/
+     ??  src/lib/costo-uso/ui-helpers.ts
+
+   Contenido pendiente de commit (según bloque 7):
+     · Motor: VarianceReason + reasonForCategory, campos _variacion_reason,
+       totalVariacionReason, totalVariacionMissingCategories,
+       activityWeekStart/End/FirstLabel/LastLabel.
+     · Tests: nueva suite [EXACT] varianceReason con 6 casos.
+     · UI: importa helpers desde src/lib/costo-uso/ui-helpers, elimina
+       duplicados, mensajes por causa real, label "Período analizado",
+       rango sin cierre bifurcado, referencia inicial de inventario.
+     · Nuevo módulo compartido src/lib/costo-uso/ui-helpers.ts.
+     · Nuevos fixtures src/lib/costo-uso/__fixtures__/scenarios.ts.
+     · Nueva ruta gateada
+       src/app/dashboard/costo-uso/sandbox/[scenario]/{page.tsx,
+       SandboxClient.tsx} — para verificación visual futura.
+     · Informe .txt del bloque 7.
+
+   NO se ejecuta git add ni git commit todavía. La instrucción actual
+   pide solo inspección; el usuario decidirá cuándo y cómo consolidar
+   esos cambios (previsiblemente durante un turno pesado o antes,
+   dado que git commit es una operación local ligera).
+
+3. PROCESOS PROPIOS ENCONTRADOS Y ACCIONES
+   Búsqueda: `ps -eo pid,ppid,rss,command | grep -iE 'next|turbo|
+   chrome'`, luego filtrada por procesos atribuibles a esta sesión.
+   Resultado: ningún proceso `next dev`, ningún worker de Turbopack,
+   ninguna instancia de Chrome Playwright, ninguna instancia del
+   Chrome remoto de la sesión anterior está viva.
+   El archivo /tmp/next-dev.pid ya no existe.
+   Motivo: el equipo se reinició hace 9 min (uptime 9m), lo cual
+   terminó cualquier proceso de la sesión anterior.
+   Acción tomada: ninguna terminación necesaria. No cierro nada
+   ajeno a esta sesión y proyecto.
+   Otros procesos observados y NO tocados (por no ser míos):
+     · 3 sesiones de Claude Code (PIDs 2551 Payouts, 4079 Maktub,
+       5215 Restaurant X-Ray).
+     · Adobe Creative Cloud (helpers CEF).
+     · Chrome Remote Desktop host.
+
+4. MEMORIA Y CARGA (mediciones sysctl / vm_stat)
+   Uptime: 9 minutos.
+   Swap: total = 0.00M, used = 0.00M, free = 0.00M (sin swap
+     configurado / no en uso ahora).
+   Load average: 4.37 (1m), 11.56 (5m), 10.17 (15m). La ventana de
+     5–15 min todavía refleja el reinicio y carga inicial; el 1 min
+     muestra descenso.
+   vm_stat (page size 16 KB):
+     Pages free            12.7k   (~200 MB)
+     Pages active         661.4k   (~10.4 GB)
+     Pages inactive       663.7k   (~10.4 GB, cache reutilizable)
+     Pages wired          143.9k   (~2.3 GB)
+     Pages en compressor   46.9k   (~750 MB)
+   Interpretación conservadora: memoria libre baja en absoluto, pero
+   la mayor parte "activa/inactiva" es cache reutilizable; sin swap
+   presente el margen para una carga fork-intensiva es limitado.
+   No se detecta hoy presión sostenida, pero tampoco holgura amplia
+   para arrancar dev server + Chrome + tests simultáneamente. Se
+   respeta la instrucción de MODO LIGERO.
+
+5. ÚLTIMA VERIFICACIÓN CONFIRMADA
+   Del bloque 7 (previo al bloqueo):
+     · npx vitest run → 89 passed, 1 skipped.
+     · npx tsc --noEmit → sin errores.
+     · npx next build (NODE_ENV=production) → OK, incluyendo la
+       ruta ƒ /dashboard/costo-uso/sandbox/[scenario] (gateada por
+       notFound() en producción).
+     · Curl http GET a la ruta sandbox en dev respondió 200 (una vez
+       compilada), antes del EAGAIN de Chrome.
+   Después de esa verificación no se corrieron nuevas pruebas ni
+   builds. No repito nada en modo ligero: no hay cambios adicionales
+   que justifiquen re-ejecutar.
+
+6. PRÓXIMA FASE PENDIENTE
+   Al recibir turno pesado para DineWise:
+     P1. git add src/lib/costo-uso/ src/app/dashboard/costo-uso/
+         docs/informes/bloque-07/  &&  git commit ...  (operación
+         ligera; se puede hacer antes del turno pesado si el usuario
+         lo indica).
+     P2. Verificación visual Playwright de los 9 escenarios en la
+         ruta sandbox gateada.
+     P3. Guardar capturas en docs/informes/bloque-07/capturas/.
+     P4. Sigue pendiente de decisión del propietario:
+         · Política de consumo negativo (Math.max sigue activo).
+         · Ajustes manuales de theo_cost y presencia.
+         · Plan del PPTX "Costo de Uso" (no validado).
+
+7. POLÍTICA COMPARTIDA GUARDADA
+   Ruta: /Users/ilan/.claude/projects/-Users-ilan/memory/
+         feedback_heavy_turn_policy.md
+   Índice: /Users/ilan/.claude/projects/-Users-ilan/memory/MEMORY.md
+   Nombre: feedback-heavy-turn-policy
+   Contenido: modo ligero por defecto para Maktub / Payouts /
+   DineWise; turno pesado es explícito y temporal; higiene de
+   procesos (nunca killall/pkill genéricos); mediciones y ceilings
+   conservadores; recuperación segura ante EAGAIN.
+
+8. ESTADO FINAL
+   MODO LIGERO, SIN TURNO PESADO.
+   No se arrancarán servidores, builds, Playwright, tests ni
+   watchers hasta que el usuario indique expresamente
+   "TURNO PESADO: DineWise".

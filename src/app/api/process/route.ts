@@ -45,6 +45,34 @@ export async function POST(request: NextRequest) {
     const weekStart = await getWeekStartFromFiscal(supabase, week, restaurant_id)
     const weekEnd = getWeekEndFromStart(weekStart)
 
+    // Chequeo previo: una (restaurant_id, week) ya existente devuelve 409
+    // en lugar de insertar un duplicado silencioso. La migración
+    // 20261013120000_add_unique_restaurant_week.sql añade el UNIQUE a
+    // nivel de BD; este guard es la defensa a nivel de API.
+    //
+    // Usa .limit(1) y chequea `error` para fallar cerrado: con
+    // duplicados ya existentes `maybeSingle` devuelve data:null +
+    // PGRST116, lo que haría caer al INSERT y dependeríamos sólo del
+    // 23505 fallback.
+    const existingLookup = await supabase
+      .from('reports')
+      .select('id')
+      .eq('restaurant_id', restaurant_id)
+      .eq('week', week)
+      .limit(1)
+    if (existingLookup.error) {
+      console.error('reports.select error:', existingLookup.error)
+      return NextResponse.json({ success: false, error: 'No se pudo verificar la semana' }, { status: 500 })
+    }
+    if (existingLookup.data && existingLookup.data.length > 0) {
+      return NextResponse.json({
+        success: false,
+        code: 'REPORT_WEEK_EXISTS',
+        error: 'La semana ya existe, usa Editar',
+        existingReportId: existingLookup.data[0].id,
+      }, { status: 409 })
+    }
+
     const { data: report, error: reportError } = await supabase
       .from('reports')
       .insert({ restaurant_id, week, week_start: weekStart, week_end: weekEnd })
@@ -52,11 +80,24 @@ export async function POST(request: NextRequest) {
 
     if (reportError) {
       console.error('reports.insert error:', reportError)
+      // Race condition: dos requests simultáneos pueden pasar ambos el
+      // chequeo previo. Si el UNIQUE de BD rechaza, también se trata
+      // como 409 en vez de 500.
+      if ((reportError as any).code === '23505') {
+        return NextResponse.json({
+          success: false,
+          code: 'REPORT_WEEK_EXISTS',
+          error: 'La semana ya existe, usa Editar',
+        }, { status: 409 })
+      }
       return NextResponse.json({ success: false, error: 'No se pudo crear el reporte' }, { status: 400 })
     }
 
     const results: Record<string, any> = {}
     const warnings: Record<string, string> = {}
+    // Un fallo de guardado en sales o labor rompe el reporte: la UI
+    // debe mostrar el error en vez de "éxito con warnings".
+    let criticalSaveFailed = false
 
     // ── SALES (.xlsx) ──────────────────────────────────────────────────────
     const salesFile = formData.get('sales') as File | null
@@ -66,13 +107,20 @@ export async function POST(request: NextRequest) {
         const data = parseSalesExcel(buffer)
         const warning = buildSalesDateWarning(data, weekStart, weekEnd)
         if (warning) warnings['sales'] = warning
+        if (data.sanity_warning) warnings['sales_sanity'] = data.sanity_warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await saveToDatabase(supabase, report.id, 'sales', data)
-        results['sales'] = { net_sales: data.net_sales, orders: data.orders }
+        const saveRes = await saveToDatabase(supabase, report.id, 'sales', data)
+        if (saveRes.error) {
+          results['sales'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['sales'] = { net_sales: data.net_sales, orders: data.orders }
+        }
       } catch (err: any) {
         console.error('Error processing sales:', err)
         results['sales'] = { error: 'No se pudo procesar el archivo de sales' }
+        criticalSaveFailed = true
       }
     }
 
@@ -82,11 +130,17 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await laborFile.arrayBuffer())
         const data = parseLaborCsv(buffer.toString('utf-8'))
-        await saveToDatabase(supabase, report.id, 'labor', data)
-        results['labor'] = { total_pay: data.total_pay, employees: data.by_employee?.length }
+        const saveRes = await saveToDatabase(supabase, report.id, 'labor', data)
+        if (saveRes.error) {
+          results['labor'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['labor'] = { total_pay: data.total_pay, employees: data.by_employee?.length }
+        }
       } catch (err: any) {
         console.error('Error processing labor:', err)
         results['labor'] = { error: 'No se pudo procesar el archivo de labor' }
+        criticalSaveFailed = true
       }
     }
 
@@ -100,11 +154,17 @@ export async function POST(request: NextRequest) {
         if (warning) warnings['cogs'] = warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await saveToDatabase(supabase, report.id, 'cogs', data)
-        results['cogs'] = { total: data.total }
+        const saveRes = await saveToDatabase(supabase, report.id, 'cogs', data)
+        if (saveRes.error) {
+          results['cogs'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['cogs'] = { total: data.total }
+        }
       } catch (err: any) {
         console.error('Error processing cogs:', err)
         results['cogs'] = { error: 'No se pudo procesar el archivo de cogs' }
+        criticalSaveFailed = true
       }
     }
 
@@ -114,8 +174,9 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await voidsFile.arrayBuffer())
         const data = parseVoidsCsv(buffer.toString('latin1'))
-        await saveToDatabase(supabase, report.id, 'voids', data)
-        results['voids'] = { total: data.total, items: data.items?.length }
+        const saveRes = await saveToDatabase(supabase, report.id, 'voids', data)
+        if (saveRes.error) results['voids'] = { error: saveRes.error }
+        else results['voids'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing voids:', err)
         results['voids'] = { error: 'No se pudo procesar el archivo de voids' }
@@ -128,11 +189,15 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await discountsFile.arrayBuffer())
         const data = parseDiscountsCsv(buffer.toString('latin1'))
-        await saveToDatabase(supabase, report.id, 'discounts', data)
-        if (data._discount_names?.length) {
-          await upsertDiscountMappings(supabase, restaurant_id, data._discount_names)
+        const saveRes = await saveToDatabase(supabase, report.id, 'discounts', data)
+        if (saveRes.error) {
+          results['discounts'] = { error: saveRes.error }
+        } else {
+          if (data._discount_names?.length) {
+            await upsertDiscountMappings(supabase, restaurant_id, data._discount_names)
+          }
+          results['discounts'] = { total: data.total, items: data.items?.length }
         }
-        results['discounts'] = { total: data.total, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing discounts:', err)
         results['discounts'] = { error: 'No se pudo procesar el archivo de discounts' }
@@ -149,8 +214,9 @@ export async function POST(request: NextRequest) {
         if (warning) warnings['waste'] = warning
         delete data._report_start; delete data._report_end
         data.date_warning = warning
-        await saveToDatabase(supabase, report.id, 'waste', data)
-        results['waste'] = { total_cost: data.total_cost, items: data.items?.length }
+        const saveRes = await saveToDatabase(supabase, report.id, 'waste', data)
+        if (saveRes.error) results['waste'] = { error: saveRes.error }
+        else results['waste'] = { total_cost: data.total_cost, items: data.items?.length }
       } catch (err: any) {
         console.error('Error processing waste:', err)
         results['waste'] = { error: 'No se pudo procesar el archivo de waste' }
@@ -163,11 +229,20 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await inventoryFile.arrayBuffer())
         const data = parseInventoryExcel(buffer)
-        await saveToDatabase(supabase, report.id, 'inventory', data)
-        results['inventory'] = { grand_total_current: data.grand_total_current }
+        if (data.sanity_warnings && data.sanity_warnings.length > 0) {
+          warnings['inventory_sanity'] = data.sanity_warnings.join(' · ')
+        }
+        const saveRes = await saveToDatabase(supabase, report.id, 'inventory', data)
+        if (saveRes.error) {
+          results['inventory'] = { error: saveRes.error }
+          criticalSaveFailed = true
+        } else {
+          results['inventory'] = { grand_total_current: data.grand_total_current }
+        }
       } catch (err: any) {
         console.error('Error processing inventory:', err)
         results['inventory'] = { error: 'No se pudo procesar el archivo de inventory' }
+        criticalSaveFailed = true
       }
     }
 
@@ -178,13 +253,17 @@ export async function POST(request: NextRequest) {
         const buffer = Buffer.from(await avtFile.arrayBuffer())
         const isCsv = avtFile.name.endsWith('.csv')
         const avtData = isCsv ? parseAvtCsv(buffer.toString('utf-8')) : parseAvtExcel(buffer)
-        results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
-        await saveToDatabase(supabase, report.id, 'avt', avtData)
-        const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
-        for (const cat of detectedCats) {
-          await supabase.from('avt_categories').upsert({
-            restaurant_id, category: cat, active: true,
-          }, { onConflict: 'restaurant_id,category', ignoreDuplicates: true })
+        const saveRes = await saveToDatabase(supabase, report.id, 'avt', avtData)
+        if (saveRes.error) {
+          results['avt'] = { error: saveRes.error }
+        } else {
+          results['avt'] = { shortages: avtData.shortages.length, overages: avtData.overages.length }
+          const detectedCats = avtData.by_category.map((c: any) => c.category).filter(Boolean)
+          for (const cat of detectedCats) {
+            await supabase.from('avt_categories').upsert({
+              restaurant_id, category: cat, active: true,
+            }, { onConflict: 'restaurant_id,category', ignoreDuplicates: true })
+          }
         }
       } catch (err: any) {
         console.error('Error processing avt:', err)
@@ -210,15 +289,17 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await receivingFile.arrayBuffer())
         const items = parseReceivingCsv(buffer.toString('utf-8'))
-        await supabase.from('receiving_data').delete().eq('report_id', report.id)
+        const delRes = await supabase.from('receiving_data').delete().eq('report_id', report.id)
+        if (delRes.error) throw delRes.error
         if (items.length > 0) {
           const rows = items.map((item: any) => ({ report_id: report.id, restaurant_id, week, ...item }))
-          await supabase.from('receiving_data').insert(rows)
+          const insRes = await supabase.from('receiving_data').insert(rows)
+          if (insRes.error) throw insRes.error
         }
         results['receiving'] = { items: items.length }
       } catch (err: any) {
         console.error('Error processing receiving:', err)
-        results['receiving'] = { error: 'No se pudo procesar el archivo de receiving' }
+        results['receiving'] = { error: err?.message || 'No se pudo procesar el archivo de receiving' }
       }
     }
 
@@ -228,13 +309,14 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await employeeFile.arrayBuffer())
         const data = parseEmployeePerformanceExcel(buffer)
-        await supabase.from('employee_performance_data').insert({
+        const insRes = await supabase.from('employee_performance_data').insert({
           report_id: report.id, restaurant_id, week, employees: data.employees,
         })
+        if (insRes.error) throw insRes.error
         results['employee_performance'] = { employees: data.employees.length }
       } catch (err: any) {
         console.error('Error processing employee performance:', err)
-        results['employee_performance'] = { error: 'No se pudo procesar el archivo de employee_performance' }
+        results['employee_performance'] = { error: err?.message || 'No se pudo procesar el archivo de employee_performance' }
       }
     }
 
@@ -244,19 +326,28 @@ export async function POST(request: NextRequest) {
       try {
         const buffer = Buffer.from(await kitchenFile.arrayBuffer())
         const data = parseKitchenDetailsCsv(buffer.toString('utf-8'))
-        await supabase.from('kitchen_performance_data').insert({
+        const insRes = await supabase.from('kitchen_performance_data').insert({
           report_id: report.id, restaurant_id, week,
           tickets: data.tickets,
           detected_stations: data.detected_stations,
         })
+        if (insRes.error) throw insRes.error
         results['kitchen_details'] = { tickets: data.tickets.length, stations: data.detected_stations.length }
       } catch (err: any) {
         console.error('Error processing kitchen details:', err)
-        results['kitchen_details'] = { error: 'No se pudo procesar el archivo de kitchen_details' }
+        results['kitchen_details'] = { error: err?.message || 'No se pudo procesar el archivo de kitchen_details' }
       }
     }
 
-    return NextResponse.json({ success: true, report_id: report.id, week, processed: Object.keys(results), warnings })
+    return NextResponse.json({
+      success: !criticalSaveFailed,
+      report_id: report.id,
+      week,
+      processed: Object.keys(results),
+      results,
+      warnings,
+      ...(criticalSaveFailed ? { error: 'Error guardando sales/labor/cogs/inventory; el reporte quedó incompleto' } : {}),
+    }, { status: criticalSaveFailed ? 500 : 200 })
 
   } catch (error: any) {
     console.error('process route error:', error)
@@ -331,9 +422,13 @@ async function saveToDatabase(supabase: SupabaseClient, reportId: string, fileTy
     insertData.total_hours = data.total_regular_hours; insertData.total_ot_hours = data.total_ot_hours
     insertData.total_pay = data.total_pay; insertData.by_position = data.by_position
     insertData.by_employee = data.by_employee
+    insertData.hours_unpaid_regular = data.hours_unpaid_regular
+    insertData.hours_unpaid_ot = data.hours_unpaid_ot
+    insertData.by_employee_unpaid = data.by_employee_unpaid
   } else if (fileType === 'cogs') {
     insertData.total = data.total; insertData.by_vendor = data.by_vendor
     insertData.by_category = data.by_category
+    insertData.by_account = data.by_account
   } else if (fileType === 'waste') {
     insertData.total_cost = data.total_cost; insertData.items = data.items
   } else if (fileType === 'voids') {
@@ -383,7 +478,11 @@ function getWeekStartISO(week: string): string {
   const [year, weekNum] = week.split('-W').map(Number)
   const jan4 = new Date(year, 0, 4)
   const startOfWeek1 = new Date(jan4)
-  startOfWeek1.setDate(jan4.getDate() - jan4.getDay() + 1)
+  // ISO: getDay() devuelve 0 para domingo; en ISO el domingo cuenta
+  // como día 7 (fin de semana). Sin este `|| 7`, un año donde el 4-ene
+  // cae en domingo corre la semana 1 por 7 días.
+  const dow = jan4.getDay() || 7
+  startOfWeek1.setDate(jan4.getDate() - dow + 1)
   const weekStart = new Date(startOfWeek1)
   weekStart.setDate(startOfWeek1.getDate() + (weekNum - 1) * 7)
   return weekStart.toISOString().split('T')[0]

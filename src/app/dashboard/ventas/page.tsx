@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -142,7 +143,7 @@ export default function VentasPage() {
   const diffAvgGuest = diffPct(avgGuest, prevAvgGuest)
 
   const chartData = useMemo(() => filtered.map(w => ({
-    week: w.report.week.replace('2026-', ''),
+    week: shortWeek(w.report.week),
     ventas: w.sales?.net_sales || 0,
     ordenes: w.sales?.orders || 0,
     guests: w.sales?.guests || 0,
@@ -218,7 +219,7 @@ export default function VentasPage() {
   const lunchDinnerData = filtered.map(w => {
     const ld = w.sales?.lunch_dinner || w.sales?.raw_data?.lunch_dinner || {}
     return {
-      week: w.report.week.replace('2026-', ''),
+      week: shortWeek(w.report.week),
       lunch: ld.lunch?.net || 0,
       dinner: ld.dinner?.net || 0,
     }

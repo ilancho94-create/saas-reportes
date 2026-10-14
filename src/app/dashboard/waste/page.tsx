@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -124,7 +125,7 @@ export default function WastePage() {
     .slice(0, 10)
 
   const trendData = [...weeks].reverse().map(w => ({
-    week: w.report.week.replace('2026-', ''),
+    week: shortWeek(w.report.week),
     total: Number(w.waste?.total_cost || 0),
   }))
 

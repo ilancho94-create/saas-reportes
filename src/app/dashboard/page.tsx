@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import { useAuth } from '@/lib/auth-context'
@@ -57,7 +58,7 @@ export default function Dashboard() {
       reps.map(r => supabase.from('sales_data').select('net_sales').eq('report_id', r.id).single())
     )
     setTrendData(reps.map((r, i) => ({
-      week: r.week.replace('2026-', ''),
+      week: shortWeek(r.week),
       ventas: trendResults[i].data?.net_sales || 0,
     })).reverse())
 

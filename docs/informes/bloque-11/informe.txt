@@ -1,0 +1,221 @@
+Bloque 11 — Preparación del PPTX Costo de Uso y correcciones del bloque 10
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · MODO LIGERO, SIN TURNO PESADO
+
+1. COMMIT Y ESTADO FINAL
+
+  Rama: costo-uso-validation-2026-09-06 (local, sin push)
+  Commit añadido en este bloque:
+    2ee60fa  feat(costo-uso,pptx): prepare shared result helper and
+             route PPTX through it
+  HEAD previo: 4993e32 (informes bloques 8-10)
+  git status -s tras el commit: limpio.
+
+  No se ejecutaron pruebas, build, servidores, navegadores ni
+  instalaciones en este bloque. Solo edición de código, lectura de
+  archivos existentes y una comprobación puntual de procesos.
+
+2. CORRECCIONES AL REGISTRO DEL BLOQUE 10
+
+  Este bloque no reescribe el informe anterior; deja constancia aquí
+  para que la revisión externa lo tenga presente:
+
+  · El 404 del sandbox se comprobó contra `next start` local en modo
+    producción, no contra un despliegue público. No prueba nada sobre
+    ambientes reales (Vercel u otros).
+  · Que DiagBadge sea un BUTTON con aria-label y title NO demuestra
+    que su explicación se abra al tocarlo en una pantalla táctil sin
+    hover. Solo demuestra que el elemento es enfocable por teclado y
+    tiene texto accesible por screen readers.
+  · Navegar entre URLs de escenarios en el sandbox NO demuestra el
+    funcionamiento del selector de filtros de /dashboard/costo-uso
+    (week / last4 / last8 / month / custom). Los reducers coinciden
+    por diseño, pero la interacción real no se ejercitó.
+  · `page.close()` cierra la página del navegador automatizado; no
+    demuestra por sí solo que el proceso del navegador y sus
+    subprocesos terminaron. Cualquier afirmación sobre "browser
+    cerrado" quedaba débil.
+  · No se hicieron mediciones continuas de memoria y swap durante la
+    ejecución, así que la frase "no se observó crecimiento sostenido
+    de swap" no está respaldada por evidencia. Se retira.
+
+  Pendientes concretos que quedan explícitamente registrados para el
+  próximo turno pesado:
+    P-UI-1  Activación de explicaciones mediante toque (tap y
+            long-press) y teclado (Tab hasta el badge, Enter/Space,
+            navegación por el panel).
+    P-UI-2  Cambio de filtros usando los controles reales de
+            /dashboard/costo-uso (week / last4 / last8 / month /
+            custom) con datos ya cargados.
+    P-UI-3  Modal real "Análisis de variación" desde la vista
+            productiva — no se ejercitó desde el sandbox porque el
+            sandbox no monta el modal.
+
+  Proceso propio pendiente detectado en la inspección de este bloque:
+    Ninguno. `ps -eo pid,ppid,command | grep -E 'ms-playwright-mcp|
+    remote-debugging-pipe|user-data-dir=.*ms-playwright'` devolvió
+    cero coincidencias. No se cerró ningún proceso ajeno.
+    (Se observaron `next dev` corriendo bajo `/Users/ilan/maktub-web/`,
+    ajenos a este proyecto — no se tocaron.)
+
+3. CONTEXTO COMPARTIDO ENTRE UI Y PPTX
+
+  Nuevo módulo: src/lib/costo-uso/prepare-result.ts
+    Firma explícita (PrepareCostoUsoInput):
+      weeks, mappings, adjustments, skippedWeekSet, opDiscountMappings,
+      includeOpDiscounts, operatingDays, costTargets, requestedRange,
+      fiscalYearStart
+    Salida (PreparedCostoUsoResult):
+      filtered, periodSeries, detailData, rangeDiagnostics,
+      labels { requestedRange, effectiveRange, externalAnchorWeek }
+    Reglas:
+      · Instancia createCostoUsoEngine con los mismos parámetros;
+        NO copia fórmulas.
+      · No introduce defaults silenciosos. Si el consumidor no
+        aporta operatingDays o fiscalYearStart, esos valores llegan
+        al engine tal cual (a diferencia de la UI, PPTX documenta
+        explícitamente qué falta).
+      · effectiveRange se calcula desde activityFirstLabel/Last, NO
+        desde el anchor.
+      · externalAnchorWeek se marca si periodSeries[0].anchorWeek <
+        requestedRange.from.
+
+  Data fetcher (src/lib/export/data-fetcher.ts):
+    ExportData añadió costoUsoContext con:
+      mappings (category_mappings),
+      adjustments (costo_uso_adjustments),
+      skippedWeeks (skipped_inventory_weeks),
+      opDiscountMappings (discount_mappings.is_operational=true),
+      costTargets (cost_targets),
+      operatingDays (restaurants.operating_days o null),
+      fiscalYearStart (restaurants.fiscal_year_start o null).
+    Aislamiento por restaurante: cada select se filtra por
+    restaurant_id; RLS del proyecto se aplica igual que hoy.
+
+4. QUÉ CÓDIGO CAMBIÓ
+
+  Nuevos archivos:
+    src/lib/costo-uso/prepare-result.ts
+    src/lib/costo-uso/__tests__/prepare-result.test.ts
+  Modificados:
+    src/lib/export/data-fetcher.ts   (fetch de contexto + tipo)
+    src/lib/export/generate-pptx.ts  (addCostoUso reescrita; import
+                                      del helper; nuevo requestedRange
+                                      derivado de config.weeks)
+  Sin cambios en:
+    Engine, diagnostics, ui-helpers, componentes _components/,
+    página productiva /dashboard/costo-uso, exportaciones XLSX/PDF,
+    otras secciones del PPTX, proxy/middleware.
+
+  Cambios concretos en addCostoUso:
+    · Se eliminó ACCOUNT_MAP local y CATS local: usa CATEGORIES_BASE
+      + mismos labels (CATEGORY_LABELS) que la UI.
+    · Se eliminó `catSales = net_sales / CATS.length` (reparto
+      arbitrario).
+    · Se eliminó la variación desde porcentajes redondeados; ahora
+      viene de detailData.totalVariacion (importes sin redondear).
+    · null se muestra como "—" con motivo VARIANCE_REASON_LABEL;
+      cero explícito sigue como "$0".
+    · Sin cierre: no inventa totales; muestra aviso.
+    · Nota inferior con advertencias derivadas de rangeDiagnostics
+      (unclosed_tail, missing_week, coverage_gap_days, inverted_dates,
+      theo_cost_source_missing, theo_cost_partial,
+      negative_gross_consumption, inventory_carry_mismatch,
+      duplicate_week, unmapped_activity_category), más avisos
+      operativos (operating_days ausente, includeOpDiscounts fijo
+      en false por ahora).
+
+5. PRUEBAS PREPARADAS (NO EJECUTADAS EN ESTE BLOQUE)
+
+  src/lib/costo-uso/__tests__/prepare-result.test.ts
+    Nueve casos con valores esperados calculados de forma
+    INDEPENDIENTE (no comparación con el PPTX viejo):
+      · Ventas desiguales entre categorías.
+      · Período consolidado.
+      · Ajustes manuales.
+      · Teórico cero explícito.
+      · Teórico ausente.
+      · Ventas cero.
+      · Rango sin cierre.
+      · Diagnósticos de datos incompletos (missing_week).
+      · Anchor externo → labels.externalAnchorWeek.
+    Un caso `.skip` documenta la comprobación futura del PPTX
+    generado (cifras, signos, etiquetas, advertencias, ausencia de
+    desbordamientos, en al menos 2 escenarios).
+
+  NO se corrió `npx vitest run`, ni tsc, ni next build, ni Playwright,
+  ni generación de PPTX. Nada de eso en modo ligero.
+
+6. DATOS O DECISIONES PENDIENTES
+
+  D1. includeOpDiscounts en el PPTX:
+      Hoy el Export Center no ofrece el toggle "+Desc. Op." al usuario.
+      El PPTX queda fijado en false, con aviso visible en la propia
+      diapositiva cuando existan discount_mappings operativos.
+      Decisión pendiente: añadir el toggle al Export Center o dejar
+      la exportación siempre en net sales.
+  D2. operating_days ausente:
+      Cuando restaurants.operating_days viene null, el PPTX pasa 6
+      como valor operativo del engine pero anota en la diapositiva
+      que los "días de inventario" no son fiables. Decisión pendiente:
+      ¿bloquear la exportación en ese caso, o mantener el aviso?
+  D3. discounts/voids en WeekData:
+      El type WeekData no declara los campos discounts/voids que
+      generate-pptx sí lee vía `(w as any)`. Se dejó igual para no
+      ampliar el diff; sin embargo, el flujo funciona porque la
+      fetcher los trae. Pendiente tipar formalmente.
+  D4. Política de consumo negativo (Math.max sigue activo).
+      No se cambia por decisión previa del propietario.
+
+7. VERIFICACIONES CONCRETAS RESERVADAS PARA EL PRÓXIMO TURNO PESADO
+
+  T-PPTX-1  npx vitest run — ejecutar prepare-result.test.ts y
+            confirmar que los nueve escenarios pasan.
+  T-PPTX-2  npx tsc --noEmit — cero errores.
+  T-PPTX-3  npx next build — OK.
+  T-PPTX-4  Ejecutar generatePPTX desde el Export Center con un
+            restaurante que tenga datos reales, en al menos dos
+            escenarios (por ejemplo: rango con cierre y rango sin
+            cierre). Abrir el archivo y verificar:
+              - Cifras coinciden con /dashboard/costo-uso para el
+                mismo rango.
+              - null se muestra como "—" con el motivo real.
+              - Cero explícito sigue como "$0".
+              - Nota inferior lista las advertencias correctas.
+              - Ausencia de desbordamientos horizontales.
+              - Colores por categoría y label conservados.
+  T-PPTX-5  Repetir con un rango que fuerce totalVariacion=null por
+            teórico parcial y confirmar que ninguna gráfica ni tarjeta
+            reconstruye una cifra desde uso − theo.
+  T-UI-1    Modal real "Análisis de variación" en /dashboard/costo-uso
+            con al menos un rango con variación calculable y otro
+            null (P-UI-3).
+  T-UI-2    Filtros reales (week / last4 / last8 / month / custom)
+            comprobando que las advertencias se limpian al cambiar
+            (P-UI-2).
+  T-UI-3    Activación de explicaciones por toque y teclado en móvil
+            (P-UI-1).
+
+  Solo tras ejecutar T-PPTX-1 a T-PPTX-5 se podrá retirar la
+  etiqueta NO VALIDADO del PPTX. En este bloque, la etiqueta debe
+  registrarse como:
+    "Implementación preparada; pruebas y verificación del archivo
+    pendientes."
+
+8. CONFIRMACIÓN DE NO INICIAR TAREAS PESADAS
+
+  Este bloque no arrancó:
+    · Ningún dev server o servidor de producción.
+    · Ninguna suite de pruebas (vitest).
+    · Ningún build (next build / tsc).
+    · Ningún navegador automatizado (Playwright).
+    · Ninguna instalación (npm install / npx download).
+    · Ningún generador de documentos (PPTX/XLSX/PDF).
+  No se cerró ni tocó proceso ajeno.
+
+9. ESTADO FINAL
+
+  MODO LIGERO, SIN TURNO PESADO.
+  Trabajo del PPTX preparado y consolidado en el commit local
+  2ee60fa. Espera al siguiente turno pesado para las verificaciones
+  T-PPTX-* y T-UI-*.

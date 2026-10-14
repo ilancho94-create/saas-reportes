@@ -1,0 +1,123 @@
+Bloque 9 — Commit local del trabajo pendiente del bloque 7
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · MODO LIGERO, SIN TURNO PESADO
+
+1. COMMIT CREADO Y ARCHIVOS INCLUIDOS
+
+   SHA: 6e0d592
+   Título: feat(costo-uso): variance reason messaging + sandbox route
+           for visual verification
+   Rama:  costo-uso-validation-2026-09-06 (local, sin push)
+
+   Archivos incluidos (8):
+     M  src/app/dashboard/costo-uso/page.tsx
+     M  src/lib/costo-uso/__tests__/engine.test.ts
+     M  src/lib/costo-uso/engine.ts
+     A  src/lib/costo-uso/ui-helpers.ts
+     A  src/lib/costo-uso/__fixtures__/scenarios.ts
+     A  src/app/dashboard/costo-uso/sandbox/[scenario]/page.tsx
+     A  src/app/dashboard/costo-uso/sandbox/[scenario]/SandboxClient.tsx
+     A  docs/informes/bloque-07/informe.txt
+
+   Delta: 8 files changed, 1336 insertions(+), 100 deletions(-)
+
+   Alcance (resumen del cuerpo del commit):
+     · Motor: nuevo VarianceReason + reasonForCategory; campos
+       _variacion_reason por categoría, totalVariacionReason y
+       totalVariacionMissingCategories; activity{Week,First,Last}
+       exponen las semanas cuya actividad entra al cálculo (excluye
+       anchor).
+     · Tests: nueva suite [EXACT] varianceReason con 6 casos.
+     · UI: helpers compartidos, mensajes por causa real (cards,
+       filas, modal), label "Período analizado", referencia inicial
+       explicada, rango sin cierre bifurcado según haya o no anchor.
+     · Sandbox de pruebas visuales gateado por
+       NODE_ENV=development → notFound() en producción. Reutiliza
+       el engine y helpers reales; sin Supabase ni auth.
+     · Informe .txt del bloque 7.
+
+   Verificación de higiene antes de commitear:
+     · Sin secretos (grep de password / secret / api_key / token).
+     · Sin datos reales del cliente (grep de nombres propios y
+       marcas — solo apareció el nombre público "DineWise" en el
+       informe y falsos positivos por "fórmula").
+     · Sin hooks pre-commit configurados en el repo (ni .husky ni
+       .git/hooks/pre-commit) — el commit no disparó ninguna tarea
+       pesada.
+
+2. CAMBIOS QUE TODAVÍA QUEDAN PENDIENTES
+
+   git status -s tras el commit:
+     ??  docs/informes/bloque-08/
+
+   docs/informes/bloque-08/inspeccion-modo-ligero.txt corresponde
+   a la inspección ligera anterior. NO se incluyó en este commit
+   porque el prompt pidió "únicamente los cambios correspondientes
+   al bloque 7 y su informe". Queda sin commitear en el árbol; se
+   consolidará junto al informe de este bloque cuando el usuario
+   indique cómo prefiere agruparlos, o en el próximo bloque
+   documental.
+
+3. VERIFICACIONES ANTERIORES (NO REPETIDAS EN ESTE BLOQUE)
+
+   Evidencia histórica del bloque 7, tal como se registró antes
+   del bloqueo del equipo — NO se ha vuelto a ejecutar aquí:
+     · npx vitest run           → 89 pasadas, 1 skipped
+     · npx tsc --noEmit         → sin errores
+     · npx next build (NODE_ENV=production) → OK; la ruta
+       ƒ /dashboard/costo-uso/sandbox/[scenario] aparece en el
+       manifiesto y está gateada por notFound() en el server
+       component.
+     · curl http GET a la ruta sandbox en dev → 200 (una vez
+       compilada), antes del EAGAIN de Chrome.
+   Modo ligero manda: no se re-ejecutaron ni pruebas ni build ni
+   Playwright. La correctitud queda cubierta por (a) los hallazgos
+   registrados arriba, (b) que este commit no altera fórmulas ni
+   fuentes de datos.
+
+4. CONFIRMACIÓN DE QUE NO SE INICIARON PROCESOS PESADOS
+
+   Este bloque ejecutó exclusivamente comandos ligeros del árbol
+   git local: git status, git log, git diff --stat, un grep de
+   secretos en los archivos del bloque 7, git add y git commit.
+   No arrancó servidores, watchers, navegadores automatizados,
+   suites de pruebas, builds ni instalaciones. No abrió agentes
+   paralelos ni tareas en segundo plano.
+
+5. INTERPRETACIONES DEL INFORME ANTERIOR — CORREGIDAS
+
+   Se retiran las siguientes afirmaciones que el informe del bloque
+   8 hizo sobre memoria del equipo:
+     · "sin swap configurado / no en uso ahora": vm.swapusage en
+       cero no demuestra que el swap esté deshabilitado; solo
+       muestra que en ese instante no había swap asignado.
+     · "la mayor parte activa/inactiva es cache reutilizable": la
+       memoria "active" no es cache. Sólo la "inactive" y las
+       "purgeable" son candidatas más razonables a reutilización,
+       y aun así con condiciones.
+     · "no se detecta presión sostenida" a partir de un único
+       vm_stat + un único load average: una medición puntual no
+       prueba ausencia de presión sostenida.
+     · Load average, memoria libre y swap por sí solos no permiten
+       confirmar presencia ni ausencia de margen para tareas
+       fork-intensivas.
+   Este bloque no investiga más el equipo. Solo deja constancia
+   de la corrección para que el informe compartido con el asesor
+   no arrastre afirmaciones no respaldadas.
+
+6. PRÓXIMO PASO
+
+   Verificación visual con Playwright de los 9 escenarios de la
+   ruta sandbox, cuando el propietario conceda expresamente el
+   TURNO PESADO: DineWise. Capturas se guardarán en
+     docs/informes/bloque-07/capturas/
+   como se indica en la sección 6 del informe del bloque 7.
+
+   Otras decisiones pendientes del propietario, sin cambio hasta
+   entonces:
+     · Política de consumo negativo (Math.max sigue activo).
+     · Ajustes manuales de theo_cost y presencia.
+     · Plan del PPTX "Costo de Uso" (no validado).
+
+7. ESTADO FINAL
+   MODO LIGERO, SIN TURNO PESADO.

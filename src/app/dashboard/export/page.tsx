@@ -48,6 +48,11 @@ export default function ExportPage() {
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [newTemplateName, setNewTemplateName] = useState('')
   const [reportMode, setReportMode] = useState<'individual' | 'ceo'>('individual')
+  // Base de ventas para la sección Costo de Uso del PPTX.
+  // 'net'  = ventas netas (default; equivalente a toggle "+Desc. Op." OFF de la UI).
+  // 'gross' = ventas brutas (net + diferencia completa net→gross; NO
+  //           aísla descuentos operativos).
+  const [costoUsoSalesBase, setCostoUsoSalesBase] = useState<'net' | 'gross'>('net')
 
   const allRestaurants = organizations.flatMap(o => o.restaurants.map(r => ({ ...r, orgName: o.name })))
 
@@ -150,6 +155,7 @@ export default function ExportPage() {
         restaurantIds: selectedRestaurants, weeks: selectedWeeks,
         sections: sections.filter(s => ALL_SECTIONS.some(a => a.key === s)),
         notes, template: selectedTemplate, format, language: 'es',
+        costoUsoSalesBase,
       }
       const dataArr = await Promise.all(selectedRestaurants.map(id => fetchExportData(id, selectedWeeks)))
       const validData = dataArr.filter(Boolean) as any[]
@@ -330,6 +336,33 @@ export default function ExportPage() {
                   )
                 })}
               </div>
+              {/* Opciones específicas de la sección Costo de Uso */}
+              {sections.includes('food_cost') && (
+                <div className="mt-4 pt-4 border-t border-gray-800" data-testid="costo-uso-options">
+                  <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-2">Opciones de Costo de Uso</p>
+                  <p className="text-gray-500 text-xs mb-2">Base de ventas para la diapositiva Costo de Uso:</p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCostoUsoSalesBase('net')}
+                      data-testid="cu-sales-net"
+                      className={'flex-1 rounded-lg border-2 px-3 py-2 text-xs font-medium transition text-left ' + (costoUsoSalesBase === 'net' ? 'border-blue-500 bg-blue-950 text-blue-300' : 'border-gray-700 text-gray-400 hover:border-gray-600')}
+                    >
+                      <span className="block font-semibold">Ventas netas</span>
+                      <span className="block text-[10px] text-gray-500 mt-0.5">Equivale al toggle "+Desc. Op." OFF de la UI.</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCostoUsoSalesBase('gross')}
+                      data-testid="cu-sales-gross"
+                      className={'flex-1 rounded-lg border-2 px-3 py-2 text-xs font-medium transition text-left ' + (costoUsoSalesBase === 'gross' ? 'border-blue-500 bg-blue-950 text-blue-300' : 'border-gray-700 text-gray-400 hover:border-gray-600')}
+                    >
+                      <span className="block font-semibold">Ventas brutas</span>
+                      <span className="block text-[10px] text-gray-500 mt-0.5">Incluye la diferencia completa net→gross. NO aísla descuentos operativos.</span>
+                    </button>
+                  </div>
+                </div>
+              )}
               {ALL_SECTIONS.filter(s => !sections.includes(s.key)).length > 0 && (
                 <div className="mt-4 pt-4 border-t border-gray-800">
                   <p className="text-gray-600 text-xs mb-2">No incluidas:</p>

@@ -1,0 +1,208 @@
+Bloque 15 — Contexto equivalente UI↔PPTX + no_initial_inventory + pruebas preparadas
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · MODO LIGERO, SIN TURNO PESADO
+
+1. COMMIT Y ESTADO FINAL
+
+  Rama: costo-uso-validation-2026-09-06 (local, sin push)
+  Commit añadido:
+    1d630bd  fix(costo-uso): UI usa el mismo loader iterativo que
+             PPTX; no_initial_inventory como VarianceReason
+  HEAD previo: d3d4bfc (informe bloque 14)
+  git status -s tras el commit: limpio.
+
+  Sin ejecución de tests, tipos, build, servidores, navegadores,
+  instalaciones ni generación / renderizado de documentos.
+
+2. CÓMO UI Y PPTX OBTIENEN CONTEXTO EQUIVALENTE
+
+  Nuevo módulo compartido:
+    src/lib/costo-uso/supabase-context-provider.ts
+    → createSupabaseContextProvider(supabase, restaurantId, weekIds)
+      Devuelve un ContextQueryProvider — MISMA interfaz que consume
+      loadCostoUsoContext. No duplica la lógica de paginación; solo
+      traduce del cliente Supabase a las dos operaciones que el
+      loader necesita. Aislamiento por restaurante en ambas queries
+      (.eq('restaurant_id', restaurantId)).
+
+  Camino en el PPTX (fetcher):
+    fetchExportData → loadCostoUsoContext(providerSupabase) →
+    ExportData.costoUsoContext.engineWeeks + contextStatus.
+
+  Camino en la UI (page.tsx):
+    loadData carga las últimas 52 semanas del restaurante para
+    poblar el listado de semanas seleccionables.
+    Cuando `filtered` cambia (por cualquier filtro), un useEffect
+    dispara loadCostoUsoContext con el mismo adapter Supabase para
+    la selección actual, con un contador `contextLoadId`:
+      - Cada request incrementa el contador.
+      - Solo la respuesta cuyo id === contador vigente sobrescribe
+        estado.
+      - Cualquier respuesta anterior (tardía) se descarta sin pisar
+        la selección actual.
+    Los resultados se combinan con los 52 iniciales en
+    `contextualWeeks` (dedup por report.id, orden asc); ese universo
+    es el que va a prepareCostoUsoResult.
+
+  Se distingue claramente:
+    - Listado de semanas seleccionables → weeks (52 más recientes).
+    - Datos completos para calcular la selección → contextWeeks
+      (semanas seleccionadas + ventana previa iterativa).
+    - Contexto anterior de inventario y semanas intermedias → parte
+      de contextWeeks; loadCostoUsoContext las trae con paginación
+      hasta encontrar el anchor real o alcanzar el límite absoluto.
+
+  Se preservan:
+    - Aislamiento por restaurante (RLS y filtros .eq inalterados).
+    - No hay descarga silenciosa de "todo el historial".
+    - Selecciones históricas antiguas ya no quedan limitadas al
+      cache de 52; el loader iterativo aporta el anchor real.
+
+3. no_prior CON INVENTARIO INICIAL PRESENTE / CERO / AUSENTE
+
+  El motor ahora comprueba explícitamente por categoría cuando NO
+  hay anchor previo:
+
+    invPreviousPresent =
+      expected accounts for this category in ACCOUNT_MAP.length > 0
+      && closing.inventory.by_account has an account of that
+         category with previous_value !== undefined && !== null
+
+  Cero explícito califica como presente. Ausencia (campo faltante o
+  cuenta ausente) no. Un cliente que responde con by_account = []
+  jamás produce invPrevious silencioso.
+
+  Nuevo VarianceReason: 'no_initial_inventory'
+    Ruta de decisión (reasonForCategory):
+      catSales < 0             → negative_sales
+      catSales === 0           → zero_sales
+      !invPreviousPresent      → no_initial_inventory
+      theoPresent              → ok
+      else                     → partial_theo | no_theo_source
+
+  Cuando invPreviousPresent === false:
+    - variacion = null (no se reconstruye desde uso − theo).
+    - dias_inv = null (denominador desconocido).
+    - uso sigue calculándose con clampeo Math.max(...,0) — política
+      de negativo sin cambios.
+    - _inv_previous_present se expone en el output para que UI y
+      PPTX puedan mostrarlo.
+
+  ui-helpers.ts:
+    VARIANCE_REASON_LABEL['no_initial_inventory'] =
+      "no calculable · sin inventario inicial de referencia en la
+       categoría"
+    VARIANCE_REASON_LONG['no_initial_inventory'] =
+      "No hay conteo de inventario anterior para esta categoría y
+       el reporte actual no trae el campo previous_value. Sin
+       límite inicial, la variación no es calculable."
+
+4. PRUEBAS PREPARADAS — NO EJECUTADAS
+
+  A. Unidad — engine + prepare-result
+     src/lib/costo-uso/__tests__/prepare-result.test.ts
+       · sin anchor y previous_value numérico → variación calculable
+         y motivo 'ok'.
+       · sin anchor y previous_value = 0 explícito → variación
+         calculable (uso = 0 + purchases − current).
+       · sin anchor sin ninguna cuenta esperada →
+         invPreviousPresent=false, variacion=null,
+         motivo 'no_initial_inventory', dias_inv=null.
+
+  B. Integración — filtros, respuestas fuera de orden, badge, modal
+     src/app/dashboard/costo-uso/_components/__tests__/
+       interactions.pending.tsx  (extensión .pending.tsx — no lo
+       ejecuta vitest hasta que se renombre a .test.tsx)
+     Requiere instalar (DEV):
+       @testing-library/react
+       @testing-library/user-event
+       @testing-library/jest-dom
+       jsdom
+     Y setear en vitest.config.mts: test: { environment: 'jsdom' }
+     Casos preparados:
+       · Cambio de rangeDiagnostics: los diag-item viejos
+         desaparecen tras rerender con items=[].
+       · Respuesta tardía de una selección anterior NO sobrescribe
+         la actual (contrato de contextLoadId).
+       · DiagBadge: click abre popover; Enter con foco lo abre;
+         Escape lo cierra y devuelve foco.
+       · UnclosedRangeCard: mensaje anchor vs sin anchor.
+       · Modal Análisis de variación — casos calculable / null;
+         marcado como it.todo por depender de una extracción previa
+         de buildVarianceBreakdown a módulo compartido (planificada
+         para el próximo turno pesado).
+
+  En modo ligero: nada se ejecuta. La activación (rename + install +
+  vitest env) se hará en el turno pesado.
+
+5. MÉTODO DISPONIBLE PARA REVISAR VISUALMENTE EL PPTX
+
+  Inventario ligero (solo `ls` / `which`, sin abrir apps):
+    Presentes:
+      /Applications/Keynote.app
+      /Applications/Microsoft PowerPoint.app
+      /usr/bin/osascript              (permite automatizar apps mac)
+    Ausentes:
+      LibreOffice / soffice / unoconv / libreoffice
+
+  Método concreto disponible para el turno pesado:
+    a. Abrir manualmente cada .pptx de docs/informes/bloque-14/pptx/
+       en Keynote o PowerPoint y revisar el layout de la
+       diapositiva "COSTO DE USO".
+    b. Automatizar con osascript la exportación a PDF de cada .pptx
+       (PowerPoint tiene comando "save as pdf"; Keynote tiene
+       "export to PDF"). Requiere ejecutarse con el usuario
+       presente por diálogos.
+    c. Instalar LibreOffice para conversión no-interactiva
+       `soffice --headless --convert-to pdf` (opción secundaria si
+       osascript resulta invasivo).
+  No se abre ninguna aplicación en este bloque.
+
+  Estado del PPTX SIGUE:
+    "Contenido comprobado en siete escenarios sintéticos;
+     presentación visual pendiente."
+
+6. BLOQUEOS CONCRETOS
+
+  B1  Tests de integración con @testing-library/react — no
+      instalado, y su instalación es una carga pesada (transitivas
+      + posible bump de vitest env a jsdom). Requiere turno pesado.
+  B2  Modal real de Análisis de variación — sigue acoplado a
+      page.tsx a través de buildVarianceBreakdown. Su extracción a
+      un componente independiente (para poder montarlo aislado en
+      tests) es una edición amplia; se agenda para el turno pesado.
+  B3  Presentación visual PPTX — necesita usar Keynote, PowerPoint
+      o LibreOffice; entra en turno pesado exclusivo.
+
+7. LISTA CERRADA DE VERIFICACIONES PARA EL PRÓXIMO TURNO EXCLUSIVO
+
+  T1  npm install -D @testing-library/react
+      @testing-library/user-event @testing-library/jest-dom jsdom
+      + rename interactions.pending.tsx → interactions.test.tsx
+      + añadir `test: { environment: 'jsdom' }` a vitest.config.mts
+      + ejecutar npx vitest run
+  T2  Extraer buildVarianceBreakdown a
+      src/lib/costo-uso/variance-breakdown.ts y activar el modal en
+      un componente aislado montable por tests.
+  T3  Presentación visual: abrir los 7 .pptx en Keynote (o
+      PowerPoint) y anotar cualquier corte, superposición o color
+      incorrecto por diapositiva.
+  T4  Confirmar antes del turno que Maktub y Payouts no están
+      ejecutando servidores ni cargas pesadas (registrado en la
+      política heavy-turn); DineWise NO cerrará esos procesos.
+
+8. COORDINACIÓN DE RECURSOS
+
+  El próximo turno pesado debe confirmar explícitamente que Maktub
+  y Payouts no están corriendo dev servers ni Playwright antes de
+  arrancar cualquier fase pesada de DineWise. En este bloque no se
+  tocó ningún proceso ajeno; el next dev de Maktub sigue vivo
+  desde sesiones anteriores del usuario y se deja intacto.
+  Abrir o renderizar presentaciones NO es modo ligero — se hace
+  bajo turno exclusivo.
+
+9. ESTADO FINAL
+   MODO LIGERO, SIN TURNO PESADO.
+   La sección Costo de Uso del PPTX sigue registrada como
+   "Contenido comprobado en siete escenarios sintéticos;
+   presentación visual pendiente."

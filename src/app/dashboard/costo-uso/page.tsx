@@ -10,23 +10,24 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, Cell
 } from 'recharts'
-
-const ACCOUNT_MAP: Record<string, string> = {
-  'Food Inventory': 'food',
-  'Food bar Inventory': 'liquor',
-  'Beer': 'beer',
-  'Alcoholic Inventory': 'liquor',
-  'Beverage Inventory': 'na_beverage',
-  'Wine Inventory': 'wine',
-}
-
-const CATEGORIES_BASE = [
-  { key: 'food', label: 'Food', color: '#f97316', defaultMeta: 28 },
-  { key: 'na_beverage', label: 'NA Beverage', color: '#06b6d4', defaultMeta: 8 },
-  { key: 'liquor', label: 'Liquor', color: '#a855f7', defaultMeta: 20 },
-  { key: 'beer', label: 'Beer', color: '#eab308', defaultMeta: 20 },
-  { key: 'wine', label: 'Wine', color: '#ec4899', defaultMeta: 20 },
-]
+import {
+  ACCOUNT_MAP,
+  CATEGORIES_BASE,
+  createCostoUsoEngine,
+} from '@/lib/costo-uso/engine'
+import {
+  CATEGORY_LABELS,
+  DIAG_LABELS,
+  VARIANCE_REASON_LABEL,
+  VARIANCE_REASON_LONG,
+  formatDiagLine,
+} from '@/lib/costo-uso/ui-helpers'
+import { DiagBadge } from './_components/DiagBadge'
+import { RangeSummary } from './_components/RangeSummary'
+import { UnclosedRangeCard } from './_components/UnclosedRangeCard'
+import { prepareCostoUsoResult } from '@/lib/costo-uso/prepare-result'
+import { loadCostoUsoContext } from '@/lib/export/costo-uso-context-loader'
+import { createSupabaseContextProvider } from '@/lib/costo-uso/supabase-context-provider'
 
 const ADJUSTMENT_FIELDS = [
   { key: 'inv_previous', label: 'Inv. Anterior' },
@@ -42,6 +43,14 @@ export default function CostoUsoPage() {
   const restaurantId = useRestaurantId()
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<any[]>([])
+  // Contexto adicional cargado por el loader iterativo cuando la
+  // selección requiere anchor externo fuera del universo inicial de
+  // 52 semanas. Se une con `weeks` para alimentar prepareCostoUsoResult.
+  // Cada carga incrementa `contextLoadId`; solo se aplican respuestas
+  // cuyo id coincida con el último — descarta respuestas fuera de orden.
+  const [contextWeeks, setContextWeeks] = useState<any[]>([])
+  const [contextStatus, setContextStatus] = useState<'idle' | 'loading' | 'complete' | 'no_prior' | 'insufficient' | 'error'>('idle')
+  const [contextLoadId, setContextLoadId] = useState(0)
   const [restaurantName, setRestaurantName] = useState('')
   const [mappings, setMappings] = useState<any[]>([])
   const [alerts, setAlerts] = useState<string[]>([])
@@ -49,7 +58,11 @@ export default function CostoUsoPage() {
   const [selectedWeek, setSelectedWeek] = useState('')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
-  const [operatingDays, setOperatingDays] = useState(6)
+  // operating_days del restaurante — sin fallback silencioso.
+  // null cuando la configuración no está presente: "días de inventario"
+  // queda como no calculable; el resto de métricas no cambia.
+  const [operatingDays, setOperatingDays] = useState<number | null>(null)
+  const [fiscalYearStart, setFiscalYearStart] = useState<string | null>(null)
   const [costTargets, setCostTargets] = useState<Record<string, number>>({})
   const [userRole, setUserRole] = useState<string>('')
   const [userCustomPerms, setUserCustomPerms] = useState<any>(null)
@@ -89,10 +102,58 @@ export default function CostoUsoPage() {
     period: any
   }>(null)
 
-  const CATEGORIES = CATEGORIES_BASE.map(cat => ({
-    ...cat,
-    meta: costTargets[cat.key] !== undefined ? costTargets[cat.key] : cat.defaultMeta,
-  }))
+  const skippedWeekSet = useMemo(
+    () => new Set<string>(skippedWeeks.map((s: any) => s.week)),
+    [skippedWeeks]
+  )
+
+  // Rango solicitado por el usuario. Se calcula en el mismo memo que la
+  // vista `filtered` más abajo, pero lo necesitamos aquí para el engine.
+  // Estrategia: recomputamos el subset aquí (con las mismas reglas) y de
+  // ahí sacamos from/to para pasar al motor y a diagnoseRange.
+  const requestedRange = useMemo(() => {
+    if (weeks.length === 0) return null
+    let subset: any[] = []
+    if (shortcut === 'week' && selectedWeek) {
+      subset = weeks.filter(w => w.report.week === selectedWeek)
+    } else if (shortcut === 'last4') subset = weeks.slice(-4)
+    else if (shortcut === 'last8') subset = weeks.slice(-8)
+    else if (shortcut === 'month') {
+      // Comparar como string YYYY-MM evita que new Date('2026-06-01')
+      // en zona Chicago lo interprete como 31-may UTC. week_start ya es
+      // 'YYYY-MM-DD' en el calendario local del restaurante.
+      const now = new Date()
+      const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      subset = weeks.filter(w => (w.report.week_start || '').slice(0, 7) === yyyymm)
+    } else if (shortcut === 'custom' && customFrom && customTo) {
+      const from = customFrom <= customTo ? customFrom : customTo
+      const to = customFrom <= customTo ? customTo : customFrom
+      subset = weeks.filter(w => w.report.week >= from && w.report.week <= to)
+    } else {
+      subset = weeks.slice(-4)
+    }
+    if (subset.length === 0) return null
+    return { from: subset[0].report.week, to: subset[subset.length - 1].report.week }
+  }, [weeks, shortcut, selectedWeek, customFrom, customTo])
+
+  // Engine único (misma implementación que usan las pruebas)
+  const engine = useMemo(
+    () => createCostoUsoEngine({
+      weeks,
+      mappings,
+      adjustments,
+      skippedWeekSet,
+      opDiscountMappings,
+      includeOpDiscounts,
+      operatingDays,
+      costTargets,
+      requestedRange,
+      fiscalYearStart,
+    }),
+    [weeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets, requestedRange, fiscalYearStart],
+  )
+
+  const CATEGORIES = engine.CATEGORIES
 
   const canEdit = can(userRole, 'costo_uso', 'edit', userCustomPerms)
   const { isSuperAdmin, user } = useAuth()
@@ -118,10 +179,13 @@ export default function CostoUsoPage() {
     const [
       restRes, mapsRes, tgtsRes, discMapsRes, reportsRes, adjsRes, skippedRes, urRes,
     ] = await Promise.all([
-      supabase.from('restaurants').select('name, operating_days').eq('id', restaurantId).single(),
+      supabase.from('restaurants').select('name, operating_days, fiscal_year_start').eq('id', restaurantId).single(),
       supabase.from('category_mappings').select('*').eq('restaurant_id', restaurantId),
       supabase.from('cost_targets').select('category, target_pct').eq('restaurant_id', restaurantId),
       supabase.from('discount_mappings').select('discount_name').eq('restaurant_id', restaurantId).eq('is_operational', true),
+      // ascending:false + limit(52) + reverse() = últimas 52 semanas,
+      // en orden ascendente para el resto del cálculo. Antes esto traía
+      // las 52 MÁS VIEJAS.
       supabase.from('reports').select(`
         id, week, week_start, week_end, restaurant_id,
         sales_data(net_sales, categories),
@@ -131,7 +195,7 @@ export default function CostoUsoPage() {
         discounts_data(total, items),
         waste_data(total_cost, items),
         voids_data(total, items)
-      `).eq('restaurant_id', restaurantId).order('week', { ascending: true }).limit(52),
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(52),
       supabase.from('costo_uso_adjustments').select('*').eq('restaurant_id', restaurantId).order('created_at', { ascending: false }),
       supabase.from('skipped_inventory_weeks').select('*').eq('restaurant_id', restaurantId).order('week', { ascending: true }),
       userRestaurantPromise,
@@ -145,7 +209,15 @@ export default function CostoUsoPage() {
 
     // restaurant
     setRestaurantName(restRes.data?.name || '')
-    setOperatingDays(restRes.data?.operating_days || 6)
+    // Sin fallback silencioso: si el registro no trae operating_days
+    // (o llega inválido), queda en null. Los consumidores muestran
+    // "Faltan días de operación" donde corresponde.
+    {
+      const raw = restRes.data?.operating_days
+      const parsed = typeof raw === 'number' && raw > 0 ? raw : null
+      setOperatingDays(parsed)
+    }
+    setFiscalYearStart(restRes.data?.fiscal_year_start || null)
 
     // mappings
     setMappings(mapsRes.data || [])
@@ -170,7 +242,7 @@ export default function CostoUsoPage() {
     const reports = reportsRes.data
     if (!reports || reports.length === 0) { setLoading(false); return }
     const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
-    const weeksData = reports.map((r: any) => {
+    const weeksData = reports.slice().reverse().map((r: any) => {
       const { sales_data, cogs_data, inventory_data, product_mix_data, discounts_data, waste_data, voids_data, ...report } = r
       return {
         report,
@@ -192,32 +264,25 @@ export default function CostoUsoPage() {
     setCustomTo(last?.report.week || '')
 
     const newAlerts: string[] = []
-    for (let i = 1; i < weeksData.length; i++) {
-      const prev = weeksData[i - 1]; const curr = weeksData[i]
-      if (prev.inventory && curr.inventory) {
-        const diff = Math.abs(Number(prev.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous))
-        if (diff > 10) newAlerts.push(`⚠️ Ajuste detectado entre ${prev.report.week} y ${curr.report.week}: diferencia de $${diff.toFixed(0)} en inventario`)
+    const skippedSetForAlerts = new Set((skippedRes.data || []).map((s: any) => s.week))
+    let lastInv: any = null
+    for (const curr of weeksData) {
+      if (!curr.inventory || skippedSetForAlerts.has(curr.report.week)) continue
+      if (lastInv) {
+        const diff = Math.abs(Number(lastInv.inventory.grand_total_current) - Number(curr.inventory.grand_total_previous))
+        if (diff > 10) newAlerts.push(`⚠️ ${lastInv.report.week}→${curr.report.week}: inventario no encadena ($${diff.toFixed(0)})`)
       }
+      lastInv = curr
     }
     setAlerts(newAlerts)
     setLoading(false)
   }
 
-  // ── NUEVO: calcular total descuentos operativos de una semana ─────────────
-  function getOpDiscountTotal(w: any): number {
-    if (!includeOpDiscounts || !opDiscountMappings.length) return 0
-    const items: any[] = w.discounts?.items || []
-    return items
-      .filter((item: any) => opDiscountMappings.includes(item.name))
-      .reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0)
-  }
-
-  function getAdj(week: string, category: string, field: string): number {
-    return adjustments.filter(a => a.week === week && a.category === category && a.field === field)
-      .reduce((sum, a) => sum + Number(a.adjustment_value), 0)
-  }
-  function hasAdjustments(week: string): boolean { return adjustments.some(a => a.week === week) }
-  function getWeekAdjustments(week: string): any[] { return adjustments.filter(a => a.week === week) }
+  // ── Funciones bindeadas al engine (misma semántica que la extracción) ────
+  const getOpDiscountTotal = engine.getOpDiscountTotal
+  const getAdj = engine.getAdj
+  const hasAdjustments = engine.hasAdjustments
+  const getWeekAdjustments = engine.getWeekAdjustments
 
   async function saveAdjustment() {
     if (!adjValue || !adjNote.trim()) { setAdjError('Debes ingresar un valor y una nota explicativa'); return }
@@ -315,8 +380,9 @@ export default function CostoUsoPage() {
     if (shortcut === 'last4') return weeks.slice(-4)
     if (shortcut === 'last8') return weeks.slice(-8)
     if (shortcut === 'month') {
-      const now = new Date(); const y = now.getFullYear(), m = now.getMonth()
-      return weeks.filter(w => { const d = new Date(w.report.week_start); return d.getFullYear() === y && d.getMonth() === m })
+      const now = new Date()
+      const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      return weeks.filter(w => (w.report.week_start || '').slice(0, 7) === yyyymm)
     }
     if (shortcut === 'custom' && customFrom && customTo) {
       const from = customFrom <= customTo ? customFrom : customTo
@@ -326,352 +392,101 @@ export default function CostoUsoPage() {
     return weeks.slice(-4)
   }, [weeks, shortcut, selectedWeek, customFrom, customTo])
 
+  // Avisos: categorías de ventas de Toast sin mapeo (source_system='toast').
+  // Si una categoría no está mapeada no contribuye al denominador y la
+  // fracción queda baja; el aviso le dice al usuario que vaya a Settings.
+  const unmappedCats: string[] = useMemo(() => {
+    if (!mappings.length) return []
+    const toastMap = new Set(
+      mappings
+        .filter((m: any) => m.source_system === 'toast')
+        .map((m: any) => (m.source_category || '').toLowerCase())
+    )
+    const seen = new Set<string>()
+    for (const w of filtered) {
+      const cats = (w.sales?.categories || []) as any[]
+      for (const cat of cats) {
+        const name = (cat?.name || '').trim()
+        if (!name) continue
+        if (!toastMap.has(name.toLowerCase())) seen.add(name)
+      }
+    }
+    return Array.from(seen).sort()
+  }, [filtered, mappings])
+
+  // ── Contexto iterativo compartido con el PPTX ──────────────────────
+  // Cuando la selección de la UI cambia, disparamos el mismo loader que
+  // usa el fetcher del PPTX para asegurar contexto EQUIVALENTE (misma
+  // política de anchor + max lookback). Cada carga incrementa un id;
+  // solo la respuesta con id vigente se aplica — descarta respuestas
+  // fuera de orden.
+  useEffect(() => {
+    if (!restaurantId || filtered.length === 0) {
+      setContextWeeks([]); setContextStatus('idle')
+      return
+    }
+    const myId = contextLoadId + 1
+    setContextLoadId(myId)
+    setContextStatus('loading')
+    let cancelled = false
+    ;(async () => {
+      const weekIds = filtered.map((w: any) => w.report.week)
+      const provider = createSupabaseContextProvider(supabase as any, restaurantId, weekIds)
+      // El loader debe conocer las semanas saltadas para no detenerse
+      // en una de ellas al buscar anchor (fix bug "inv_ant=$0" cuando
+      // la semana inmediatamente anterior está marcada).
+      const res = await loadCostoUsoContext(provider, { skippedWeeks: skippedWeekSet })
+      if (cancelled) return
+      // Ignora si esta ya no es la carga más reciente.
+      setContextLoadId(curr => {
+        if (curr !== myId) return curr
+        setContextWeeks(res.weeks)
+        setContextStatus(res.status)
+        return curr
+      })
+    })().catch(() => {
+      if (!cancelled) {
+        setContextLoadId(curr => {
+          if (curr !== myId) return curr
+          setContextStatus('error')
+          return curr
+        })
+      }
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restaurantId, filtered, skippedWeekSet])
+
+  // Universo efectivo que pasamos al helper: si el loader trajo
+  // contexto adicional, tiene precedencia sobre los weeks iniciales
+  // (dedup por report.id, orden ascendente).
+  const contextualWeeks = useMemo(() => {
+    if (contextWeeks.length === 0) return weeks
+    const seen = new Set<string>()
+    const merged: any[] = []
+    for (const w of [...contextWeeks, ...weeks]) {
+      if (seen.has(w.report.id)) continue
+      seen.add(w.report.id)
+      merged.push(w)
+    }
+    merged.sort((a, b) => a.report.week < b.report.week ? -1 : a.report.week > b.report.week ? 1 : 0)
+    return merged
+  }, [weeks, contextWeeks])
+
   function fmt(n: any) { if (n === null || n === undefined) return '—'; return '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }) }
   function fmtPct(n: any) { if (n === null || n === undefined) return '—'; return Number(n).toFixed(1) + '%' }
-  function pct(part: any, total: any) { if (!part || !total) return null; return parseFloat((Number(part) / Number(total) * 100).toFixed(1)) }
+  const getMappedSales = engine.getMappedSales
+  const getMappedGross = engine.getMappedGross
 
-  function getMappedSales(categories: any[], targetType: string) {
-    if (!categories || !mappings.length) return 0
-    return categories.filter((cat: any) => {
-      const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
-      return mapping?.mapped_to === targetType
-    }).reduce((sum: number, cat: any) => sum + Number(cat.net || 0), 0)
-  }
-
-
-  // Ventas brutas (net + descuentos) por categoria — para modo + Desc. Operativos
-  function getMappedGross(categories: any[], targetType: string) {
-    if (!categories || !mappings.length) return 0
-    return categories.filter((cat: any) => {
-      const mapping = mappings.find(m => m.source_category.toLowerCase() === cat.name.toLowerCase())
-      return mapping?.mapped_to === targetType
-    }).reduce((sum: number, cat: any) => sum + Number(cat.gross || cat.net || 0), 0)
-  }
-
-  function getInventoryByCategory(invAccounts: any[], categoryKey: string) {
-    if (!invAccounts) return { current: 0, previous: 0 }
-    const accounts = Object.entries(ACCOUNT_MAP).filter(([_, cat]) => cat === categoryKey).map(([acc]) => acc)
-    return {
-      current: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.current_value || 0), 0),
-      previous: invAccounts.filter(a => accounts.includes(a.account)).reduce((s, a) => s + Number(a.previous_value || 0), 0),
-    }
-  }
-
-  function buildWeekData(w: any) {
-    const netSales = w.sales?.net_sales || 0
-    const cogsCat = w.cogs?.by_category || {}
-    const invAccounts = w.inventory?.by_account || []
-    const salesCategories = w.sales?.categories || []
-    const theoCostByCat = w.productMix?.theo_cost_by_category || {}
-    const hasInventory = invAccounts.length > 0
-    const week = w.report.week
-
-    // ── NUEVO: total descuentos operativos de la semana ───────────────────
-    const opDiscTotal = getOpDiscountTotal(w)
-
-    const result: any = { week: week.replace('2026-', ''), fullWeek: week, reportId: w.report.id, netSales, hasInventory, hasProductMix: !!w.productMix, opDiscTotal }
-    let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
-
-    CATEGORIES.forEach(cat => {
-      const inv = getInventoryByCategory(invAccounts, cat.key)
-      const adjInvPrev = getAdj(week, cat.key, 'inv_previous')
-      const adjPurchases = getAdj(week, cat.key, 'purchases')
-      const adjInvCurr = getAdj(week, cat.key, 'inv_current')
-      const adjTheo = getAdj(week, cat.key, 'theo_cost')
-      const invPrevious = inv.previous + adjInvPrev
-      const purchases = (cogsCat[cat.key] || 0) + adjPurchases
-      const invCurrent = inv.current + adjInvCurr
-      const uso = hasInventory ? Math.max((invPrevious + purchases - invCurrent), 0) : 0
-      const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
-      // Con toggle activo: usar ventas brutas (net + descuentos) + ajuste manual de ventas
-      const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
-      const adjSales = getAdj(week, cat.key, 'sales_adjustment')
-      const catSales = includeOpDiscounts && catSalesGross > catSalesBase
-        ? catSalesGross + adjSales
-        : catSalesBase
-
-      const theoCost = (theoCostByCat[cat.key] || 0) + adjTheo
-      const realPct = catSales > 0 ? pct(uso, catSales) : null
-      const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
-      const diasInv = uso > 0 ? parseFloat((((invCurrent + invPrevious) / 2) / uso * operatingDays).toFixed(1)) : null
-      const hasAdj = adjInvPrev !== 0 || adjPurchases !== 0 || adjInvCurr !== 0 || adjTheo !== 0
-      result[cat.key + '_uso'] = uso
-      result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0
-      result[cat.key + '_variacion'] = variacionDolares
-      result[cat.key + '_dias_inv'] = diasInv
-      result[cat.key + '_inv_current'] = invCurrent
-      result[cat.key + '_inv_previous'] = invPrevious
-      result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = catSales
-      result[cat.key + '_has_adj'] = hasAdj
-      result[cat.key + '_theo_cost'] = theoCost
-      if (uso > 0) totalUsoCost += uso
-      if (theoCost > 0) totalTheoCost += theoCost
-      if (catSales > 0) totalABSales += catSales
-    })
-
-    result.totalUsoCost = totalUsoCost; result.totalTheoCost = totalTheoCost
-    result.totalABSales = totalABSales
-    result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
-    result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
-    result.hasAnyAdj = hasAdjustments(week)
-    return result
-  }
-
-  // ──────────────────────────────────────────────────────────────────────
-  // PERIOD-BASED CONSOLIDATION MODEL
-  //
-  // Un PERÍODO va de un check-point de inventario (anchor) al siguiente
-  // (closing). Semanas saltadas o sin inventario entre anchor y closing
-  // se ABSORBEN dentro del período (sus ventas/compras se suman).
-  //
-  // Fórmula correcta:
-  //   inv_start  = anchor.inv_current   (cierre del check-point previo)
-  //                — o R365's inv_previous del closing si no hay anchor
-  //   inv_end    = closing.inv_current  (cierre del nuevo check-point)
-  //   purchases  = Σ(compras de intermediates + closing)
-  //   sales      = Σ(ventas de intermediates + closing)
-  //   uso        = inv_start + purchases − inv_end
-  //
-  // Esto reemplaza el modelo anterior (buildRangeData + effectiveFiltered)
-  // que tenía dos bugs:
-  //   1) Por-semana W22 con W20-W21 saltadas → inv_previous era el cierre
-  //      de W19 (3 semanas de consumo) pero ventas/compras solo de W22
-  //      → % inflado ~40%+
-  //   2) buildRangeData incluía al anchor (W19) dentro del período,
-  //      sobrecontando 1 semana
-  // ──────────────────────────────────────────────────────────────────────
-  const skippedWeekSet = new Set<string>(skippedWeeks.map((s: any) => s.week))
-
-  // Encuentra la última semana CON inventario antes de targetWeek.
-  function findAnchorBefore(targetWeek: any): any | null {
-    const idx = weeks.findIndex(w => w.report.week === targetWeek.report.week)
-    if (idx <= 0) return null
-    for (let i = idx - 1; i >= 0; i--) {
-      if (weeks[i].inventory?.by_account?.length > 0) return weeks[i]
-    }
-    return null
-  }
-
-  // Devuelve las semanas entre anchor (excl) y closing (excl) del array global `weeks`.
-  function getWeeksBetween(anchor: any | null, closing: any): any[] {
-    const closingIdx = weeks.findIndex(w => w.report.week === closing.report.week)
-    if (closingIdx < 0) return []
-    const anchorIdx = anchor ? weeks.findIndex(w => w.report.week === anchor.report.week) : -1
-    return weeks.slice(anchorIdx + 1, closingIdx)
-  }
-
-  // Calcula los datos consolidados de un período cerrado por `closing`.
-  // anchor=null → usa el inv_previous del R365 del closing como punto de inicio.
-  function buildPeriodData(anchor: any | null, intermediates: any[], closing: any) {
-    const periodWeeks = [...intermediates, closing]
-    const closingWeek = closing.report.week
-    const isConsolidated = intermediates.length > 0
-    const spannedSkippedWeeks = intermediates
-      .filter(w => skippedWeekSet.has(w.report.week))
-      .map(w => w.report.week)
-
-    const result: any = {
-      week: closingWeek.replace('2026-', ''),
-      fullWeek: closingWeek,
-      reportId: closing.report.id,
-      netSales: periodWeeks.reduce((s, w) => s + (w.sales?.net_sales || 0), 0),
-      hasInventory: true,
-      hasProductMix: !!closing.productMix,
-      opDiscTotal: periodWeeks.reduce((s, w) => s + getOpDiscountTotal(w), 0),
-      isConsolidated,
-      spannedSkippedWeeks,
-      anchorWeek: anchor?.report.week || null,
-      periodWeekCount: periodWeeks.length,
-      closingReport: closing.report,
-      closingRaw: closing,
-      periodWeeksRaw: periodWeeks,  // semanas raw del período (para análisis de varianza)
-    }
-
-    let totalUsoCost = 0, totalTheoCost = 0, totalABSales = 0
-
-    CATEGORIES.forEach(cat => {
-      // inv_start: anchor's inv_current si existe, sino R365's inv_previous del closing
-      let invPrevious: number
-      if (anchor) {
-        const anchorInv = getInventoryByCategory(anchor.inventory?.by_account || [], cat.key)
-        const adjAnchorCurr = getAdj(anchor.report.week, cat.key, 'inv_current')
-        invPrevious = anchorInv.current + adjAnchorCurr
-      } else {
-        const closingInv = getInventoryByCategory(closing.inventory?.by_account || [], cat.key)
-        const adjClosingPrev = getAdj(closing.report.week, cat.key, 'inv_previous')
-        invPrevious = closingInv.previous + adjClosingPrev
-      }
-
-      const closingInv = getInventoryByCategory(closing.inventory?.by_account || [], cat.key)
-      const adjClosingCurr = getAdj(closing.report.week, cat.key, 'inv_current')
-      const invCurrent = closingInv.current + adjClosingCurr
-
-      const purchases = periodWeeks.reduce((sum, w) => {
-        const cogsCat = w.cogs?.by_category || {}
-        const adj = getAdj(w.report.week, cat.key, 'purchases')
-        return sum + (cogsCat[cat.key] || 0) + adj
-      }, 0)
-
-      const uso = Math.max(invPrevious + purchases - invCurrent, 0)
-
-      const catSales = periodWeeks.reduce((sum, w) => {
-        const salesCategories = w.sales?.categories || []
-        const catSalesBase = getMappedSales(salesCategories, cat.key) || 0
-        const catSalesGross = getMappedGross(salesCategories, cat.key) || 0
-        const adjSales = getAdj(w.report.week, cat.key, 'sales_adjustment')
-        return sum + (includeOpDiscounts && catSalesGross > catSalesBase ? catSalesGross + adjSales : catSalesBase)
-      }, 0)
-
-      const theoCost = periodWeeks.reduce((sum, w) => {
-        const theoByCat = w.productMix?.theo_cost_by_category || {}
-        const adj = getAdj(w.report.week, cat.key, 'theo_cost')
-        return sum + (theoByCat[cat.key] || 0) + adj
-      }, 0)
-
-      const realPct = catSales > 0 ? pct(uso, catSales) : null
-      const mixPct = catSales > 0 ? pct(theoCost, catSales) : null
-      const variacionDolares = realPct !== null && mixPct !== null && catSales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * catSales).toFixed(2)) : null
-
-      const totalOpDays = periodWeeks.length * operatingDays
-      const diasInv = uso > 0
-        ? parseFloat((((invCurrent + invPrevious) / 2) / uso * totalOpDays).toFixed(1))
-        : null
-
-      const hasAdj = periodWeeks.some(w =>
-        getAdj(w.report.week, cat.key, 'inv_previous') !== 0 ||
-        getAdj(w.report.week, cat.key, 'purchases') !== 0 ||
-        getAdj(w.report.week, cat.key, 'inv_current') !== 0 ||
-        getAdj(w.report.week, cat.key, 'theo_cost') !== 0
-      )
-
-      result[cat.key + '_uso'] = uso
-      result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0
-      result[cat.key + '_variacion'] = variacionDolares
-      result[cat.key + '_dias_inv'] = diasInv
-      result[cat.key + '_inv_current'] = invCurrent
-      result[cat.key + '_inv_previous'] = invPrevious
-      result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = catSales
-      result[cat.key + '_has_adj'] = hasAdj
-      result[cat.key + '_theo_cost'] = theoCost
-
-      if (uso > 0) totalUsoCost += uso
-      if (theoCost > 0) totalTheoCost += theoCost
-      if (catSales > 0) totalABSales += catSales
-    })
-
-    result.totalUsoCost = totalUsoCost
-    result.totalTheoCost = totalTheoCost
-    result.totalABSales = totalABSales
-    result.totalRealPct = totalABSales > 0 ? pct(totalUsoCost, totalABSales) : null
-    result.totalMixPct = totalABSales > 0 ? pct(totalTheoCost, totalABSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalABSales).toFixed(2)) : null
-    result.hasAnyAdj = periodWeeks.some(w => hasAdjustments(w.report.week))
-    return result
-  }
-
-  // Recorre weekList cronológicamente y emite UN período por cada semana inventariada.
-  // Semanas sin inventario (saltadas o pendientes) se absorben en el siguiente cierre.
-  // Si la primera semana del weekList tiene saltadas anteriores con un anchor fuera del
-  // weekList, también las absorbe.
-  function buildPeriodSeries(weekList: any[]): any[] {
-    if (!weekList.length) return []
-
-    let priorAnchor = findAnchorBefore(weekList[0])
-    // Semanas no-inventariadas entre el anchor y el inicio del weekList se absorben también
-    const preIntermediates = priorAnchor ? getWeeksBetween(priorAnchor, weekList[0]) : []
-
-    const series: any[] = []
-    let intermediates: any[] = [...preIntermediates]
-
-    for (const w of weekList) {
-      const hasInv = w.inventory?.by_account?.length > 0
-      if (!hasInv) {
-        intermediates.push(w)
-        continue
-      }
-      series.push(buildPeriodData(priorAnchor, intermediates, w))
-      priorAnchor = w
-      intermediates = []
-    }
-    // intermediates restantes al final (sin cierre todavía) no se renderizan.
-    return series
-  }
-
-  // Agrega N períodos en una sola fila resumen (matemáticamente equivalente a una
-  // consolidación full por la propiedad telescópica).
-  function aggregateSeries(series: any[]): any {
-    if (!series.length) return null
-    if (series.length === 1) return series[0]
-
-    const result: any = {
-      isConsolidated: series.some(s => s.isConsolidated),
-      spannedSkippedWeeks: series.flatMap(s => s.spannedSkippedWeeks || []),
-      periodCount: series.length,
-      hasAnyAdj: series.some(s => s.hasAnyAdj),
-      hasInventory: true,
-      hasProductMix: series[series.length - 1].hasProductMix,
-      fullWeek: series[series.length - 1].fullWeek,
-      reportId: series[series.length - 1].reportId,
-      closingReport: series[series.length - 1].closingReport,
-      closingRaw: series[series.length - 1].closingRaw,
-      opDiscTotal: series.reduce((s, p) => s + (p.opDiscTotal || 0), 0),
-      periodWeeksRaw: series.flatMap(s => s.periodWeeksRaw || []),  // todas las raw weeks del agregado
-    }
-    const totalOpDays = series.reduce((s, p) => s + (p.periodWeekCount || 1) * operatingDays, 0)
-
-    CATEGORIES.forEach(cat => {
-      const uso = series.reduce((s, p) => s + (p[cat.key + '_uso'] || 0), 0)
-      const theo = series.reduce((s, p) => s + (p[cat.key + '_theo_cost'] || 0), 0)
-      const sales = series.reduce((s, p) => s + (p[cat.key + '_sales'] || 0), 0)
-      const purchases = series.reduce((s, p) => s + (p[cat.key + '_purchases'] || 0), 0)
-      const realPct = sales > 0 ? pct(uso, sales) : null
-      const mixPct = sales > 0 ? pct(theo, sales) : null
-      const variacion = realPct !== null && mixPct !== null && sales > 0
-        ? parseFloat(((realPct - mixPct) / 100 * sales).toFixed(2)) : null
-      const invPrev = series[0][cat.key + '_inv_previous']
-      const invCurr = series[series.length - 1][cat.key + '_inv_current']
-      const diasInv = uso > 0
-        ? parseFloat((((invCurr + invPrev) / 2) / uso * totalOpDays).toFixed(1))
-        : null
-
-      result[cat.key + '_uso'] = uso
-      result[cat.key + '_uso_pct'] = realPct || 0
-      result[cat.key + '_theo_pct'] = mixPct || 0
-      result[cat.key + '_variacion'] = variacion
-      result[cat.key + '_inv_current'] = invCurr
-      result[cat.key + '_inv_previous'] = invPrev
-      result[cat.key + '_purchases'] = purchases
-      result[cat.key + '_sales'] = sales
-      result[cat.key + '_has_adj'] = series.some(p => p[cat.key + '_has_adj'])
-      result[cat.key + '_theo_cost'] = theo
-      result[cat.key + '_dias_inv'] = diasInv
-    })
-
-    let totalUso = 0, totalTheo = 0, totalSales = 0
-    CATEGORIES.forEach(cat => {
-      totalUso += result[cat.key + '_uso'] || 0
-      totalTheo += result[cat.key + '_theo_cost'] || 0
-      totalSales += result[cat.key + '_sales'] || 0
-    })
-    result.totalUsoCost = totalUso
-    result.totalTheoCost = totalTheo
-    result.totalABSales = totalSales
-    result.totalRealPct = totalSales > 0 ? pct(totalUso, totalSales) : null
-    result.totalMixPct = totalSales > 0 ? pct(totalTheo, totalSales) : null
-    result.totalVariacion = result.totalRealPct !== null && result.totalMixPct !== null
-      ? parseFloat(((result.totalRealPct - result.totalMixPct) / 100 * totalSales).toFixed(2)) : null
-    return result
-  }
+  // ── Cálculos delegados al engine (misma implementación que las pruebas) ──
+  // Ver src/lib/costo-uso/engine.ts para el PERIOD-BASED CONSOLIDATION MODEL.
+  const buildWeekData = engine.buildWeekData
+  const findAnchorBefore = engine.findAnchorBefore
+  const getWeeksBetween = engine.getWeeksBetween
+  const buildPeriodData = engine.buildPeriodData
+  // buildPeriodSeries/aggregateSeries se acceden ahora exclusivamente
+  // vía prepareCostoUsoResult (compartido con el PPTX); no se re-exponen
+  // como aliases locales para evitar caminos alternativos.
 
   // ──────────────────────────────────────────────────────────────────────
   // ANÁLISIS DE VARIANZA
@@ -684,18 +499,25 @@ export default function CostoUsoPage() {
     const rawWeeks: any[] = period?.periodWeeksRaw || []
     const catKey = category // null = total A&B
 
-    // Uso y teórico del scope solicitado
-    let uso: number, theo: number, sales: number, variance: number
+    // La variación proviene EXCLUSIVAMENTE del engine. Si el engine devuelve
+    // null (falta información teórica o ventas <= 0), NO reconstruimos la
+    // cifra con uso − theo. Los consumidores deben tolerar null.
+    let uso: number, theo: number, sales: number, variance: number | null
+    let varianceReason: string
+    let missingTheoCategories: string[] = []
     if (catKey) {
       uso = period[catKey + '_uso'] || 0
       theo = period[catKey + '_theo_cost'] || 0
       sales = period[catKey + '_sales'] || 0
-      variance = period[catKey + '_variacion'] ?? (uso - theo)
+      variance = period[catKey + '_variacion'] ?? null
+      varianceReason = period[catKey + '_variacion_reason'] || 'ok'
     } else {
       uso = period.totalUsoCost || 0
       theo = period.totalTheoCost || 0
       sales = period.totalABSales || 0
-      variance = period.totalVariacion ?? (uso - theo)
+      variance = period.totalVariacion ?? null
+      varianceReason = period.totalVariacionReason || 'ok'
+      missingTheoCategories = period.totalVariacionMissingCategories || []
     }
 
     // ── Waste registrado en R365 ─────────────────────────────────────────
@@ -792,11 +614,19 @@ export default function CostoUsoPage() {
     // Si toggle OFF, sí entran (inflan variance via menor sales efectivas).
     const totalExplained = wasteAttributed + voidsTotal + compsTotal + unmatchedTheoCost
       + (!includeOpDiscounts ? opDiscTotal : 0)
-    const residual = variance - totalExplained
+    // Si la variación no es calculable, el residuo tampoco lo es.
+    const residual = variance === null ? null : variance - totalExplained
 
+    const scopeLabel = catKey
+      ? CATEGORIES.find(c => c.key === catKey)?.label || catKey
+      : 'Total A&B'
     return {
-      scope: catKey ? CATEGORIES.find(c => c.key === catKey)?.label || catKey : 'Total A&B',
+      scope: scopeLabel,   // legacy, aún leído por el modal
+      period: catKey ? undefined : 'Total A&B',
+      category: catKey ? scopeLabel : undefined,
       uso, theo, sales, variance,
+      varianceReason,
+      missingTheoCategories,
       wasteAttributed, wasteUncategorized, wasteItems,
       voidsTotal, voidsCount, voidsItems,
       compsTotal, compsCount, compsItems,
@@ -806,14 +636,31 @@ export default function CostoUsoPage() {
     }
   }
 
-  // ── Computed values usados por la UI ───────────────────────────────────
-  // Cálculo pesado: memoizar para evitar re-correr en cada keystroke.
-  // Deps incluyen todo lo que buildPeriodSeries cierra sobre.
-  const periodSeries = useMemo(
-    () => buildPeriodSeries(filtered),
+  // ── Preparación compartida con el PPTX ────────────────────────────────
+  // Usa prepareCostoUsoResult en modo weekList porque los filtros de la
+  // UI (semana única / last4 / last8 / month / custom) no siempre son
+  // expresables como {from,to} en YYYY-Wnn. El helper es el mismo que
+  // usa el exportador — si la aritmética coincide aquí, coincide ahí.
+  const prep = useMemo(
+    () => prepareCostoUsoResult({
+      weeks: contextualWeeks,       // universo = weeks iniciales + contexto iterativo del loader
+      mappings,
+      adjustments,
+      skippedWeekSet,
+      opDiscountMappings,
+      includeOpDiscounts,
+      operatingDays,               // number | null — sin fallback silencioso
+      costTargets,
+      fiscalYearStart,
+      weekList: filtered,
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [filtered, weeks, skippedWeeks, adjustments, mappings, opDiscountMappings, includeOpDiscounts, costTargets, operatingDays]
+    [contextualWeeks, mappings, adjustments, skippedWeekSet, opDiscountMappings, includeOpDiscounts, operatingDays, costTargets, fiscalYearStart, filtered]
   )
+  const periodSeries = prep.periodSeries
+  const detailData = prep.detailData
+  const rangeDiagnostics = prep.rangeDiagnostics
+
   const consolidatedSkippedWeeks = useMemo(
     () => periodSeries.flatMap((p: any) => p.spannedSkippedWeeks || []),
     [periodSeries]
@@ -825,11 +672,28 @@ export default function CostoUsoPage() {
   const detailWeek = periodSeries.length > 0
     ? periodSeries[periodSeries.length - 1].closingRaw
     : (filtered[filtered.length - 1] || filtered[0] || null)
-  const detailData = useMemo(
-    () => aggregateSeries(periodSeries),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [periodSeries]
-  )
+  // Panel desplegable de detalle de diagnósticos
+  const [showDiagPanel, setShowDiagPanel] = useState(false)
+
+  // Filtro por scope: items que aplican a una categoría específica y semana o
+  // rango del período mostrado. Usado por las señales inline en el detalle.
+  function diagItemsFor(scope: {
+    diags: any,
+    week?: string,
+    category?: string,
+  }): any[] {
+    if (!scope.diags) return []
+    return (scope.diags.items || []).filter((it: any) => {
+      if (scope.week && it.week && it.week !== scope.week) {
+        const [wa, wb] = it.weekRange || []
+        if (!(wa === scope.week || wb === scope.week)) return false
+      }
+      if (scope.category && it.category && it.category !== scope.category) return false
+      return true
+    })
+  }
+
+  // DiagBadge extraído a _components/DiagBadge.tsx (compartido con sandbox).
   const hasInventory = useMemo(
     () => weeks.some(w => w.inventory?.by_account?.length > 0),
     [weeks]
@@ -850,7 +714,16 @@ export default function CostoUsoPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-white font-bold text-lg">📦 Costo de Uso</h1>
             <span className="bg-blue-900 text-blue-400 text-xs px-2 py-0.5 rounded-full font-medium">Inventario Real</span>
-            <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">{operatingDays} días/semana</span>
+            {operatingDays !== null ? (
+              <span className="bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded-full">{operatingDays} días/semana</span>
+            ) : (
+              <span
+                className="bg-amber-950 text-amber-300 text-xs px-2 py-0.5 rounded-full"
+                title="Configura los días de operación del restaurante para poder calcular los días de inventario."
+              >
+                Faltan días de operación
+              </span>
+            )}
             {adjustments.length > 0 && (
               <button onClick={() => setShowAdjLog(!showAdjLog)}
                 className="bg-yellow-900 text-yellow-400 text-xs px-2 py-0.5 rounded-full font-medium hover:bg-yellow-800 transition">
@@ -954,7 +827,14 @@ export default function CostoUsoPage() {
         {varPanel && (() => {
           const b = buildVarianceBreakdown(varPanel.category, varPanel.period)
           const fmtSigned = (n: number) => (n > 0 ? '+' : n < 0 ? '' : '') + fmt(n)
-          const explainedPctOfVar = b.variance !== 0 ? Math.min(100, Math.abs(b.totalExplained / b.variance * 100)) : 0
+          // Cuando la variación no es calculable (ej. falta costo teórico en
+          // alguna semana con ventas), NO reconstruimos la cifra. El modal
+          // muestra un cartel explicando por qué y no entra en el desglose
+          // de causas (que depende de la variación).
+          const varIsNull = b.variance === null
+          const explainedPctOfVar = (!varIsNull && b.variance !== 0)
+            ? Math.min(100, Math.abs(b.totalExplained / (b.variance as number) * 100))
+            : 0
           return (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setVarPanel(null)}>
               <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -962,7 +842,7 @@ export default function CostoUsoPage() {
                   <div>
                     <h3 className="text-white font-bold text-base">🔍 Análisis de variación</h3>
                     <p className="text-gray-500 text-xs mt-0.5">
-                      {b.scope} · {varPanel.periodLabel}
+                      {b.category ? 'Categoría ' + b.category : 'Período completo'} · {varPanel.periodLabel}
                     </p>
                   </div>
                   <button onClick={() => setVarPanel(null)} className="text-gray-500 hover:text-white">✕</button>
@@ -980,16 +860,30 @@ export default function CostoUsoPage() {
                     <p className="text-xl font-bold text-white">{fmt(b.theo)}</p>
                     <p className="text-gray-600 text-xs">costo según recetas</p>
                   </div>
-                  <div className={`rounded-xl p-4 ${b.variance > 0 ? 'bg-red-950 border border-red-900' : b.variance < 0 ? 'bg-green-950 border border-green-900' : 'bg-gray-800'}`}>
+                  <div className={`rounded-xl p-4 ${varIsNull ? 'bg-gray-800 border border-gray-700' : (b.variance as number) > 0 ? 'bg-red-950 border border-red-900' : (b.variance as number) < 0 ? 'bg-green-950 border border-green-900' : 'bg-gray-800'}`}>
                     <p className="text-gray-400 text-xs mb-1">Variación</p>
-                    <p className={`text-xl font-bold ${b.variance > 0 ? 'text-red-400' : b.variance < 0 ? 'text-green-400' : 'text-gray-300'}`}>
-                      {fmtSigned(b.variance)}
+                    <p className={`text-xl font-bold ${varIsNull ? 'text-gray-500' : (b.variance as number) > 0 ? 'text-red-400' : (b.variance as number) < 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                      {varIsNull ? '—' : fmtSigned(b.variance as number)}
                     </p>
-                    <p className="text-gray-500 text-xs">{b.variance > 0 ? 'usaste más que las recetas' : b.variance < 0 ? 'usaste menos que las recetas' : 'cuadra perfecto'}</p>
+                    <p className="text-gray-500 text-xs">{varIsNull ? 'no calculable' : (b.variance as number) > 0 ? 'usaste más que las recetas' : (b.variance as number) < 0 ? 'usaste menos que las recetas' : 'cuadra perfecto'}</p>
                   </div>
                 </div>
 
-                {b.variance === 0 ? (
+                {varIsNull ? (
+                  <div className="bg-gray-800 rounded-xl p-4 text-center border border-gray-700">
+                    <p className="text-gray-300 text-sm mb-1">
+                      Variación no calculable para {b.category ? 'esta categoría' : 'este período'}.
+                    </p>
+                    <p className="text-gray-400 text-xs">
+                      {VARIANCE_REASON_LONG[b.varianceReason || 'partial_total_theo']}
+                    </p>
+                    {b.varianceReason === 'partial_total_theo' && (b.missingTheoCategories || []).length > 0 && (
+                      <p className="text-gray-500 text-xs mt-2">
+                        Categoría(s) sin teórico: {(b.missingTheoCategories as string[]).map(k => CATEGORY_LABELS[k] || k).join(', ')}
+                      </p>
+                    )}
+                  </div>
+                ) : b.variance === 0 ? (
                   <div className="bg-gray-800 rounded-xl p-4 text-center">
                     <p className="text-gray-300 text-sm">No hay variación que analizar para este scope.</p>
                   </div>
@@ -1157,21 +1051,21 @@ export default function CostoUsoPage() {
                           {explainedPctOfVar.toFixed(0)}% de la varianza explicado por datos del sistema
                         </p>
                       </div>
-                      <div className={`rounded-xl p-4 ${Math.abs(b.residual) > Math.abs(b.variance) * 0.3 ? 'bg-orange-950 border border-orange-900' : 'bg-gray-800'}`}>
+                      <div className={`rounded-xl p-4 ${b.residual !== null && Math.abs(b.residual) > Math.abs((b.variance as number)) * 0.3 ? 'bg-orange-950 border border-orange-900' : 'bg-gray-800'}`}>
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-white text-sm font-semibold">Residuo no explicado</p>
-                          <p className={`text-xl font-bold ${b.residual > 0 ? 'text-red-400' : b.residual < 0 ? 'text-green-400' : 'text-gray-300'}`}>
-                            {fmtSigned(b.residual)}
+                          <p className={`text-xl font-bold ${(b.residual ?? 0) > 0 ? 'text-red-400' : (b.residual ?? 0) < 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                            {b.residual === null ? '—' : fmtSigned(b.residual)}
                           </p>
                         </div>
                         <p className="text-gray-400 text-xs leading-relaxed">
-                          {b.residual > 0
+                          {(b.residual ?? 0) > 0
                             ? 'Inventario consumido que no se puede atribuir a una causa registrada. Posibles fuentes:'
-                            : b.residual < 0
+                            : (b.residual ?? 0) < 0
                               ? 'Las causas registradas suman MÁS que la varianza observada. Posibles fuentes:'
                               : 'Las causas registradas cuadran con la varianza.'}
                         </p>
-                        {b.residual !== 0 && (
+                        {b.residual !== null && b.residual !== 0 && (
                           <ul className="text-gray-500 text-xs mt-2 space-y-0.5 list-disc list-inside">
                             {b.residual > 0 && (
                               <>
@@ -1271,6 +1165,18 @@ export default function CostoUsoPage() {
                     Al marcar la semana sin inventario, el cálculo de Costo de Uso se consolidará automáticamente cuando se haga inventario en una semana posterior.
                   </p>
                 </div>
+                {(() => {
+                  const wk = weeks.find(w => w.report.week === skipWeekTarget)
+                  const hasInv = !!(wk && wk.inventory && Array.isArray(wk.inventory.by_account) && wk.inventory.by_account.length > 0)
+                  if (!hasInv) return null
+                  return (
+                    <div className="bg-amber-950 border border-amber-900 rounded-lg px-4 py-3">
+                      <p className="text-amber-300 text-xs leading-relaxed">
+                        Esta semana tiene conteo cargado; se ignorará en el cálculo.
+                      </p>
+                    </div>
+                  )
+                })()}
                 <div>
                   <label className="text-gray-400 text-xs block mb-1">Motivo <span className="text-red-400">*</span></label>
                   <textarea value={skipReason} onChange={e => setSkipReason(e.target.value)}
@@ -1415,7 +1321,7 @@ export default function CostoUsoPage() {
               <strong>% Real</strong> = (Inv. Anterior + Compras − Inv. Actual) / Ventas{includeOpDiscounts ? ' (+Desc. Op.)' : ''} ·
               <strong> % P.Mix</strong> = Costo teórico según lo vendido ·
               <strong> Variación $</strong> = (% Real − % P.Mix) × Ventas ·
-              <strong> Días Inv</strong> = ((Inv. Final + Inv. Inicial) / 2) / Uso × {operatingDays} días
+              <strong> Días Inv</strong> = ((Inv. Final + Inv. Inicial) / 2) / Uso × {operatingDays !== null ? operatingDays + ' días' : '<días de operación no configurados>'}
             </p>
           </div>
         </div>
@@ -1426,6 +1332,20 @@ export default function CostoUsoPage() {
             <p className="text-yellow-300 text-sm">{alert}</p>
           </div>
         ))}
+
+        {unmappedCats.length > 0 && (
+          <div className="bg-yellow-950 border border-yellow-800 rounded-xl px-5 py-3 flex items-start gap-3">
+            <span className="text-yellow-400 shrink-0">⚠️</span>
+            <div className="flex-1">
+              <p className="text-yellow-300 text-sm font-medium">
+                Categoría{unmappedCats.length === 1 ? '' : 's'} de ventas sin mapear: {unmappedCats.join(', ')}
+              </p>
+              <p className="text-yellow-500 text-xs mt-1 leading-relaxed">
+                Mapéa{unmappedCats.length === 1 ? '' : 'las'} en Settings {'>'}Mapeo (source_system = Toast) para que su{unmappedCats.length === 1 ? '' : 's'} venta{unmappedCats.length === 1 ? '' : 's'} cuente{unmappedCats.length === 1 ? '' : 'n'} en el denominador.
+              </p>
+            </div>
+          </div>
+        )}
 
         {!hasInventory ? (
           <div className="bg-gray-900 border border-gray-800 border-dashed rounded-2xl p-10 text-center">
@@ -1473,18 +1393,58 @@ export default function CostoUsoPage() {
               )
             })()}
 
+            {/* ── Resumen de calidad de datos del período ─────────────── */}
+            {rangeDiagnostics && (() => {
+              const first = periodSeries[0]
+              const last  = periodSeries[periodSeries.length - 1]
+              const requestedLbl = requestedRange ? requestedRange.from + ' → ' + requestedRange.to : null
+              const effectiveLbl = first
+                ? (first.activityFirstLabel || first.fullWeek) + ' → ' + (last.activityLastLabel || last.fullWeek)
+                : null
+              const externalAnchor = first?.anchorWeek && requestedRange && first.anchorWeek < requestedRange.from
+                ? first.anchorWeek
+                : null
+              return (
+                <RangeSummary
+                  rangeDiagnostics={rangeDiagnostics}
+                  requestedLabel={requestedLbl}
+                  effectiveLabel={effectiveLbl}
+                  externalAnchorWeek={externalAnchor}
+                  defaultOpen={showDiagPanel}
+                />
+              )
+            })()}
+
+            {/* ── Rango sin cierre: estado útil cuando no hay período ── */}
+            {filtered.length > 0 && periodSeries.length === 0 && !isSelectedWeekSkipped().skipped && (() => {
+              const anchor = filtered[0] ? engine.findAnchorBefore(filtered[0]) : null
+              return (
+                <UnclosedRangeCard
+                  selectedWeeks={filtered.map((w: any) => w.report.week)}
+                  anchorReferenceWeek={anchor?.report?.week || null}
+                  anchorReferenceWeekEnd={anchor?.report?.week_end || null}
+                />
+              )
+            })()}
+
             {detailData && !isSelectedWeekSkipped().skipped && (
               <div>
                 <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mb-3">
                   {(() => {
+                    // "Actividad" = compras y ventas realmente incluidas.
+                    // Excluye la semana anchor (solo aporta inventario inicial de referencia).
+                    const actFirst = detailData.activityFirstLabel || detailData.fullWeek
+                    const actLast  = detailData.activityLastLabel  || detailData.fullWeek
+                    const actStart = detailData.activityWeekStart
+                    const actEnd   = detailData.activityWeekEnd
                     if (isMultiPeriod) {
                       const totalWeeks = periodSeries.reduce((s: number, p: any) => s + (p.periodWeekCount || 1), 0)
-                      return `Período — ${periodSeries[0].fullWeek} → ${periodSeries[periodSeries.length - 1].fullWeek} (${periodSeries.length} cierre${periodSeries.length !== 1 ? 's' : ''} de inventario, ${totalWeeks} semana${totalWeeks !== 1 ? 's' : ''} de actividad)`
+                      return `Período analizado — ${actFirst} → ${actLast} (${periodSeries.length} cierre${periodSeries.length !== 1 ? 's' : ''}, ${totalWeeks} semana${totalWeeks !== 1 ? 's' : ''} de actividad)`
                     }
                     if (consolidatedSkippedWeeks.length > 0) {
-                      return `Cálculo consolidado — ${detailData.fullWeek} + ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario (${consolidatedSkippedWeeks.join(', ')})`
+                      return `Período analizado — ${actFirst} → ${actLast} (incluye ${consolidatedSkippedWeeks.length} semana${consolidatedSkippedWeeks.length !== 1 ? 's' : ''} sin inventario: ${consolidatedSkippedWeeks.join(', ')})`
                     }
-                    return `Semana — ${detailWeek?.report?.week} (${detailWeek?.report?.week_start} al ${detailWeek?.report?.week_end})`
+                    return `Semana ${detailWeek?.report?.week}${actStart && actEnd ? ' — actividad ' + actStart + ' al ' + actEnd : ''}`
                   })()}
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -1510,12 +1470,25 @@ export default function CostoUsoPage() {
                     })}
                     disabled={detailData.totalVariacion === null}
                     className="bg-gray-900 border border-gray-800 hover:border-blue-700 hover:bg-gray-800 rounded-xl p-5 text-left transition disabled:cursor-default disabled:hover:bg-gray-900 disabled:hover:border-gray-800"
-                    title="Click para ver el desglose de la variación: waste, voids, comps, items sin receta y residuo">
+                    title={detailData.totalVariacion === null
+                      ? VARIANCE_REASON_LONG[detailData.totalVariacionReason || 'partial_total_theo']
+                      : 'Click para ver el desglose de la variación: waste, voids, comps, items sin receta y residuo'}>
                     <p className="text-gray-500 text-xs mb-1">Variación $ {isMultiWeek ? 'del período' : ''} <span className="text-blue-400 text-xs">🔍</span></p>
-                    <p className={`text-3xl font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
+                    <p className={`text-3xl font-bold ${detailData.totalVariacion === null ? 'text-gray-500' : detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                       {detailData.totalVariacion !== null ? (detailData.totalVariacion > 0 ? '+' : '') + fmt(detailData.totalVariacion) : '—'}
                     </p>
-                    <p className="text-gray-600 text-xs mt-1">{detailData.totalVariacion > 0 ? 'sobre lo teórico · click para analizar' : detailData.totalVariacion < 0 ? 'bajo lo teórico · click para analizar' : ''}</p>
+                    <p className="text-gray-600 text-xs mt-1">
+                      {detailData.totalVariacion === null
+                        ? (VARIANCE_REASON_LABEL[detailData.totalVariacionReason || 'partial_total_theo'])
+                            + (detailData.totalVariacionReason === 'partial_total_theo' && (detailData.totalVariacionMissingCategories || []).length > 0
+                              ? ' (' + (detailData.totalVariacionMissingCategories as string[]).map(k => CATEGORY_LABELS[k] || k).join(', ') + ')'
+                              : '')
+                        : detailData.totalVariacion > 0
+                          ? 'sobre lo teórico · click para analizar'
+                          : detailData.totalVariacion < 0
+                            ? 'bajo lo teórico · click para analizar'
+                            : ''}
+                    </p>
                   </button>
                   <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                     <p className="text-gray-500 text-xs mb-1">Inv. Actual Total</p>
@@ -1554,7 +1527,9 @@ export default function CostoUsoPage() {
                       const realPct = detailData[cat.key + '_uso_pct']
                       const variacion = detailData[cat.key + '_variacion']
                       const overMeta = cat.meta && realPct && realPct > cat.meta
-                      if (!detailData[cat.key + '_uso']) return null
+                      const usoVal = detailData[cat.key + '_uso']
+                      const usoNegative = typeof usoVal === 'number' && usoVal < 0
+                      if (usoVal === undefined || usoVal === null || usoVal === 0) return null
                       return (
                         <div key={cat.key} className="bg-gray-800 rounded-xl px-4 py-3 flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -1563,12 +1538,17 @@ export default function CostoUsoPage() {
                           </div>
                           <div className="text-right">
                             <p className={`text-sm font-bold ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</p>
-                            <p className="text-gray-500 text-xs">{fmt(detailData[cat.key + '_uso'])} uso</p>
-                            {variacion !== null && (
-                              <p className={`text-xs font-medium ${variacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                            <p className={`text-xs ${usoNegative ? 'text-orange-400' : 'text-gray-500'}`}>{usoNegative ? '-' : ''}{fmt(Math.abs(usoVal))} uso{usoNegative && <span className="ml-1" title="uso negativo, revisar conteo/compras">⚠️</span>}</p>
+                            {variacion !== null ? (
+                              <p className={`text-xs font-medium ${variacion > 0 ? 'text-red-400' : variacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                                 {variacion > 0 ? '+' : ''}{fmt(variacion)}
                               </p>
+                            ) : (
+                              <p className="text-xs text-gray-500" title="No calculable: falta información teórica.">— no calc.</p>
                             )}
+                            <div className="mt-1">
+                              <DiagBadge items={diagItemsFor({ diags: rangeDiagnostics, category: cat.key })} />
+                            </div>
                           </div>
                         </div>
                       )
@@ -1578,10 +1558,12 @@ export default function CostoUsoPage() {
                       <div className="text-right">
                         <p className={`text-sm font-bold ${detailData.totalRealPct && detailData.totalRealPct > 35 ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(detailData.totalRealPct)}</p>
                         <p className="text-gray-400 text-xs">{fmt(detailData.totalUsoCost)} uso</p>
-                        {detailData.totalVariacion !== null && (
-                          <p className={`text-xs font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        {detailData.totalVariacion !== null ? (
+                          <p className={`text-xs font-bold ${detailData.totalVariacion > 0 ? 'text-red-400' : detailData.totalVariacion < 0 ? 'text-green-400' : 'text-gray-400'}`}>
                             {detailData.totalVariacion > 0 ? '+' : ''}{fmt(detailData.totalVariacion)}
                           </p>
+                        ) : (
+                          <p className="text-xs text-gray-500">— no calc.</p>
                         )}
                       </div>
                     </div>
@@ -1618,16 +1600,30 @@ export default function CostoUsoPage() {
                           return (
                             <tr key={cat.key} className="border-b border-gray-800 hover:bg-gray-800 transition">
                               <td className="py-3">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <div className="w-2 h-2 rounded-full" style={{ backgroundColor: cat.color }} />
                                   <span className="text-gray-300 text-sm">{cat.label}</span>
                                   {hasAdj && <span className="text-yellow-400 text-xs" title="Tiene ajuste manual aplicado">✏️</span>}
+                                  <DiagBadge items={diagItemsFor({ diags: rangeDiagnostics, category: cat.key })} />
                                 </div>
                               </td>
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_inv_previous'])}</td>
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_purchases'])}</td>
                               <td className="py-3 text-right text-gray-500 text-xs">{fmt(detailData[cat.key + '_inv_current'])}</td>
-                              <td className="py-3 text-right text-white text-sm font-medium">{fmt(detailData[cat.key + '_uso'])}</td>
+                              <td className="py-3 text-right text-sm font-medium">
+                                {(() => {
+                                  const u = detailData[cat.key + '_uso']
+                                  const neg = typeof u === 'number' && u < 0
+                                  return (
+                                    <span className={neg ? 'text-orange-400' : 'text-white'}>
+                                      {neg ? '-' : ''}{fmt(Math.abs(u))}
+                                      {neg && (
+                                        <span className="ml-1 text-xs" title="uso negativo, revisar conteo/compras">⚠️</span>
+                                      )}
+                                    </span>
+                                  )
+                                })()}
+                              </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{fmt(detailData[cat.key + '_sales'])}</td>
                               <td className="py-3 text-right"><span className={`font-bold text-sm ${overMeta ? 'text-red-400' : 'text-green-400'}`}>{fmtPct(realPct)}</span></td>
                               <td className="py-3 text-right text-blue-400 text-sm">{fmtPct(mixPct)}</td>
@@ -1647,7 +1643,14 @@ export default function CostoUsoPage() {
                                     title="Click para analizar esta variación">
                                     {variacion > 0 ? '+' : ''}{fmt(variacion)}
                                   </button>
-                                ) : variacion === null ? <span className="text-gray-600">—</span> : <span className="text-gray-400">$0</span>}
+                                ) : variacion === null ? (
+                                  <span
+                                    className="text-gray-500"
+                                    title={VARIANCE_REASON_LONG[detailData[cat.key + '_variacion_reason'] || 'partial_theo']}
+                                  >
+                                    — <span className="text-xs">{VARIANCE_REASON_LABEL[detailData[cat.key + '_variacion_reason'] || 'partial_theo'].replace(/^no calculable · /, '').slice(0, 24)}…</span>
+                                  </span>
+                                ) : <span className="text-gray-400">$0</span>}
                               </td>
                               <td className="py-3 text-right text-gray-400 text-sm">{dias !== null ? dias + 'd' : '—'}</td>
                               {canEdit && shortcut === 'week' && (

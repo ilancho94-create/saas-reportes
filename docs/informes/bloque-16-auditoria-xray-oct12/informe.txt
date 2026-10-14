@@ -1,0 +1,247 @@
+Bloque 16 — Auditoría Restaurant X-Ray 12-oct: 14 fixes aplicados
+Repo: saas-reportes · rama: costo-uso-validation-2026-09-06
+Fecha: 2026-10-13 · Base: be02da3 · HEAD: f2024fc · 11 commits locales
+SIN PUSH (el usuario publica al final cuando lo diga)
+
+1. ALCANCE Y REGLAS DE OPERACIÓN
+   Punto de partida: prompt del auditor (prompt_fixes_xray.md, 12-oct)
+   con 14 fixes quirúrgicos. El auditor corrió los parsers reales
+   contra archivos W38-W40 de Mula Cantina (cliente real) y revisó el
+   código de los dashboards.
+
+   Autorización explícita del usuario antes de arrancar:
+     "tienes autorizado hacer todos los cambios, pero publicas al
+      final, cuando todo, todo esté terminado … Mientras no lo estés
+      publicando. Y puedes lanzar hasta cinco agentes para que se haga
+      más rápido."
+
+   Decisiones:
+   - Trabajo secuencial, no paralelo: varios fixes tocaban los mismos
+     archivos (costo-uso/page.tsx: fixes 1, 8, 9, 10, 14; engine.ts:
+     fixes 1, 9, 10; /api/process route.ts: fixes 4, 5, 6, 11, 12);
+     paralelizar generaba colisiones.
+   - Migraciones SQL se dejan como archivos en supabase/migrations/
+     para que el usuario las ejecute cuando quiera; NO corren contra
+     la BD real desde este repo.
+   - El cambio comercial de "mostrar uso negativo" se aplicó porque
+     el usuario lo autorizó explícitamente antes.
+
+2. COMMITS APLICADOS (en orden)
+
+   9353b1d  fix(costo-uso): el skip de semana ignora el inventario que
+            ya existe
+   42c48cd  fix(avt,compras): respetar semanas saltadas, banner correcto
+            y sin hardcode
+   e26e5dc  fix(ceo): no mostrar AvT de semanas marcadas como saltadas
+   276278b  fix(api/process): 409 por semana duplicada, propagar
+            errores de save, ISO week con DOW||7
+   3a79649  fix(food-cost,costo-uso): denominador real, orden
+            ascending:false y mapeo por source_system
+   abcf070  fix(costo-uso): no clampear uso a 0; mostrar negativos con
+            badge y actualizar diagnostic
+   5a55edc  fix(parsers,labor): cogs by_vendor con celda "",
+            hours_unpaid y labor por semana
+   a8b3b65  fix(parsers): warnings de sanidad en sales e inventory +
+            martes aceptado
+   71464d8  fix(filtros,kitchen): mes por YYYY-MM, fecha local en
+            parse-kitchen y helper shortWeek
+   44da591  docs(status): registrar los 14 fixes de la auditoría 12-oct
+   f2024fc  fix(review): propagar fixes 4/5/7/9/10 a process-edit,
+            consistencia de totales y textos
+
+   git diff --stat be02da3..HEAD: ~30 archivos modificados / creados.
+   Build: `npm run build` pasa limpio. Tests: 133 passed · 9 skipped
+   (los 9 son los .pending preexistentes). TypeScript: sin errores.
+
+3. QUÉ RESUELVE CADA FIX (mapeo 1:1 al prompt del auditor)
+
+   #1  costo-uso: skip no respeta inventario preexistente
+       engine.findAnchorBefore y engine.buildPeriodSeries ya respetan
+       skippedWeekSet (una semana marcada NO actúa como ancla ni
+       cierra su propio período aunque traiga inventory_data). El loop
+       de alertas en page.tsx compara contra la ÚLTIMA semana con
+       inventario, no con la anterior del arreglo; salta marcadas. El
+       modal "Marcar sin inventario" avisa "Esta semana tiene conteo
+       cargado; se ignorará en el cálculo" cuando aplica.
+
+   #2  AvT muestra avt_data y banner falso en semana saltada
+       avt/page.tsx: early-return con mensaje si la semana está
+       skipped; banner cambiado a "AvT de R365 solo de esta semana
+       (…); las semanas saltadas (…) no tienen AvT". Fallback del
+       restaurant_id hardcodeado "00000000-…-000001" eliminado en
+       avt/page.tsx y compras/page.tsx.
+
+   #3  CEO muestra AvT de semanas saltadas
+       page.tsx y CeoDashboardClient.tsx fetchean skipped_inventory_weeks
+       de todos los restaurantes del usuario; skippedByRest cruza con
+       latest.report.week y pinta "📭 Semana saltada — sin AvT" en vez
+       de los números de net_variance.
+
+   #4  Subir semana duplicada no se bloquea
+       /api/process: pre-check (restaurant_id, week) con limit(1) +
+       chequeo de error (NO maybeSingle, que fallaba cerrado con
+       PGRST116 cuando ya había duplicados); 409 con
+       code:'REPORT_WEEK_EXISTS' y existingReportId. Race condition:
+       23505 del INSERT también se convierte en 409.
+       Migración 20261013120000_add_unique_restaurant_week.sql con el
+       UNIQUE (restaurant_id, week); pre-check de duplicados viene
+       documentado como comentario. NO ejecutada desde el repo.
+
+   #5  Fallos silenciosos en /api/process
+       saveToDatabase ya devolvía {error} pero se ignoraba. Ahora se
+       captura en cada rama (sales, labor, cogs, voids, discounts,
+       waste, inventory, avt). Fail de sales/labor/cogs/inventory →
+       success:false status 500. receiving / employee / kitchen tenían
+       inserts directos que también se ignoraban; ahora propagan el
+       error. Mismo tratamiento espejado en /api/process-edit (que es
+       la ruta a la que empuja el nuevo 409).
+
+   #6  Semana ISO corrida 7 días
+       En /api/process getWeekStartISO:
+         const dow = jan4.getDay() || 7
+         startOfWeek1.setDate(jan4.getDate() - dow + 1)
+       En 2026 el 4-ene cae en domingo; sin este fix la W1 arrancaba
+       el 5-ene. Mula tiene fiscal_year_start así que no la usa, pero
+       el fix aplica para cualquier restaurant sin configuración
+       fiscal.
+
+   #7  Food Cost infla el denominador A&B
+       food-cost/page.tsx: quitado el fallback `|| netSales` por
+       categoría tanto en buildWeekData como en los paneles "Semana A
+       / Semana B" y "Diferencias" del modo Compare. En W39 esto
+       corrige el "19.7%" al 39.3% real.
+
+   #8  .order('week').limit(52) traía las 52 semanas MÁS VIEJAS
+       costo-uso/page.tsx y food-cost/page.tsx: pasan a
+       ascending:false + limit(52) + reverse() → últimas 52 semanas
+       en orden ascendente para el resto del cálculo.
+
+   #9  Mapeo capturaba categorías de R365 con nombre idéntico al de
+       Toast
+       engine.getMappedSales/Gross y food-cost.getMappedSales filtran
+       `m.source_system === 'toast'`. Aviso nuevo "Categoría de ventas
+       sin mapear: X" en costo-uso y food-cost cuando una categoría
+       de Toast no tiene mapeo con source_system='toast'.
+       Fixtures de tests actualizadas (DEFAULT_MAPPINGS, scenarios.ts,
+       generate-pptx.samples.test.ts) para incluir source_system='toast'.
+
+   #10 Math.max(uso, 0) ocultaba usos negativos (REGLA COMERCIAL)
+       engine.buildWeekData y engine.buildPeriodData: el uso se
+       publica tal cual, incluido negativo. UI (tabla desktop + card
+       móvil del Detalle por categoría) renderiza el valor negativo
+       en naranja con el badge "⚠️ uso negativo, revisar
+       conteo/compras". Diagnostic negative_gross_consumption:
+       clampedTo pasa de 0 a null; note actualizado.
+       Totales también: quitado el guard `if (uso > 0) totalUsoCost
+       += uso` en los dos caminos para que Σ categorías == totalUsoCost
+       == aggregateSeries(series).
+       Tests reescritos: Caso 12 ahora espera food_uso=-5900;
+       Afirmación A espera Σ-publicado=100 == directo=100.
+
+   #11 parse-cogs: by_vendor siempre vacío
+       Filtro del vendor: `r[1] == null || String(r[1]).trim() === ''`
+       (SheetJS lee celdas vacías DENTRO de la hoja como "", no null).
+       by_account de los envelopes " E" se persiste en
+       cogs_data.by_account. Migración
+       20261013120500_add_by_account_to_cogs_data.sql añade la
+       columna (nullable jsonb, idempotente).
+
+   #12 Labor: horas sin pago descartadas; "latest" por created_at
+       parse-labor: ya no filtra por hourly_rate > 0 al mapear. Las
+       filas pagadas van a by_employee / totales como antes; las no
+       pagadas se publican aparte: hours_unpaid_regular,
+       hours_unpaid_ot, by_employee_unpaid. En W40 esto hace que las
+       416.46h de la app cuadren con las 487.80h de Toast. Migración
+       20261013121000_add_hours_unpaid_to_labor_data.sql añade las
+       columnas (nullable, idempotente).
+       labor/page.tsx: la query usa order by week desc en vez de
+       created_at desc.
+       NOTA: hours_unpaid_* y by_employee_unpaid se guardan pero por
+       ahora NO se muestran en el UI; es trabajo pendiente de otra
+       sesión (quitarle a "total_hours" el estigma de ser paid-only).
+
+   #13 Validaciones en parsers
+       parse-sales: warning cuando guests/orders > 8 (en W39 Toast
+       trajo 1,414 guests en 187 órdenes por un cheque mal capturado);
+       buildSalesDateWarning acepta inicio en martes posterior al
+       cierre (Mula cierra lunes).
+       parse-inventory: warnings de cuenta con current_value=0 cuando
+       previous_value>500 (ej. Food en $0 el 22-sep); de count_date
+       fuera de lunes.
+       Los warnings se propagan a /api/process y /api/process-edit
+       como warnings.sales_sanity / warnings.inventory_sanity.
+
+   #14 Filtros varios
+       "Este mes" en costo-uso, food-cost y kitchen compara por string
+       'YYYY-MM' en vez de `new Date(week_start)` (evita el bug UTC
+       en zonas al oeste de UTC: new Date('2026-06-01') se vuelve
+       31-may). parse-kitchen-details construye dateStr con
+       getFullYear/getMonth/getDate del Date local, NO
+       toISOString().split('T')[0] (que corre la fecha un día en
+       servidores no-UTC).
+       Nuevo helper src/lib/week-label.ts (shortWeek) que elimina el
+       año de 'YYYY-Www'; reemplaza los `.replace('2026-', '')`
+       dispersos en 10 pantallas y engine.ts. Ya no habrá que
+       re-tocarlos cuando pase 2027.
+
+4. CODE REVIEW SECUENCIAL (al cierre, antes de este informe)
+   Un agente code-reviewer revisó el stack completo be02da3..HEAD y
+   encontró 7 hallazgos adicionales que se incorporaron en el commit
+   f2024fc. En resumen:
+     - /api/process-edit requería el mismo tratamiento que /api/process
+       (hours_unpaid, by_account, propagación de errores, criticalFail).
+     - Totales usan ahora el mismo criterio que las categorías
+       (no filtrar negativos a nivel total).
+     - Textos UI que decían "mostrado como 0" / "antes de ajustar a
+       cero" se corrigieron (ui-helpers.ts, RangeSummary.tsx,
+       generate-pptx.ts).
+     - Fix 7 también en modo Compare de food-cost.
+     - cogs e inventory marcados como critical en /api/process
+       (son insumos directos de Costo de Uso).
+     - Pre-check de /api/process cambiado de maybeSingle a limit(1)+
+       verificar error (fail cerrado si ya hay duplicados).
+     - Migraciones renombradas con timestamp único de 14 dígitos para
+       no colisionar con schema_migrations.version si se aplican con
+       supabase db push.
+
+5. MIGRACIONES PENDIENTES DE EJECUTAR (TÚ, cuando quieras)
+   supabase/migrations/
+     20261013120000_add_unique_restaurant_week.sql
+     20261013120500_add_by_account_to_cogs_data.sql
+     20261013121000_add_hours_unpaid_to_labor_data.sql
+
+   Antes de aplicar la primera, correr:
+     select restaurant_id, week, count(*)
+     from public.reports
+     group by 1, 2
+     having count(*) > 1;
+   Si devuelve filas, revisar esos pares con el equipo primero
+   (el ADD CONSTRAINT UNIQUE falla si quedan duplicados).
+
+   Las otras dos (add column if not exists) son aditivas, nullable e
+   idempotentes; se pueden aplicar sin pre-check.
+
+6. QUÉ NO SE HIZO (de propósito, consistente con la autorización)
+   - NO git push. Rama local costo-uso-validation-2026-09-06 lista
+     para que digas "publicas"; en ese momento se hace `git push -u
+     origin costo-uso-validation-2026-09-06` y, si quieres, PR + merge.
+   - NO ejecución de migraciones contra Supabase: los .sql quedan
+     para que las corras tú.
+   - NO cambios en lugares no listados por el auditor: la revisión
+     identificó pendientes relacionados (texto hardcodeado "2026-"
+     en generate-pptx.ts, restaurant_id "…0001" en settings/mapeo-items,
+     warning de lunes mula-específico en parse-inventory, mostrar
+     hours_unpaid en UI de labor); ninguno rompe las 14 reglas del
+     auditor y ninguno estaba en el alcance autorizado.
+
+7. CÓMO VERIFICAR LO HECHO
+   - npm run build       → debe terminar sin errores.
+   - npx vitest run      → 133 passed · 9 skipped.
+   - npx tsc --noEmit    → sin errores.
+   - git log --oneline be02da3..HEAD  → 11 commits, mensajes claros.
+   - git diff --stat be02da3..HEAD    → ~30 archivos.
+
+8. ESTADO FINAL
+   Local, 11 commits, build limpio, tests verdes, listos para publicar
+   cuando el usuario dé la señal. 3 migraciones SQL esperando su
+   ejecución manual.

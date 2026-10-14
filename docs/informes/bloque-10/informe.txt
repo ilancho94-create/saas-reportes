@@ -1,0 +1,261 @@
+Bloque 10 — Verificación visual real + refactor de componentes + 404 en producción
+Restaurant X-Ray / DineWise · rama costo-uso-validation-2026-09-06
+Fecha: 2026-09-06 · TURNO PESADO ejecutado y liberado al final del bloque
+
+1. OBJETIVO Y ESTADO FINAL
+
+  Verificar la interfaz de Costo de Uso con datos sintéticos, corregir
+  los defectos encontrados y dejar evidencia visual. Cerrar procesos.
+
+  Rama:        costo-uso-validation-2026-09-06 (sin push)
+  Commits nuevos:
+    8572b8e  feat(costo-uso): share diagnostic components between
+             sandbox and prod, harden 404 gate
+    <commit  docs(costo-uso): informes bloques 8-10   [se aplica al
+     documental> emitir este archivo, ver git log al final]
+  HEAD previo: 6e0d592
+  Verificaciones finales locales:
+    npx vitest run   → 89 pasadas + 1 skipped
+    npx tsc --noEmit → sin errores
+    npx next build   → OK
+    curl prod:  /dashboard/costo-uso/sandbox/complete       → 404
+                /dashboard/costo-uso/sandbox/theo-missing   → 404
+                /dashboard/costo-uso/sandbox/not-a-scenario → 404
+                /dashboard                                  → 200
+                /dashboard/costo-uso                        → 200
+
+2. ESPECIALISTAS UTILIZADOS Y APORTE CONCRETO
+
+  Un solo especialista, secuencial, con instrucciones acotadas:
+    · feature-dev:code-reviewer — revisión pre-commit del diff con
+      cuatro criterios explícitos (matcher del proxy, paridad de
+      testids/aria entre página y sandbox tras la extracción, higiene
+      de secretos/PII, integridad del fixture "complete").
+      Aporte concreto: veredicto safe-to-commit tras leer los 8
+      archivos afectados, señalando además un detalle menor sin
+      impacto observable (setter setShowDiagPanel quedó sin uso tras
+      mover el estado interno del panel a RangeSummary; no bloqueador,
+      pero anotado para depuración futura).
+
+  No se activaron subagentes adicionales, ni Frontend Design, ni
+  security. No se dejó ningún especialista corriendo.
+
+3. COMPONENTES REALES COMPROBADOS
+
+  Se extrajeron los tres bloques visuales duplicados a
+  src/app/dashboard/costo-uso/_components/ y ahora los importan
+  literalmente la vista productiva (page.tsx) y el cliente de la ruta
+  sandbox (SandboxClient.tsx):
+
+    · DiagBadge         → pastilla accesible (⚠ N) por categoría,
+                          <button> focusable, aria-label y title
+                          reproducen el mismo texto sin depender de
+                          hover.
+    · RangeSummary      → banner "Resumen del período" con botón
+                          toggle (aria-expanded, aria-controls) y panel
+                          desplegable de incidencias.
+    · UnclosedRangeCard → estado "Rango sin cierre" bifurcado:
+                          referencia inicial disponible vs. no.
+
+  El engine, la aritmética de fechas (civilDaysBetween) y las
+  fórmulas comerciales no se tocaron.
+
+4. ESCENARIOS E INTERACCIONES VERIFICADOS
+
+  Servidor único (npx next dev -p 4321), un solo browser Playwright,
+  contexto reutilizado. Ejecución secuencial.
+
+  Escenarios navegados (fixtures deterministas, sin Supabase):
+
+    1  complete                    → 0 incidencias, totales +$150 var.
+    2  theo-zero-explicit          → totalVariacion = +$500 (teórico 0
+                                     explícito NO es null).
+    3  theo-missing                → total = "—", razón
+                                     "no calculable · falta teórico
+                                     en al menos una categoría con
+                                     ventas (Food)"; celda Food
+                                     "— no calculable · sin Product
+                                     Mix"; 5 badges por categoría.
+    4  zero-sales                  → total = "—", razón
+                                     "no calculable · ventas iguales
+                                     a cero".
+    5  partial-inventory           → badge y motivo por categoría sin
+                                     conteo; totales conservan variación
+                                     válida para las cats. con teórico.
+    6  missing-week                → panel muestra "Semana(s) faltante(s)
+                                     entre reportes" con fechas y
+                                     estimación de semanas.
+    7  unclosed-with-anchor        → UnclosedRangeCard renderiza el
+                                     mensaje "falta un conteo final
+                                     para cerrar el período" +
+                                     referencia inicial disponible;
+                                     aggregateSeries es null y no se
+                                     inventa fila.
+    8  negative-gross              → diag-item "Consumo antes de
+                                     ajustarlo a cero" presente con
+                                     evidencia I0/purchases/I1/bruto;
+                                     uso mostrado = clampeado (no
+                                     negativo).
+    9  interval-extended           → nota "Inventario inicial de
+                                     referencia: cierre de la semana
+                                     2026-W14 (fuera del rango
+                                     seleccionado). Sus compras y
+                                     ventas no se incluyen en el
+                                     consumo".
+
+  Interacciones verificadas:
+    · Cambio de filtros: navegar de missing-week a complete borra
+      todos los diag-item-* del DOM y el toggle vuelve a "Sin
+      incidencias detectadas".
+    · Accesibilidad por teclado:
+        DiagBadge → tagName BUTTON, focus programmatic ok,
+                    aria-label + title con el texto completo.
+        Toggle del panel → aria-expanded togglea true↔false con click,
+                    panel se muestra/oculta acorde, texto cambia entre
+                    "Ver detalle" y "Ocultar detalle".
+    · Viewport móvil (390×844): sin desbordamiento horizontal en las
+      3 URL comprobadas (scrollWidth == clientWidth == 390).
+    · Toque (móvil): DiagBadge sigue siendo <button> con aria-label,
+      así que la explicación no depende de hover.
+
+5. DEFECTOS ENCONTRADOS Y CORREGIDOS EN ESTE BLOQUE
+
+  D1. Sandbox y vista productiva usaban componentes distintos
+      (DiagBadge, banner y unclosed card duplicados). El sandbox no
+      verificaba los componentes reales. → Extracción a _components/,
+      importados por ambos.
+
+  D2. Fixture "complete" declaraba mappings de 5 categorías pero solo
+      aportaba datos de food+liquor, generando 12 incidencias falsas
+      (Beer/Wine/NA Beverage con "falta cuenta" + "teórico incompleto").
+      → Mappings reducidos a las categorías que el fixture realmente
+      alimenta; MAPPINGS_FULL sigue disponible para escenarios que sí
+      necesitan las cinco categorías.
+
+  D3. La ruta sandbox devolvía HTTP 200 en producción a pesar de
+      llamar notFound() en el server component. Reproducido con curl
+      contra `next start` (NODE_ENV=production confirmado por log
+      temporal): el cuerpo era la página not-found pero el status
+      HTTP quedaba 200 — sospechado edge-case de App Router cuando el
+      layout ancestro es un client component ("use client" en
+      /dashboard/layout.tsx).
+      → Fix en src/proxy.ts: gate temprano
+        if (process.env.NODE_ENV === 'production' &&
+            request.nextUrl.pathname.startsWith('/dashboard/costo-uso/sandbox/'))
+          return new NextResponse('Not Found', { status: 404 })
+      Se añadieron además not-found.tsx en el segmento sandbox y en
+      [scenario] como boundary explícito. El log temporal se quitó.
+      Verificado con curl tras next build && next start: 404 para las
+      3 URLs sandbox probadas y 200 para /dashboard y
+      /dashboard/costo-uso.
+
+6. CAPTURAS EXISTENTES
+
+  docs/informes/bloque-10/capturas/
+    01-complete-desktop.png
+    02-theo-zero-explicit-desktop.png
+    03-theo-missing-desktop.png
+    04-zero-sales-desktop.png
+    05-partial-inventory-desktop.png
+    06-missing-week-desktop.png
+    07-unclosed-with-anchor-desktop.png
+    08-negative-gross-desktop.png
+    09-interval-extended-desktop.png
+    10-complete-mobile.png
+    11-missing-week-mobile.png
+    12-unclosed-with-anchor-mobile.png
+
+  Todas con datos sintéticos del fixture. No hay capturas repetidas
+  del mismo estado. Las capturas complementan la verificación de
+  interacciones, no la sustituyen.
+
+7. PRUEBAS EJECUTADAS Y LIMITACIONES PENDIENTES
+
+  Ejecutadas:
+    · npx vitest run — 89 pasadas + 1 skipped (PEND explícito).
+      Suite no reintroducida en modo watch. No se repitió tras el
+      commit (nada relevante al engine cambió).
+    · npx tsc --noEmit — limpio, antes y después de la refactorización.
+    · npx next build — OK. Ruta sandbox aparece como
+      ƒ /dashboard/costo-uso/sandbox/[scenario].
+    · curl a producción para el gate de 404 (evidencia arriba).
+    · Playwright secuencial de los 9 escenarios; sin capturas
+      duplicadas ni ejecuciones paralelas.
+
+  Limitaciones pendientes:
+    · No se probó lector de pantalla real (VoiceOver / TalkBack).
+      Cobertura por accesibilidad se limita a HTML semántico
+      (button, aria-label, aria-expanded, aria-controls) y focus
+      programático.
+    · Rutas navegadas siempre en dev; el 404 en producción fue
+      verificado con curl, no con browser real.
+    · Modal "Análisis de variación" no se comprobó desde el sandbox
+      (el sandbox no monta el modal ni la analítica de waste/voids).
+      La pieza equivalente sí se corrigió en page.tsx (bloque 7).
+
+8. CONSUMO OBSERVADO Y MÉTODO DE MEDICIÓN
+
+  Muestras puntuales (no continuas):
+
+    · Antes de arrancar el dev server (inspección inicial):
+        vm_stat / sysctl vm.swapusage / uptime / loadavg 1m
+        Pages free ≈ 15k · Pages inactive ≈ 660k · compressor ≈ 66k
+        Swap total = 0 en ese instante
+        Load 1m = 2.01, 5m = 1.64, 15m = 2.61 (uptime 42 min)
+
+    · Durante Playwright + dev server: no se hizo muestreo continuo
+      (falta de sonda ligera que no compitiera por procesos). No se
+      declara "consumo máximo" absoluto. No se observó EAGAIN ni
+      crecimiento sostenido del swap durante la ventana (~10 min).
+
+    · Al terminar: dev server killed por PID rastreado
+      (/tmp/next-dev.pid). Prod server killed por PID
+      (/tmp/next-prod.pid). Playwright cerrado. Verificación:
+        ps -eo pid,command | grep -E 'next dev|next start|next-server'
+      devolvió cero coincidencias.
+
+  4 GB se mantiene como presupuesto conservador de referencia, no
+  como límite garantizado ni como máximo observado.
+
+9. CIERRE DE PROCESOS PROPIOS
+
+  Confirmado:
+    · /tmp/next-dev.pid    → proceso finalizado, archivo eliminado.
+    · /tmp/next-prod.pid   → proceso finalizado, archivo eliminado.
+    · Playwright chrome    → cerrado (page.close()).
+    · ps grep sin coincidencias de next dev / next start / next-server.
+  No se cerró ningún proceso ajeno.
+
+10. FÓRMULAS Y DATOS: SIN CAMBIOS
+
+  · uso, variación, consolidación de períodos, descuentos, política
+    de consumo negativo, mappings, ACCOUNT_MAP: sin tocar.
+  · Ningún dato real de Supabase leído ni modificado.
+  · Sección "Costo de Uso" del PPTX
+    (src/lib/export/generate-pptx.ts:486): sigue NO VALIDADA.
+
+11. SIGUIENTE BLOQUE RECOMENDADO
+
+  Turno pesado no requerido:
+    Migrar la sección "Costo de Uso" del PPTX al engine compartido,
+    de modo que la exportación devuelva las mismas cifras que la UI
+    y no reparta ventas por partes iguales. Alcance concreto:
+      1. Extraer un helper que genere las mismas estructuras
+         detailData/periodSeries que ya consume page.tsx.
+      2. Reemplazar el cálculo local del PPTX (líneas 486-500 aprox.)
+         por lecturas de esas estructuras.
+      3. Regresión: comparar totalUsoCost / totalTheoCost /
+         totalVariacion / totalRealPct del PPTX generado antes y
+         después con al menos 2 escenarios sintéticos (los mismos
+         del sandbox valen).
+      4. Documentar que las cifras del PPTX ahora coinciden con la UI
+         y quitar la etiqueta NO VALIDADO.
+    No requiere levantar servidor ni Playwright; solo tests y build.
+    Puede realizarse en MODO LIGERO.
+
+12. LIBERACIÓN DEL TURNO
+
+  Turno pesado terminado. Regreso a
+    MODO LIGERO, SIN TURNO PESADO.
+  No se dejaron procesos activos. No se iniciarán tareas pesadas
+  hasta que el usuario indique otro turno explícito.

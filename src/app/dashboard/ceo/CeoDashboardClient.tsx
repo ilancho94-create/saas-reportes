@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import useSWR from 'swr'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/auth-context'
@@ -73,15 +74,23 @@ async function fetchCeoData() {
     employee_performance_data(employees),
     avt_data(net_variance, total_shortage_dollar, total_overage_dollar)
   `
-  const [restsRes, ...reportsByRest] = await Promise.all([
+  const [restsRes, skippedRes, ...reportsByRest] = await Promise.all([
     supabase.from('restaurants').select('*').in('id', restIds),
+    supabase.from('skipped_inventory_weeks')
+      .select('restaurant_id, week').in('restaurant_id', restIds),
     ...restIds.map((rid: string) =>
       supabase.from('reports').select(reportsSelect)
         .eq('restaurant_id', rid).order('week', { ascending: false }).limit(13)
     ),
   ])
 
-  if (!restsRes.data?.length) return { allRestData: [], sortedWeeks: [] }
+  if (!restsRes.data?.length) return { allRestData: [], sortedWeeks: [], skippedByRest: {} }
+
+  const skippedByRest: Record<string, Set<string>> = {}
+  for (const row of (skippedRes.data || []) as any[]) {
+    if (!skippedByRest[row.restaurant_id]) skippedByRest[row.restaurant_id] = new Set()
+    skippedByRest[row.restaurant_id].add(row.week)
+  }
 
   const pickOne = (v: any) => (Array.isArray(v) ? v[0] || null : v || null)
   const mapReport = (r: any) => {
@@ -114,12 +123,19 @@ async function fetchCeoData() {
   allRestData.forEach((r: any) => r.weeks.forEach((w: any) => weekSet.add(w.report.week)))
   const sortedWeeks = Array.from(weekSet).sort().reverse()
 
-  return { allRestData, sortedWeeks }
+  // Serializar los Sets para que SWR no se queje.
+  const skippedByRestArr: Record<string, string[]> = {}
+  for (const [k, v] of Object.entries(skippedByRest)) {
+    skippedByRestArr[k] = Array.from(v)
+  }
+
+  return { allRestData, sortedWeeks, skippedByRest: skippedByRestArr }
 }
 
 export type CeoInitialData = {
   allRestData: any[]
   sortedWeeks: string[]
+  skippedByRest: Record<string, string[]>
 }
 
 export default function CeoDashboardClient({ initialData }: { initialData: CeoInitialData }) {
@@ -144,6 +160,7 @@ export default function CeoDashboardClient({ initialData }: { initialData: CeoIn
 
   const restaurantsData = data?.allRestData || []
   const allWeeks = data?.sortedWeeks || []
+  const skippedByRest = data?.skippedByRest || {}
   const loading = isLoading && !data
 
   // Default selectedWeek al primero disponible (solo si no hay uno ya).
@@ -212,7 +229,7 @@ export default function CeoDashboardClient({ initialData }: { initialData: CeoIn
       })
       const profit = sales - labor - cogs
       return {
-        week: week.replace('2026-', ''),
+        week: shortWeek(week),
         ventas: sales > 0 ? sales : null, labor: labor > 0 ? labor : null,
         cogs: cogs > 0 ? cogs : null, profit: sales > 0 ? profit : null,
         waste: waste > 0 ? waste : null,
@@ -703,6 +720,16 @@ export default function CeoDashboardClient({ initialData }: { initialData: CeoIn
                 <h2 className="text-white font-semibold mb-4">📊 Actual vs Teórico</h2>
                 {aggregated.map((r: any, i: number) => {
                   const a = r.latest?.avt
+                  const latestWeek = r.latest?.report?.week
+                  const isSkipped = latestWeek && (skippedByRest[r.restaurant.id] || []).includes(latestWeek)
+                  if (isSkipped) {
+                    return (
+                      <div key={i} className="mb-3 pb-3 border-b border-gray-800 last:border-0">
+                        <p className="text-gray-400 text-xs mb-2 font-medium">{r.restaurant.name}</p>
+                        <p className="text-orange-400 text-xs">📭 Semana saltada — sin AvT</p>
+                      </div>
+                    )
+                  }
                   if (!a) return <p key={i} className="text-gray-500 text-sm">Sin datos AvT — {r.restaurant.name}</p>
                   return (
                     <div key={i} className="mb-3 pb-3 border-b border-gray-800 last:border-0">

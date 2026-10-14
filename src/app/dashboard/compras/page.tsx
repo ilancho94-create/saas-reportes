@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -12,7 +13,7 @@ const CATEGORIES = ['Todas', 'BAR', 'FOOD', 'BEVERAGE', 'CHEMICALS', 'SUPPLIES']
 
 export default function ComprasPage() {
   const restaurantIdHook = useRestaurantId()
-  const restaurantId = restaurantIdHook || '00000000-0000-0000-0000-000000000001'
+  const restaurantId = restaurantIdHook
   const [restaurantName, setRestaurantName] = useState('')
   const [loading, setLoading] = useState(true)
   const [weeks, setWeeks] = useState<string[]>([])
@@ -143,7 +144,7 @@ export default function ComprasPage() {
     return allData
       .filter(r => r.item_name === itemName)
       .sort((a, b) => a.week.localeCompare(b.week))
-      .map(r => ({ week: r.week.replace('2026-', ''), unit_cost: r.unit_cost, total_cost: r.total_cost, total_qty: r.total_qty }))
+      .map(r => ({ week: shortWeek(r.week), unit_cost: r.unit_cost, total_cost: r.total_cost, total_qty: r.total_qty }))
   }
 
   const filteredItems = currentItems.filter(item => {

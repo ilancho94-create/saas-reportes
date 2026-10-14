@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import {
@@ -35,11 +36,13 @@ export default function LaborPage() {
     // 2 queries en paralelo con embedded select (antes: 1 + 1 + 12*2 = 26).
     const [restRes, reportsRes] = await Promise.all([
       supabase.from('restaurants').select('name').eq('id', restaurantId).single(),
+      // Ordenar por semana (no por created_at): una subida tardía de
+      // una semana vieja no debe aparecer como "latest".
       supabase.from('reports').select(`
         id, week, week_start, week_end, restaurant_id, created_at,
         sales_data(net_sales),
         labor_data(total_pay, total_hours, total_ot_hours, by_position, by_employee)
-      `).eq('restaurant_id', restaurantId).order('created_at', { ascending: false }).limit(12),
+      `).eq('restaurant_id', restaurantId).order('week', { ascending: false }).limit(12),
     ])
 
     setRestaurantName(restRes.data?.name || '')
@@ -77,7 +80,7 @@ export default function LaborPage() {
   const laborDiff = laborPct && prevLaborPct ? (laborPct - prevLaborPct).toFixed(1) : null
 
   const chartData = useMemo(() => filtered.map(w => ({
-    week: w.report.week.replace('2026-', ''),
+    week: shortWeek(w.report.week),
     laborPct: pct(w.labor?.total_pay, w.sales?.net_sales) || 0,
     'labor$': w.labor?.total_pay || 0,
     horas: w.labor?.total_hours || 0,
@@ -109,7 +112,7 @@ export default function LaborPage() {
           e.name.toLowerCase().includes(filterEmployee.toLowerCase())
         )
         return {
-          week: w.report.week.replace('2026-', ''),
+          week: shortWeek(w.report.week),
           horas: emp ? Number(emp.regular_hours) + Number(emp.ot_hours || 0) : 0,
           costo: emp ? Number(emp.total_pay) : 0,
           ot: emp ? Number(emp.ot_hours || 0) : 0,
@@ -666,7 +669,7 @@ function ComparativaTab({ filtered, allWeeks, fmt, pct, selectedWeekIdx }: any) 
                   <th className="text-left text-gray-500 text-xs pb-3 font-medium">Puesto</th>
                   {filtered.map((w: any) => (
                     <th key={w.report.week} className="text-right text-gray-500 text-xs pb-3 font-medium">
-                      {w.report.week.replace('2026-', '')}
+                      {shortWeek(w.report.week)}
                     </th>
                   ))}
                   <th className="text-right text-gray-500 text-xs pb-3 font-medium">Tendencia</th>

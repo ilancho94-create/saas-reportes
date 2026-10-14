@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { shortWeek } from '@/lib/week-label'
 import { supabase } from '@/lib/supabase'
 import { useRestaurantId } from '@/lib/use-restaurant'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from 'recharts'
@@ -80,7 +81,7 @@ export default function EmployeePage() {
     ? weeks.map(w => {
         const emp = (w.ep?.employees || []).find((e: any) => e.name === selectedEmployee)
         if (!emp) return null
-        return { week: w.report.week.replace('2026-', ''), ...emp }
+        return { week: shortWeek(w.report.week), ...emp }
       }).filter(Boolean).reverse()
     : []
 
@@ -262,8 +263,8 @@ export default function EmployeePage() {
                     </thead>
                     <tbody>
                       {employeeHistory.map((h: any, i: number) => (
-                        <tr key={i} className={`border-b border-gray-800 ${h.week === selectedWeek?.replace('2026-', '') ? 'bg-blue-950/30' : ''}`}>
-                          <td className={`py-1.5 ${h.week === selectedWeek?.replace('2026-', '') ? 'text-blue-400 font-semibold' : 'text-gray-400'}`}>{h.week}</td>
+                        <tr key={i} className={`border-b border-gray-800 ${h.week === shortWeek(selectedWeek) ? 'bg-blue-950/30' : ''}`}>
+                          <td className={`py-1.5 ${h.week === shortWeek(selectedWeek) ? 'text-blue-400 font-semibold' : 'text-gray-400'}`}>{h.week}</td>
                           <td className="py-1.5 text-right text-white font-medium">{fmt(h.net_sales)}</td>
                           <td className="py-1.5 text-right text-blue-400">{fmtDec(h.net_sales_per_hour)}</td>
                           <td className="py-1.5 text-right text-green-400">{fmtDec(h.avg_net_sales_per_guest)}</td>

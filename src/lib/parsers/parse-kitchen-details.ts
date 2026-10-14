@@ -95,7 +95,9 @@ export function parseKitchenDetailsCsv(csvContent: string): KitchenPerformanceRe
     // Filtrar outliers mayores a 2 horas
     if (seconds > 7200) continue
 
-    // Parse date
+    // Parse date — construir dateStr a partir del valor local (NO
+    // toISOString, que convierte a UTC y corre la fecha un día cuando
+    // el servidor no está en UTC).
     let dayOfWeek = ''
     let hour = 0
     let dateStr = ''
@@ -104,7 +106,10 @@ export function parseKitchenDetailsCsv(csvContent: string): KitchenPerformanceRe
       if (!isNaN(d.getTime())) {
         dayOfWeek = DAYS_ES[DAYS[d.getDay()]] || DAYS[d.getDay()]
         hour = d.getHours()
-        dateStr = d.toISOString().split('T')[0]
+        dateStr =
+          `${d.getFullYear()}-` +
+          `${String(d.getMonth() + 1).padStart(2, '0')}-` +
+          `${String(d.getDate()).padStart(2, '0')}`
       }
     } catch { continue }
 
