@@ -1326,12 +1326,34 @@ export default function CostoUsoPage() {
           </div>
         </div>
 
-        {alerts.map((alert, i) => (
-          <div key={i} className="bg-yellow-950 border border-yellow-800 rounded-xl px-5 py-3 flex items-start gap-3">
-            <span className="text-yellow-400 shrink-0">⚠️</span>
-            <p className="text-yellow-300 text-sm">{alert}</p>
-          </div>
-        ))}
+        {alerts.length > 0 && (() => {
+          // "Inventario no encadena" ocurre cuando R365 reporta un
+          // previous_value distinto al current_value de la semana
+          // anterior. Es INFORMATIVO: el motor siempre usa el cierre
+          // anterior como inv_inicial, no el previous declarado. Las
+          // agrupamos en un solo bloque azul (no amarillo) para no dar
+          // la impresión de que el cálculo está mal.
+          return (
+            <div className="bg-blue-950/60 border border-blue-900 rounded-xl px-5 py-3">
+              <div className="flex items-start gap-3">
+                <span className="text-blue-300 shrink-0">ℹ️</span>
+                <div className="flex-1">
+                  <p className="text-blue-200 text-sm font-medium">
+                    R365 no encadena inventarios en {alerts.length} par{alerts.length !== 1 ? 'es' : ''} de semanas · no afecta el cálculo
+                  </p>
+                  <p className="text-blue-400 text-xs mt-1 leading-relaxed">
+                    El motor siempre usa el cierre de la semana anterior como inventario inicial (la regla correcta). Estos avisos solo señalan que el conteo de R365 declaró un valor distinto como "previous" — útil para rastrear ajustes manuales en R365.
+                  </p>
+                  <ul className="text-blue-500 text-xs mt-2 space-y-0.5">
+                    {alerts.map((alert, i) => (
+                      <li key={i}>{alert.replace(/^⚠️\s*/, '')}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
         {unmappedCats.length > 0 && (
           <div className="bg-yellow-950 border border-yellow-800 rounded-xl px-5 py-3 flex items-start gap-3">
@@ -1694,6 +1716,41 @@ export default function CostoUsoPage() {
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Trazabilidad del cálculo cuando el período consolida semanas */}
+                  {detailData.isConsolidated && (() => {
+                    const periods = (detailData.periodWeeksRaw || []) as any[]
+                    if (periods.length <= 1) return null
+                    const weekList = periods.map((w: any) => w.report.week)
+                    const anchorW = detailData.anchorWeek
+                    return (
+                      <div className="mt-4 pt-4 border-t border-gray-800">
+                        <p className="text-blue-300 text-xs font-semibold mb-2">
+                          ℹ️ Trazabilidad del cálculo (período consolidado)
+                        </p>
+                        <ul className="text-xs text-gray-400 space-y-1 leading-relaxed">
+                          <li>
+                            <span className="text-gray-500">Inv. inicial:</span>{' '}
+                            {anchorW
+                              ? <>cierre de la semana <span className="text-white font-medium">{anchorW}</span> (ancla)</>
+                              : <>previous_value del propio reporte <span className="text-white font-medium">{detailData.fullWeek}</span> (no hay ancla previa)</>}
+                          </li>
+                          <li>
+                            <span className="text-gray-500">Inv. final:</span>{' '}
+                            cierre de <span className="text-white font-medium">{detailData.fullWeek}</span>
+                          </li>
+                          <li>
+                            <span className="text-gray-500">Compras / ventas:</span>{' '}
+                            suma de {weekList.length} semana{weekList.length !== 1 ? 's' : ''} ({weekList.join(' + ')})
+                          </li>
+                          <li>
+                            <span className="text-gray-500">Fórmula uso:</span>{' '}
+                            inv. inicial + Σ compras − inv. final (sin clamp; negativos se muestran como ⚠️)
+                          </li>
+                        </ul>
+                      </div>
+                    )
+                  })()}
 
                   {detailData.hasAnyAdj && (
                     <div className="mt-4 pt-4 border-t border-gray-800">
