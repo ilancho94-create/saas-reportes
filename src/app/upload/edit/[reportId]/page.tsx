@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/lib/auth-context'
+import { can } from '@/lib/permissions'
 
 const STEPS = [
   { id: 'sales', label: 'Ventas', icon: '💰', system: 'Toast', required: true, accept: '.xlsx', acceptLabel: 'Excel (.xlsx)', where: 'Toast → Reports → Sales Summary', extracts: 'Ventas netas, brutas, órdenes, guests, categorías, áreas' },
@@ -29,6 +31,7 @@ const TABLE_MAP: Record<string, string> = {
 export default function EditReportPage() {
   const { reportId } = useParams()
   const router = useRouter()
+  const { user, isSuperAdmin } = useAuth()
   const [loading, setLoading] = useState(true)
   const [report, setReport] = useState<any>(null)
   const [existingData, setExistingData] = useState<Record<string, boolean>>({})
@@ -38,6 +41,12 @@ export default function EditReportPage() {
   const [status, setStatus] = useState('')
   const [currentStep, setCurrentStep] = useState(0)
   const [dragOver, setDragOver] = useState(false)
+  const [userRole, setUserRole] = useState<string>('')
+  const [userCustomPerms, setUserCustomPerms] = useState<any>(null)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [deleteInput, setDeleteInput] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -45,6 +54,22 @@ export default function EditReportPage() {
       else loadReport()
     })
   }, [reportId])
+
+  useEffect(() => {
+    if (user && report?.restaurant_id) loadRole()
+  }, [user, report?.restaurant_id])
+
+  async function loadRole() {
+    if (!user || !report?.restaurant_id) return
+    const { data } = await supabase.from('user_restaurants')
+      .select('role, custom_permissions')
+      .eq('user_id', user.id).eq('restaurant_id', report.restaurant_id)
+      .maybeSingle()
+    setUserRole((data as any)?.role || '')
+    setUserCustomPerms((data as any)?.custom_permissions || null)
+  }
+
+  const canDeleteFile = isSuperAdmin || can(userRole, 'historial', 'edit', userCustomPerms)
 
   async function loadReport() {
     const { data: rep } = await supabase.from('reports').select('*').eq('id', reportId).single()
@@ -97,6 +122,56 @@ export default function EditReportPage() {
     if (error) { setFileErrors(prev => ({ ...prev, [stepId]: error })); return }
     setFileErrors(prev => { const n = { ...prev }; delete n[stepId]; return n })
     setFiles(prev => ({ ...prev, [stepId]: file }))
+  }
+
+  function openDeletePanel(fileType: string) {
+    setDeleteTarget(fileType); setDeleteInput(''); setDeleteError('')
+  }
+
+  async function confirmDeleteFile() {
+    if (!deleteTarget) return
+    if (deleteInput.trim().toUpperCase() !== 'ELIMINAR') {
+      setDeleteError('Escribe ELIMINAR para confirmar')
+      return
+    }
+    setDeleting(true); setDeleteError('')
+    const { data: { session } } = await supabase.auth.getSession()
+    const res = await fetch('/api/process-delete-file', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(session?.access_token ? { 'Authorization': 'Bearer ' + session.access_token } : {}),
+      },
+      body: JSON.stringify({ reportId, fileType: deleteTarget }),
+    })
+    const payload = await res.json().catch(() => ({ error: 'Respuesta inválida' }))
+    if (!res.ok || !payload.success) {
+      setDeleteError(payload.error || 'No se pudo borrar')
+      setDeleting(false)
+      return
+    }
+    // product_mix y menu_analysis comparten fila: ambos pasan a "sin datos".
+    setExistingData(prev => {
+      const next = { ...prev, [deleteTarget]: false }
+      if (deleteTarget === 'product_mix' || deleteTarget === 'menu_analysis') {
+        next['product_mix'] = false
+        next['menu_analysis'] = false
+      }
+      return next
+    })
+    // Si había un archivo seleccionado para re-subida, lo quito también.
+    setFiles(prev => {
+      const n = { ...prev }
+      delete n[deleteTarget]
+      if (deleteTarget === 'product_mix' || deleteTarget === 'menu_analysis') {
+        delete n['product_mix']; delete n['menu_analysis']
+      }
+      return n
+    })
+    const removedLabel = STEPS.find(s => s.id === deleteTarget)?.label || deleteTarget
+    setDeleteTarget(null); setDeleteInput(''); setDeleting(false)
+    setStatus('🗑️ ' + removedLabel + ' eliminado de este reporte')
+    setTimeout(() => setStatus(''), 6000)
   }
 
   async function handleProcess() {
@@ -180,6 +255,13 @@ export default function EditReportPage() {
                 <p className="text-gray-500 text-xs">Paso {currentStep + 1} de {STEPS.length}</p>
                 {existingData[step.id] && !files[step.id] && <span className="text-green-400 text-xs">✓ Ya subido</span>}
                 {files[step.id] && <span className="text-blue-400 text-xs">↑ Nuevo archivo</span>}
+                {existingData[step.id] && canDeleteFile && (
+                  <button onClick={() => openDeletePanel(step.id)}
+                    className="block mt-2 text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-700 px-2 py-1 rounded transition"
+                    title={`Eliminar ${step.label} de este reporte sin tocar los demás`}>
+                    🗑️ Eliminar
+                  </button>
+                )}
               </div>
             </div>
 
@@ -304,6 +386,70 @@ export default function EditReportPage() {
           </div>
         )}
       </main>
+
+      {/* Modal confirmación eliminar UN tipo de archivo */}
+      {deleteTarget && (() => {
+        const targetStep = STEPS.find(s => s.id === deleteTarget)
+        const sharesPair = deleteTarget === 'product_mix' || deleteTarget === 'menu_analysis'
+        return (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <div className="bg-gray-900 border border-red-800 rounded-2xl p-6 w-full max-w-md">
+              <div className="flex items-center justify-between mb-5">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">{targetStep?.icon}</span>
+                  <div>
+                    <h3 className="text-white font-bold text-base">Eliminar {targetStep?.label}</h3>
+                    <p className="text-gray-500 text-xs mt-0.5">{report?.week}</p>
+                  </div>
+                </div>
+                <button onClick={() => { setDeleteTarget(null); setDeleteInput(''); setDeleteError('') }}
+                  disabled={deleting}
+                  className="text-gray-500 hover:text-white disabled:opacity-50">✕</button>
+              </div>
+              <div className="space-y-4">
+                <div className="bg-red-950 border border-red-900 rounded-lg px-4 py-3">
+                  <p className="text-red-300 text-xs leading-relaxed">
+                    Esto borra SOLO los datos de <strong>{targetStep?.label}</strong> en la semana {report?.week}.
+                    Los demás archivos de esta semana (ventas, labor, cogs, etc.) quedan intactos.
+                    Después puedes volver a subir el archivo correcto desde el mismo paso de este wizard.
+                    Esta acción NO se puede deshacer.
+                  </p>
+                </div>
+                {sharesPair && (
+                  <div className="bg-yellow-950 border border-yellow-900 rounded-lg px-4 py-3">
+                    <p className="text-yellow-300 text-xs leading-relaxed">
+                      ⚠️ <strong>Product Mix Toast</strong> y <strong>Menu Item Analysis</strong> se guardan juntos.
+                      Al eliminar uno, el otro también desaparece.
+                    </p>
+                  </div>
+                )}
+                <div>
+                  <label className="text-gray-400 text-xs block mb-1">
+                    Escribe <span className="text-red-400 font-mono">ELIMINAR</span> para confirmar
+                  </label>
+                  <input value={deleteInput} onChange={e => setDeleteInput(e.target.value)}
+                    disabled={deleting}
+                    placeholder="ELIMINAR"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-red-500 font-mono" />
+                </div>
+                {deleteError && <p className="text-red-400 text-xs">{deleteError}</p>}
+                <div className="flex gap-3">
+                  <button onClick={() => { setDeleteTarget(null); setDeleteInput(''); setDeleteError('') }}
+                    disabled={deleting}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-300 py-2 rounded-lg text-sm transition">
+                    Cancelar
+                  </button>
+                  <button onClick={confirmDeleteFile}
+                    disabled={deleting || deleteInput.trim().toUpperCase() !== 'ELIMINAR'}
+                    className="flex-1 bg-red-700 hover:bg-red-800 disabled:bg-gray-700 disabled:cursor-not-allowed text-white py-2 rounded-lg text-sm font-medium transition">
+                    {deleting ? 'Borrando...' : 'Eliminar'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
